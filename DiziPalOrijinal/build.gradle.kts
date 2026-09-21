@@ -1,10 +1,10 @@
-// ! Bu araç @SAKLImavi tarafından | @UmayTrade için yazılmıştır.
-version = 19
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
+version = 1
 
 cloudstream {
-    authors     = listOf("UmayTrade")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "DiziPal Orijinal."
+    description = "DiziPal - - en yeni dizileri güvenli ve hızlı şekilde sunar...."
 
     /**
      * Status int as the following:
@@ -15,5 +15,5 @@ cloudstream {
     **/
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("TvSeries")
-    iconUrl = "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://dizipal1580.com&size=128"
+    iconUrl = "https://www.google.com/s2/favicons?domain=https://dizipal1541.com&sz=%size%"
 }
