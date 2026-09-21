@@ -1,9 +1,10 @@
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
 version = 1
 
 cloudstream {
-    authors     = listOf("UmayTrade")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "Yeni film, dizi, anime ve bölümleri keşfet; güncel trendleri, sıralamaları ve yayın takvimini incele."
+    description = "Yeni film, dizi, anime ve bölümleri keşfet; güncel trendleri, sıralamaları ve yayın takvimini incele...."
 
     /**
      * Status int as the following:
@@ -13,6 +14,6 @@ cloudstream {
      * 3: Beta only
     **/
     status  = 1 // will be 3 if unspecified
-    tvTypes = listOf("Movie", "TvSeries")
+    tvTypes = listOf("TvSeries")
     iconUrl = "https://www.google.com/s2/favicons?domain=https://www.diziyo.so&sz=%size%"
 }
