@@ -1,9 +1,10 @@
-version = 25
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
+version = 1
 
 cloudstream {
-    authors     = listOf("keyiflerolsun", "nikyokki")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "Dizilla tüm yabancı dizileri ücretsiz olarak Türkçe Dublaj ve altyazılı seçenekleri ile 1080P kalite izleyebileceğiniz yeni nesil yabancı dizi izleme siteniz."
+    description = "Dizilla tüm yabancı dizileri ücretsiz olarak Türkçe Dublaj ve altyazılı seçenekleri ile 1080P kalite izleyebileceğiniz yeni nesil yabancı dizi izleme siteniz..."
 
     /**
      * Status int as the following:
