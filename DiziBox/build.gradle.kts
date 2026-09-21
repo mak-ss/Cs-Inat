@@ -1,10 +1,10 @@
-// ! Bu araç @SAKLImavi tarafından | @UmayTrade için yazılmıştır.
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
 version = 1
 
 cloudstream {
-    authors     = listOf("UmayTrade")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "Yabancı Dizi izle, Tüm yabancı dizilerin yeni ve eski sezonlarını full hd izleyebileceğiniz elit site.."
+    description = "Yabancı Dizi izle, Tüm yabancı dizilerin yeni ve eski sezonlarını full hd izleyebileceğiniz elit site..."
 
     /**
      * Status int as the following:
@@ -14,6 +14,6 @@ cloudstream {
      * 3: Beta only
     **/
     status  = 1 // will be 3 if unspecified
-    tvTypes = listOf("Movie")
+    tvTypes = listOf("TvSeries")
     iconUrl = "https://www.google.com/s2/favicons?domain=www.dizibox.de&sz=%size%"
 }
