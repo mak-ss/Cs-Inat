@@ -1,9 +1,11 @@
-version = 25
+
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
+version = 1
 
 cloudstream {
-    authors     = listOf("UmayTrade")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "Diziyou en kaliteli Türkçe dublaj ve altyazılı yabancı dizi izleme sitesidir. Güncel ve efsanevi dizileri 1080p Full HD kalitede izlemek için hemen tıkla!"
+    description = "Diziyou en kaliteli Türkçe dublaj ve altyazılı yabancı dizi izleme sitesidir. Güncel ve efsanevi dizileri 1080p Full HD kalitede izlemek için hemen tıkla!..."
 
     /**
      * Status int as the following:
