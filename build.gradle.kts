@@ -57,14 +57,14 @@ subprojects {
     cloudstream {
         setRepo(
             System.getenv("GITHUB_REPOSITORY")
-                ?: "https://github.com/Kraptor123/Cs-GizliKeyif"
+                ?: "https://github.com/mak-ss/Cs-Inat"
         )
 
-        authors = listOf("kraptor")
+        authors = listOf("Blockades")
     }
 
     android {
-        namespace = "com.kraptor.${
+        namespace = "com.Blockades.${
             project.name.lowercase()
                 .replace("-", "_")
                 .let {
