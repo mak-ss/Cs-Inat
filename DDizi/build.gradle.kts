@@ -1,8 +1,8 @@
-// ! Bu araç @SAKLImavi tarafından | @UmayTrade için yazılmıştır.
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
 version = 1
 
 cloudstream {
-    authors     = listOf("UmayTrade")
+    authors     = listOf("Blockades")
     language    = "tr"
     description = "DDizi.im için Cloudstream eklentisi."
 
