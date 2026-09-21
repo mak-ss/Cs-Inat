@@ -14,7 +14,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
 
 class DiziBol : MainAPI() {
-    override var mainUrl              = "https://dizibol.org"
+    override var mainUrl              = "https://dizibol.com"
     override var name                 = "DiziBol"
     override val hasMainPage          = true
     override var lang                 = "tr"
