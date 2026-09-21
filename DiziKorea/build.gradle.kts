@@ -1,9 +1,10 @@
-version = 41
+// ! Bu araç @SAKLImavi tarafından | @Blockades için yazılmıştır.
+version = 1
 
 cloudstream {
-    authors     = listOf("keyiflerolsun")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "En Güncel Kore Dizileri izleme Sitesi"
+    description = "En Güncel Kore Dizileri izleme Sitesi..."
 
     /**
      * Status int as the following:
@@ -13,6 +14,6 @@ cloudstream {
      * 3: Beta only
     **/
     status  = 1 // will be 3 if unspecified
-    tvTypes = listOf("AsianDrama")
+    tvTypes = listOf("TvSeries")
     iconUrl = "https://www.google.com/s2/favicons?domain=https://dizikorea.vip&sz=%size%"
 }
