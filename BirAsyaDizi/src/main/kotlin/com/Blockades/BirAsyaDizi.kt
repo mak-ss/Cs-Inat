@@ -13,7 +13,8 @@ class BirAsyaDizi : MainAPI() {
     override val hasQuickSearch       = false
     override val supportedTypes       = setOf(TvType.AsianDrama)
 
-    override val headers = mapOf(
+    // override kelimesi kaldırıldı, private val yapıldı
+    private val mainHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer" to "$mainUrl/"
     )
@@ -75,7 +76,7 @@ class BirAsyaDizi : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("${request.data}page/$page/", headers = headers).document
+        val document = app.get("${request.data}page/$page/", headers = mainHeaders).document
         val home     = document.select("div.frag-k").mapNotNull { it.toMainPageResult() }
 
         return newHomePageResponse(request.name, home, home.isNotEmpty())
@@ -91,7 +92,7 @@ class BirAsyaDizi : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("${mainUrl}/?s=${query}", headers = headers).document
+        val document = app.get("${mainUrl}/?s=${query}", headers = mainHeaders).document
         return document.select("div.frag-k").mapNotNull { it.toSearchResult() }
     }
 
@@ -107,7 +108,7 @@ class BirAsyaDizi : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers).document
+        val document = app.get(url, headers = mainHeaders).document
 
         val title = document.selectFirst("div.tab-icerik img")?.attr("title") ?: return null
         val img = document.selectFirst("div.tab-icerik img")
@@ -168,7 +169,7 @@ class BirAsyaDizi : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data, headers = headers).document
+        val document = app.get(data, headers = mainHeaders).document
         val iframe = document.selectFirst("iframe") ?: return false
 
         val iframeVid = fixUrlNull(
