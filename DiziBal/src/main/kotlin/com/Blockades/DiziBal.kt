@@ -165,7 +165,7 @@ class DiziBal : MainAPI() {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
-                    this.rating = score?.times(1000)?.toInt()
+                    this.score = score?.let { Score.from10(it) }
                     this.tags = tags
                     addTrailer(trailerUrl)
                 }
@@ -174,7 +174,7 @@ class DiziBal : MainAPI() {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
-                    this.rating = score?.times(1000)?.toInt()
+                    this.score = score?.let { Score.from10(it) }
                     this.tags = tags
                     addTrailer(trailerUrl)
                 }
