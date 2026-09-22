@@ -1,4 +1,3 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
 import android.util.Log
@@ -41,7 +40,6 @@ class BirAsyaDizi : MainAPI() {
         "${mainUrl}/diziler/japon-dizileri/"            to "Japon Dizileri",
         "${mainUrl}/diziler/komedi-dizi/"               to "Komedi Dizi",
         "${mainUrl}/diziler/korku-dizi/"                to "Korku Dizi",
-//        "${mainUrl}/diziler/lgbtq-dizileri/"            to "LGBTQ+ Dizileri",
         "${mainUrl}/diziler/macera-dizi/"               to "Macera Dizi",
         "${mainUrl}/diziler/malezya/"                   to "Malezya",
         "${mainUrl}/diziler/melodram-dizi/"             to "Melodram Dizi",
@@ -52,7 +50,6 @@ class BirAsyaDizi : MainAPI() {
         "${mainUrl}/diziler/psikolojik/"                to "Psikolojik",
         "${mainUrl}/diziler/reality-show/"              to "Reality Show",
         "${mainUrl}/diziler/romantik-dizi/"             to "Romantik Dizi",
-//        "${mainUrl}/diziler/rusya/"                     to "Rusya",
         "${mainUrl}/diziler/savas-dizi/"                to "Savaş Dizi",
         "${mainUrl}/diziler/savas-sanatlari/"           to "Savaş Sanatları",
         "${mainUrl}/diziler/singapur/"                  to "Singapur",
@@ -69,8 +66,7 @@ class BirAsyaDizi : MainAPI() {
         "${mainUrl}/diziler/tv-show/"                   to "TV Show",
         "${mainUrl}/diziler/vietnam-dizileri/"          to "Vietnam Dizileri",
         "${mainUrl}/diziler/yasam-dizi/"                to "Yaşam Dizi",
-        "${mainUrl}/diziler/yemek-dizi/"                to "Yemek Dizi",
-//        "${mainUrl}/diziler/yetiskin/"                  to "Yetişkin",
+        "${mainUrl}/diziler/yemek-dizi/"                to "Yemek Dizi"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -83,7 +79,8 @@ class BirAsyaDizi : MainAPI() {
     private fun Element.toMainPageResult(): SearchResponse? {
         val title     = this.selectFirst("a")?.attr("title") ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+        val img       = this.selectFirst("img")
+        val posterUrl = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
 
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
@@ -97,7 +94,8 @@ class BirAsyaDizi : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title     = this.selectFirst("a")?.attr("title") ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
+        val img       = this.selectFirst("img")
+        val posterUrl = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
 
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
@@ -108,29 +106,26 @@ class BirAsyaDizi : MainAPI() {
         val document = app.get(url).document
 
         val title = document.selectFirst("div.tab-icerik img")?.attr("title") ?: return null
-        val poster = fixUrlNull(document.selectFirst("div.tab-icerik img")?.attr("data-src"))
+        val img = document.selectFirst("div.tab-icerik img")
+        val poster = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
         val description = document.selectFirst("div.aciklama div.scroll-liste")?.text()?.trim()
         val year = document.selectFirst("div.extra span.C a")?.text()?.trim()?.toIntOrNull()
         val tags = document.select("ol.gizli li a").map { it.text() }
         val rating = document.selectFirst("span.tum-gor")?.text()?.trim()
         val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
-//        Log.d("kraptor_$name", "ul.scroll-liste = ${document.select("li.szn")}")
-        val episodes = document.select("li.szn").map { bolum ->
-//            Log.d("kraptor_$name", "bolum = ${bolum}")
+
+        val episodes = document.select("li.szn").mapNotNull { bolum ->
             val epName = bolum.selectFirst("div.baslik a")?.text()?.trim()
-//            Log.d("kraptor_$name", "epName = ${epName}")
-            val epEpisode = bolum.selectFirst("div.resim a")?.attr("href")
-                ?.substringBeforeLast("-bolum")
-                ?.substringAfterLast("-")
-                ?.toIntOrNull()
-//            Log.d("kraptor_$name", "epEpisode = ${epEpisode}")
-//            val epSeason    = bolum.selectFirst("div.resim a")?.attr("href")
-            val epHref = fixUrlNull(bolum.selectFirst("div.resim a")?.attr("href"))
-//            Log.d("kraptor_$name", "epHref = ${epHref}")
-            newEpisode(epHref, {
+            val epHref = fixUrlNull(bolum.selectFirst("div.resim a")?.attr("href")) ?: return@mapNotNull null
+            val epEpisode = epHref
+                .substringBeforeLast("-bolum")
+                .substringAfterLast("-")
+                .toIntOrNull()
+
+            newEpisode(epHref) {
                 this.episode = epEpisode
                 this.name = epName
-            })
+            }
         }
 
         if (episodes.isEmpty()) {
@@ -157,25 +152,32 @@ class BirAsyaDizi : MainAPI() {
     private fun Element.toRecommendationResult(): SearchResponse? {
         val title     = this.selectFirst("span.baslik")?.text() ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("a img")?.attr("data-src"))
+        val img       = this.selectFirst("a img")
+        val posterUrl = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
 
-        return newTvSeriesSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
+        return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        Log.d("kraptor_$name", "data » ${data}")
+    override suspend fun loadLinks(
+        data: String, 
+        isCasting: Boolean, 
+        subtitleCallback: (SubtitleFile) -> Unit, 
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         val document = app.get(data).document
+        val iframe = document.selectFirst("iframe") ?: return false
 
-//        Log.d("kraptor_$name", "document » ${document}")
+        // vdo-src yoksa src veya data-src attribute'una bak
+        val iframeVid = fixUrlNull(
+            iframe.attr("vdo-src").ifEmpty { 
+                iframe.attr("src").ifEmpty { 
+                    iframe.attr("data-src") 
+                } 
+            }
+        ) ?: return false
 
-        val iframe   = document.select("iframe")
+        Log.d("kraptor_$name", "iframeVid -> $iframeVid")
 
-        val iframeVid = fixUrlNull(iframe.attr("vdo-src")).toString()
-
-        Log.d("kraptor_$name", "iframeVid » ${iframeVid}")
-
-         loadExtractor(iframeVid, "${mainUrl}/", subtitleCallback, callback)
-
-        return true
+        return loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
     }
 }
