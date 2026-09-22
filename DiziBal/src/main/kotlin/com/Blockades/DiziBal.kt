@@ -2,7 +2,6 @@ package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -38,7 +37,6 @@ class DiziBal : MainAPI() {
         "Sec-Fetch-User" to "?1"
     )
 
-    // Response yerine NiceResponse kullanıldı
     private suspend fun safeGet(url: String, referer: String = mainUrl): NiceResponse? {
         return try {
             val res = app.get(url, headers = browserHeaders, referer = referer)
@@ -76,8 +74,8 @@ class DiziBal : MainAPI() {
 
             val items: List<SearchResponse> = document
                 .select("a[href*='/series/'], a[href*='/movie/'], a[href*='/anime/']")
-                .mapNotNull { element: Element -> element.toCardSearchResponse() }
-                .distinctBy { it.url }
+                .mapNotNull { element -> element.toCardSearchResponse() }
+                .distinctBy { searchResponse -> searchResponse.url }
                 .take(60)
 
             Log.d(name, "getMainPage: ${items.size} öğe bulundu")
@@ -106,8 +104,8 @@ class DiziBal : MainAPI() {
 
             response.document
                 .select("a[href*='/series/'], a[href*='/movie/'], a[href*='/anime/']")
-                .mapNotNull { element: Element -> element.toCardSearchResponse() }
-                .distinctBy { it.url }
+                .mapNotNull { element -> element.toCardSearchResponse() }
+                .distinctBy { searchResponse -> searchResponse.url }
         } catch (e: Exception) {
             Log.e(name, "search hatası: ${e.message}", e)
             emptyList()
@@ -157,14 +155,14 @@ class DiziBal : MainAPI() {
                 .find(body)?.groupValues?.get(1)?.replace(",", ".")?.toDoubleOrNull()
 
             val tags: List<String> = document.select("a[href*='/tur/']")
-                .map { element: Element -> element.text().trim() }
-                .filter { it.isNotBlank() }
+                .map { element -> element.text().trim() }
+                .filter { tag -> tag.isNotBlank() }
                 .distinct()
 
-            val actors: List<Actor> = document.select("section#cast-heading + div a.group").mapNotNull { element: Element ->
+            val actors: List<ActorData> = document.select("section#cast-heading + div a.group").mapNotNull { element ->
                 val actorName = element.selectFirst("p")?.text()?.trim() ?: return@mapNotNull null
                 val image = element.selectFirst("img")?.attr("src")
-                Actor(actorName, image)
+                ActorData(Actor(actorName, image))
             }
 
             val trailerUrl: String? = document.selectFirst("iframe[src*=youtube]")?.attr("src")
@@ -194,7 +192,7 @@ class DiziBal : MainAPI() {
 
                     Log.d(name, "load: ${episodeLinks.size} bölüm linki bulundu")
 
-                    episodeLinks.forEach { epEl: Element ->
+                    episodeLinks.forEach { epEl ->
                         val href = epEl.attr("href")
                         if (href.isBlank()) return@forEach
 
@@ -217,7 +215,7 @@ class DiziBal : MainAPI() {
                         )
                     }
 
-                    val uniqueEpisodes = episodes.distinctBy { it.data }
+                    val uniqueEpisodes = episodes.distinctBy { ep -> ep.data }
                     Log.d(name, "load: ${uniqueEpisodes.size} tekil bölüm")
 
                     newTvSeriesLoadResponse(title, url, type, uniqueEpisodes) {
@@ -320,7 +318,7 @@ class DiziBal : MainAPI() {
                         return true
                     }
 
-                    embedDoc.selectFirst("iframe[src]")?.let { iframe: Element ->
+                    embedDoc.selectFirst("iframe[src]")?.let { iframe ->
                         val iframeUrl = iframe.attr("src")
                         if (iframeUrl.isNotBlank() && !iframeUrl.contains("youtube")) {
                             Log.d(name, "loadLinks: iframe -> $iframeUrl")
