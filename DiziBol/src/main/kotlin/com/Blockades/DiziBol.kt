@@ -21,7 +21,7 @@ class DiziBol : MainAPI() {
 
         private val defaultHeaders = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Referer" to "https://dizibal.org/"
+            "Referer" to "https://dizibol.org/"
         )
     }
 
