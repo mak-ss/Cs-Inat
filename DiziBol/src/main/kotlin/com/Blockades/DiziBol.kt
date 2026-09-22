@@ -337,9 +337,9 @@ class DiziBol : MainAPI() {
                         }
 
                         val streamName = if (audioLabels.isNotEmpty()) {
-                            "DiziBal (${audioLabels.joinToString(" / ")})"
+                            "DiziBol (${audioLabels.joinToString(" / ")})"
                         } else {
-                            "DiziBal (HLS)"
+                            "DiziBol (HLS)"
                         }
 
                         callback(
@@ -372,8 +372,8 @@ class DiziBol : MainAPI() {
                 if (loadExtractor(fullIframe, data, subtitleCallback) { link ->
                     callback(
                         ExtractorLink(
-                            link.source ?: "DiziBal",
-                            "DiziBal - ${link.name}",
+                            link.source ?: "DiziBol",
+                            "DiziBol - ${link.name}",
                             link.url ?: "",
                             link.referer ?: mainUrl,
                             link.quality,
