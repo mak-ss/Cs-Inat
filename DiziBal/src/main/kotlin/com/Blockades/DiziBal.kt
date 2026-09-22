@@ -43,7 +43,7 @@ class DiziBal : MainAPI() {
                 res.document
             }
         } catch (e: Exception) {
-            Log.e(name, "safeGet hatası: ${e.message} ->$url")
+            Log.e(name, "safeGet hatası: ${e.message} -> $url")
             null
         }
     }
@@ -53,6 +53,24 @@ class DiziBal : MainAPI() {
                body.contains("_cf_chl_opt") || 
                body.contains("Just a moment") || 
                body.contains("Attention Required")
+    }
+
+    private fun Element.toCardSearchResponse(): SearchResponse? {
+        val href = this.attr("href")
+        if (href.isBlank()) return null
+        val fullUrl = fixUrl(href)
+
+        val title = this.selectFirst("h2, h3, .title, span")?.text()?.trim()
+            ?: this.attr("title").ifEmpty { this.text() }.trim()
+        if (title.isBlank()) return null
+
+        val posterUrl = this.selectFirst("img")?.let { img ->
+            img.attr("data-src").ifEmpty { img.attr("src") }
+        }?.let { fixUrl(it) }
+
+        return newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
+            this.posterUrl = posterUrl
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
@@ -96,10 +114,10 @@ class DiziBal : MainAPI() {
             val body = document.html()
 
             val type = when {
-                url.contains("/movie/")  || url.contains("/film/")   -> TvType.Movie
-                url.contains("/series/") || url.contains("/dizi/")   -> TvType.TvSeries
-                url.contains("/anime/")  -> TvType.Anime
-                else -> return null
+                url.contains("/movie/") || url.contains("/film/") -> TvType.Movie
+                url.contains("/series/") || url.contains("/dizi/") -> TvType.TvSeries
+                url.contains("/anime/") -> TvType.Anime
+                else -> TvType.TvSeries
             }
 
             val rawTitle = document.selectFirst("h1")?.text()?.trim()
@@ -126,12 +144,125 @@ class DiziBal : MainAPI() {
 
             val trailerUrl: String? = document.selectFirst("iframe[src*=youtube]")?.attr("src")
 
-            whenEklediğin C# / Kotlin `DiziBal.kt` eklenti kodunu ve `season.txt` HTML içeriğini inceledim. Video oynatılamamasının ve link çekilememesinin ana sebepleri şunlardır:
+            if (type == TvType.TvSeries || type == TvType.Anime) {
+                val episodes = mutableListOf<Episode>()
+                document.select("a[href*='/season/'][href*='/episode/']").forEach { ep ->
+                    val epUrl = fixUrl(ep.attr("href"))
+                    val epName = ep.text().trim()
+                    val sNum = Regex("""season/(\d+)""").find(epUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                    val eNum = Regex("""episode/(\d+)""").find(epUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
----
+                    episodes.add(
+                        newEpisode(epUrl) {
+                            this.name = if (epName.isNotBlank()) epName else "$eNum. Bölüm"
+                            this.season = sNum
+                            this.episode = eNum
+                        }
+                    )
+                }
 
-### 1. Temel Sorun: `loadLinks` Metodu Yanlış HTML Elementlerini/Özniteliklerini Seçiyor
+                newTvSeriesLoadResponse(title, url, type, episodes.distinctBy { it.data }) {
+                    this.posterUrl = poster
+                    this.plot = plot
+                    this.year = year
+                    this.rating = score?.times(1000)?.toInt()
+                    this.tags = tags
+                    addTrailer(trailerUrl)
+                }
+            } else {
+                newMovieLoadResponse(title, url, type, url) {
+                    this.posterUrl = poster
+                    this.plot = plot
+                    this.year = year
+                    this.rating = score?.times(1000)?.toInt()
+                    this.tags = tags
+                    addTrailer(trailerUrl)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(name, "load hatası: ${e.message}", e)
+            null
+        }
+    }
 
-Kotlin kodunda oyuncu kimliği (playerId) şu şekilde aranıyor:
-```kotlin
-val playerId = document.selectFirst("[data-pv]")?.attr("data-pv")
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        Log.d(name, "loadLinks URL: $data")
+
+        return try {
+            val document = safeGet(data) ?: return false
+            val body = document.html()
+            var linkFound = false
+
+            // 1. HTML5 Video / Source kontrolü
+            val directSrc = document.select("video source, video").mapNotNull { 
+                it.attr("src").ifEmpty { it.attr("data-src") } 
+            }
+
+            for (src in directSrc) {
+                if (src.isNotBlank() && src.startsWith("http")) {
+                    callback(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = src,
+                            type = if (src.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = data
+                            this.quality = Qualities.P1080.value
+                        }
+                    )
+                    linkFound = true
+                }
+            }
+
+            // 2. Sayfa içi iFrame kontrolü
+            document.select("iframe[src]").forEach { iframe ->
+                val iframeUrl = iframe.attr("src")
+                if (iframeUrl.isNotBlank() && !iframeUrl.contains("youtube") && !iframeUrl.contains("googletagmanager")) {
+                    val fullIframeUrl = fixUrl(iframeUrl)
+                    
+                    callback(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = fullIframeUrl,
+                            type = ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = data
+                            this.quality = Qualities.P1080.value
+                        }
+                    )
+                    linkFound = true
+                }
+            }
+
+            // 3. Regex ile .m3u8 ve .mp4 url taraması
+            val streamMatches = Regex("""(https?://[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*)""").findAll(body)
+            for (match in streamMatches) {
+                val streamUrl = match.groupValues[1].replace("\\/", "/")
+                callback(
+                    newExtractorLink(
+                        source = this.name,
+                        name = this.name,
+                        url = streamUrl,
+                        type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = data
+                        this.quality = Qualities.P1080.value
+                    }
+                )
+                linkFound = true
+            }
+
+            linkFound
+        } catch (e: Exception) {
+            Log.e(name, "loadLinks hatası: ${e.message}", e)
+            false
+        }
+    }
+}
