@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import okhttp3.Headers
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -37,19 +37,23 @@ class DiziBal : MainAPI() {
         "Sec-Fetch-User" to "?1"
     )
 
-    private suspend fun safeGet(url: String, referer: String = mainUrl): NiceResponse? {
+    private suspend fun safeGet(url: String, referer: String = mainUrl): Document? {
         return try {
             val res = app.get(url, headers = browserHeaders, referer = referer)
             Log.d(name, "HTTP ${res.code} -> $url")
-            res
+            if (isCloudflareChallenge(res.text)) {
+                Log.e(name, "safeGet: Cloudflare challenge algılandı -> $url")
+                null
+            } else {
+                res.document
+            }
         } catch (e: Exception) {
             Log.e(name, "safeGet hatası: ${e.message} -> $url")
             null
         }
     }
 
-    private fun isCloudflareChallenge(body: String, headers: Headers?): Boolean {
-        if (headers?.get("cf-mitigated") == "challenge") return true
+    private fun isCloudflareChallenge(body: String): Boolean {
         if (body.contains("challenges.cloudflare.com")) return true
         if (body.contains("_cf_chl_opt")) return true
         if (body.contains("Just a moment")) return true
@@ -62,15 +66,7 @@ class DiziBal : MainAPI() {
         Log.d(name, "getMainPage URL: $url")
 
         return try {
-            val response = safeGet(url) ?: return newHomePageResponse(emptyList())
-            val body = response.text
-
-            if (isCloudflareChallenge(body, response.headers)) {
-                Log.e(name, "getMainPage: Cloudflare challenge algılandı")
-                return newHomePageResponse(emptyList())
-            }
-
-            val document = response.document
+            val document = safeGet(url) ?: return newHomePageResponse(emptyList())
 
             val items: List<SearchResponse> = document
                 .select("a[href*='/series/'], a[href*='/movie/'], a[href*='/anime/']")
@@ -94,15 +90,9 @@ class DiziBal : MainAPI() {
         Log.d(name, "search URL: $url")
 
         return try {
-            val response = safeGet(url) ?: return emptyList()
-            val body = response.text
+            val document = safeGet(url) ?: return emptyList()
 
-            if (isCloudflareChallenge(body, response.headers)) {
-                Log.e(name, "search: Cloudflare challenge algılandı")
-                return emptyList()
-            }
-
-            response.document
+            document
                 .select("a[href*='/series/'], a[href*='/movie/'], a[href*='/anime/']")
                 .mapNotNull { element -> element.toCardSearchResponse() }
                 .distinctBy { searchResponse -> searchResponse.url }
@@ -118,15 +108,8 @@ class DiziBal : MainAPI() {
         Log.d(name, "load URL: $url")
 
         return try {
-            val response = safeGet(url) ?: return null
-            val body = response.text
-
-            if (isCloudflareChallenge(body, response.headers)) {
-                Log.e(name, "load: Cloudflare challenge algılandı")
-                return null
-            }
-
-            val document = response.document
+            val document = safeGet(url) ?: return null
+            val body = document.html()
 
             val type = when {
                 url.contains("/movie/")  -> TvType.Movie
@@ -194,25 +177,25 @@ class DiziBal : MainAPI() {
 
                     episodeLinks.forEach { epEl ->
                         val href = epEl.attr("href")
-                        if (href.isBlank()) return@forEach
+                        if (href.isNotBlank()) {
+                            val epUrl = if (href.startsWith("http")) href else "$mainUrl$href"
 
-                        val epUrl = if (href.startsWith("http")) href else "$mainUrl$href"
+                            val sNum = Regex("""/season/(\d+)""")
+                                .find(epUrl)?.groupValues?.get(1)?.toIntOrNull()
+                            val eNum = Regex("""/episode/(\d+)""")
+                                .find(epUrl)?.groupValues?.get(1)?.toIntOrNull()
 
-                        val sNum = Regex("""/season/(\d+)""")
-                            .find(epUrl)?.groupValues?.get(1)?.toIntOrNull()
-                        val eNum = Regex("""/episode/(\d+)""")
-                            .find(epUrl)?.groupValues?.get(1)?.toIntOrNull()
+                            val epName = epEl.selectFirst("p")?.text()?.trim()
+                                ?: epEl.text().trim().take(80)
 
-                        val epName = epEl.selectFirst("p")?.text()?.trim()
-                            ?: epEl.text().trim().take(80)
-
-                        episodes.add(
-                            newEpisode(epUrl) {
-                                this.name = epName
-                                this.season = sNum ?: currentSeason
-                                this.episode = eNum
-                            }
-                        )
+                            episodes.add(
+                                newEpisode(epUrl) {
+                                    this.name = epName
+                                    this.season = sNum ?: currentSeason
+                                    this.episode = eNum
+                                }
+                            )
+                        }
                     }
 
                     val uniqueEpisodes = episodes.distinctBy { ep -> ep.data }
@@ -244,15 +227,7 @@ class DiziBal : MainAPI() {
         Log.d(name, "loadLinks URL: $data")
 
         return try {
-            val response = safeGet(data) ?: return false
-            val body = response.text
-
-            if (isCloudflareChallenge(body, response.headers)) {
-                Log.e(name, "loadLinks: Cloudflare challenge algılandı")
-                return false
-            }
-
-            val document = response.document
+            val document = safeGet(data) ?: return false
 
             val playerId = document.selectFirst("[data-pv]")?.attr("data-pv")
             if (playerId.isNullOrEmpty()) {
