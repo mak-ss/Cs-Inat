@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import okhttp3.Headers
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -26,8 +27,8 @@ class DiziBal : MainAPI() {
     )
 
     // Cloudflare tespit yardımcıları
-    private fun isCloudflareChallenge(body: String, headers: Map<String, List<String>>): Boolean {
-        if (headers["cf-mitigated"]?.firstOrNull() == "challenge") return true
+    private fun isCloudflareChallenge(body: String, headers: Headers?): Boolean {
+        if (headers?.get("cf-mitigated") == "challenge") return true
         if (body.contains("challenges.cloudflare.com")) return true
         if (body.contains("_cf_chl_opt")) return true
         if (body.contains("cf-challenge")) return true
@@ -153,7 +154,6 @@ class DiziBal : MainAPI() {
                 else -> {
                     val episodes = mutableListOf<Episode>()
 
-                    // Bölüm linklerini topla - birden fazla olası seçici dene
                     val episodeElements = document.select("div#bolumler a.group").ifEmpty {
                         document.select("a[href*='/bolum/']").ifEmpty {
                             document.select("a.group[href*='bolum']")
@@ -216,7 +216,6 @@ class DiziBal : MainAPI() {
 
             val document = response.document
 
-            // data-pv attribute'una sahip elementi bul - birden fazla varyant dene
             val playerElement = document.selectFirst("[data-pv]")
                 ?: document.selectFirst("[data-player]")
                 ?: document.selectFirst("[data-video]")
@@ -230,7 +229,6 @@ class DiziBal : MainAPI() {
             if (playerId.isNullOrEmpty()) {
                 Log.e(name, "loadLinks: Player ID bulunamadı")
 
-                // Alternatif: doğrudan iframe veya video kaynağı ara
                 val directIframe = document.selectFirst("iframe[src]")
                 if (directIframe != null) {
                     val iframeUrl = directIframe.attr("src")
@@ -254,7 +252,6 @@ class DiziBal : MainAPI() {
 
             Log.d(name, "loadLinks: Player ID: $playerId")
 
-            // Player ID ile embed URL oluştur - olası domainleri dene
             val possibleEmbedUrls = listOf(
                 "https://pilavyerplay.top/embed/$playerId",
                 "https://pilavyerplay.top/player/$playerId",
@@ -274,7 +271,6 @@ class DiziBal : MainAPI() {
 
                     val embedDoc = embedResponse.document
 
-                    // Doğrudan video kaynağı
                     val streamUrl = embedDoc.selectFirst("video source")?.attr("src")
                         ?: embedDoc.selectFirst("video")?.attr("src")
                         ?: embedDoc.selectFirst("source[src]")?.attr("src")
@@ -295,7 +291,6 @@ class DiziBal : MainAPI() {
                         return true
                     }
 
-                    // iframe ara
                     val iframe = embedDoc.selectFirst("iframe[src]")
                     if (iframe != null) {
                         val iframeUrl = iframe.attr("src")
@@ -316,7 +311,6 @@ class DiziBal : MainAPI() {
                         }
                     }
 
-                    // JavaScript içinden m3u8/mp4 URL ara
                     val jsUrlRegex = Regex("""(https?://[^\s"']+\.(?:m3u8|mp4)[^\s"']*)""")
                     val jsMatch = jsUrlRegex.find(embedBody)
                     if (jsMatch != null) {
