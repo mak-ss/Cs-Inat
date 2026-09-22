@@ -9,7 +9,7 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import org.json.JSONObject
 import java.net.URLEncoder
 
-class DiziBal : MainAPI() {
+class DiziBol : MainAPI() {
     override var mainUrl = "https://dizibol.org"
     override var name = "DiziBol"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
