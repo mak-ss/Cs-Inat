@@ -20,106 +20,113 @@ class DiziBal : MainAPI() {
     override val supportedTypes       = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
     override val mainPage = mainPageOf(
-        "$mainUrl/filmler" to "Filmler",
         "$mainUrl/diziler" to "Diziler",
+        "$mainUrl/filmler" to "Filmler",
         "$mainUrl/animes" to "Animeler"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) request.data else "${request.data}?page=$page"
-        Log.d(name, "getMainPage: $url")
-        val document = app.get(url).document
+        Log.d(name, "getMainPage URL: $url")
 
-        val items = document.select("a.group.block").mapNotNull { it.toSearchResponse() }
-        val hasNext = document.select("a[rel=next]").isNotEmpty()
+        return try {
+            val document = app.get(url).document
+            // Ana sayfa ve liste sayfalarındaki tüm kartlar a.group.block yapısında
+            val items = document.select("a.group.block").mapNotNull { it.toSearchResponse() }
+            Log.d(name, "getMainPage: ${items.size} öğe bulundu")
 
-        return newHomePageResponse(request.name, items, hasNext)
+            newHomePageResponse(request.name, items)
+        } catch (e: Exception) {
+            Log.e(name, "getMainPage hatası: ${e.message}", e)
+            null
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$mainUrl/ara?q=$encodedQuery"
-        Log.d(name, "search: $url")
-        val document = app.get(url).document
+        Log.d(name, "search URL: $url")
 
-        // Arama sonuçları "Filmler" ve "Diziler" olarak gruplanmış.
-        // Tüm sonuçları tek listede topluyoruz.
-        return document.select("a.group.block").mapNotNull { it.toSearchResponse() }
+        return try {
+            val document = app.get(url).document
+            // Arama sonuç sayfasındaki tüm kartlar a.group.block yapısında
+            val items = document.select("a.group.block").mapNotNull { it.toSearchResponse() }
+            Log.d(name, "search: ${items.size} sonuç bulundu")
+            items
+        } catch (e: Exception) {
+            Log.e(name, "search hatası: ${e.message}", e)
+            emptyList()
+        }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        Log.d(name, "load: $url")
-        val document = app.get(url).document
+        Log.d(name, "load URL: $url")
 
-        // URL'den türü belirle
-        val type = when {
-            url.contains("/movie/") -> TvType.Movie
-            url.contains("/series/") -> TvType.TvSeries
-            url.contains("/anime/") -> TvType.Anime
-            else -> return null
-        }
+        return try {
+            val document = app.get(url).document
 
-        val title = document.selectFirst("h1.font-display")?.text()?.trim() ?: return null
-        val poster = document.selectFirst("div.aspect-\\[2\\/3\\] img")?.attr("src")
-        val plot = document.selectFirst("p.whitespace-pre-line")?.text()?.trim()
-        val year = document.selectFirst("div:contains(Yapım Yılı) dd")?.text()?.trim()?.toIntOrNull()
-        val tags = document.select("div.flex.flex-wrap.gap-2 a.rounded-badge").map { it.text().trim() }
-
-        val score = document.selectFirst("div:contains(IMDB Puanı) dd")?.text()
-            ?.replace("★", "")?.trim()?.toDoubleOrNull()
-
-        val trailer = document.selectFirst("button:contains(Fragmanı İzle)")?.let { button ->
-            // Fragman butonuna tıklandığında açılan YouTube linkini bulmak için
-            // sayfada bir iframe veya data attribute aramamız gerekebilir.
-            // Şimdilik null bırakıyoruz.
-            null
-        }
-
-        val actors = document.select("section#cast-heading + div a.group").mapNotNull {
-            val name = it.selectFirst("p.text-\\[13px\\]")?.text()?.trim() ?: return@mapNotNull null
-            val image = it.selectFirst("img")?.attr("src")
-            Actor(name, image)
-        }
-
-        return if (type == TvType.Movie) {
-            val streamUrl = url // Filmler için doğrudan sayfa URL'sini kullanacağız.
-            newMovieLoadResponse(title, url, type, streamUrl) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-                this.score = score?.let { Score.from10(it.toString()) }
-                addActors(actors)
-                addTrailer(trailer)
+            // Türü URL'den belirle
+            val type = when {
+                url.contains("/movie/") -> TvType.Movie
+                url.contains("/series/") -> TvType.TvSeries
+                url.contains("/anime/") -> TvType.Anime
+                else -> return null
             }
-        } else {
-            // Dizi veya Anime
-            val episodes = mutableListOf<Episode>()
 
-            // Sezonları bul
-            val seasons = document.select("div#bolumler a[href*='?sezon=']").map { it.attr("href") }
+            // Başlık
+            val title = document.selectFirst("h1.font-display")?.text()?.trim()
+                ?: return null
 
-            // Eğer sezon linki yoksa, doğrudan bölümleri al (tek sezonlu yapımlar için)
-            if (seasons.isEmpty()) {
-                document.select("div#bolumler a.group").forEach { epElement ->
-                    val epUrl = epElement.attr("href")
-                    val epName = epElement.selectFirst("p.text-sm")?.text()?.trim()
-                    val epInfo = epElement.selectFirst("p.text-xs")?.text()?.trim() // "1. Sezon 1. Bölüm"
-                    val (seasonNum, episodeNum) = parseEpisodeInfo(epInfo)
+            // Poster
+            val poster = document.selectFirst("div.aspect-\\[2\\/3\\] img")?.attr("src")
 
-                    episodes.add(newEpisode(epUrl) {
-                        this.name = epName
-                        this.season = seasonNum
-                        this.episode = episodeNum
-                    })
+            // Özet
+            val plot = document.selectFirst("p.whitespace-pre-line")?.text()?.trim()
+
+            // Yıl - "Yapım Yılı" satırındaki dd elementinden
+            val year = document.select("div:contains(Yapım Yılı) dd")
+                .firstOrNull()?.text()?.trim()?.toIntOrNull()
+
+            // Puan - "IMDB Puanı" satırındaki dd elementinden
+            val score = document.select("div:contains(IMDB Puanı) dd")
+                .firstOrNull()?.text()?.replace("★", "")?.trim()?.toDoubleOrNull()
+
+            // Etiketler (Türler)
+            val tags = document.select("div.flex.flex-wrap.gap-2 a.rounded-badge")
+                .map { it.text().trim() }
+
+            // Oyuncular
+            val actors = document.select("section#cast-heading + div a.group").mapNotNull {
+                val name = it.selectFirst("p.text-\\[13px\\]")?.text()?.trim() ?: return@mapNotNull null
+                val image = it.selectFirst("img")?.attr("src")
+                Actor(name, image)
+            }
+
+            // Fragman - YouTube embed URL'si sayfada bir yerde olabilir
+            val trailer = document.selectFirst("iframe[src*=youtube]")?.attr("src")
+
+            when (type) {
+                TvType.Movie -> {
+                    // Film için stream URL'si, film sayfasının kendisidir.
+                    // loadLinks içinde data-pv aranacak.
+                    newMovieLoadResponse(title, url, type, url) {
+                        this.posterUrl = poster
+                        this.plot = plot
+                        this.year = year
+                        this.tags = tags
+                        this.score = score?.let { Score.from10(it.toString()) }
+                        addActors(actors)
+                        if (trailer != null) addTrailer(trailer)
+                    }
                 }
-            } else {
-                // Her sezon için bölümleri çek
-                for (seasonUrl in seasons) {
-                    val seasonDoc = app.get(seasonUrl).document
-                    seasonDoc.select("div#bolumler a.group").forEach { epElement ->
+                else -> {
+                    // Dizi veya Anime - bölümleri topla
+                    val episodes = mutableListOf<Episode>()
+
+                    // Sayfadaki tüm bölüm linklerini al
+                    document.select("div#bolumler a.group").forEach { epElement ->
                         val epUrl = epElement.attr("href")
                         val epName = epElement.selectFirst("p.text-sm")?.text()?.trim()
                         val epInfo = epElement.selectFirst("p.text-xs")?.text()?.trim()
@@ -131,18 +138,23 @@ class DiziBal : MainAPI() {
                             this.episode = episodeNum
                         })
                     }
+
+                    Log.d(name, "load: ${episodes.size} bölüm bulundu")
+
+                    newTvSeriesLoadResponse(title, url, type, episodes) {
+                        this.posterUrl = poster
+                        this.plot = plot
+                        this.year = year
+                        this.tags = tags
+                        this.score = score?.let { Score.from10(it.toString()) }
+                        addActors(actors)
+                        if (trailer != null) addTrailer(trailer)
+                    }
                 }
             }
-
-            newTvSeriesLoadResponse(title, url, type, episodes) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-                this.score = score?.let { Score.from10(it.toString()) }
-                addActors(actors)
-                addTrailer(trailer)
-            }
+        } catch (e: Exception) {
+            Log.e(name, "load hatası: ${e.message}", e)
+            null
         }
     }
 
@@ -152,48 +164,75 @@ class DiziBal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(name, "loadLinks: $data")
-        val document = app.get(data).document
+        Log.d(name, "loadLinks URL: $data")
 
-        // data-pv attribute'una sahip elementi bul
-        val playerElement = document.selectFirst("[data-pv]")
-        val playerId = playerElement?.attr("data-pv")
+        return try {
+            val document = app.get(data).document
 
-        if (playerId.isNullOrEmpty()) {
-            Log.e(name, "Player ID bulunamadı.")
-            return false
-        }
+            // data-pv attribute'una sahip elementi bul
+            val playerElement = document.selectFirst("[data-pv]")
+            val playerId = playerElement?.attr("data-pv")
 
-        // Burada pilavyerplay.top domain'ine bir istek atıp gerçek stream URL'sini almamız gerekiyor.
-        // Ancak bu, sitenin kendi oynatıcısının nasıl çalıştığına bağlı.
-        // Şimdilik, doğrudan bir embed linki oluşturmayı deneyelim.
-        // Bu kısım, sitenin gerçek oynatıcı yapısına göre uyarlanmalıdır.
-        // Örnek olarak, playerId'yi kullanarak bir embed URL'si oluşturuyoruz.
-        // Bu kısım muhtemelen çalışmayacaktır ve sitenin gerçek player API'sini
-        // incelemek gerekecektir.
+            if (playerId.isNullOrEmpty()) {
+                Log.e(name, "Player ID bulunamadı.")
+                return false
+            }
 
-        // Geçici olarak, sayfadaki iframe'i arayalım.
-        val iframe = document.selectFirst("iframe")
-        if (iframe != null) {
-            val iframeUrl = iframe.attr("src")
-            if (iframeUrl.isNotEmpty()) {
+            Log.d(name, "Player ID: $playerId")
+
+            // pilavyerplay.top adresinden stream URL'sini al
+            // Bu kısım sitenin gerçek player API'sine göre uyarlanmalı.
+            // Şimdilik, player ID'sini kullanarak bir embed URL'si oluşturuyoruz.
+            val embedUrl = "https://pilavyerplay.top/embed/$playerId"
+
+            Log.d(name, "Embed URL: $embedUrl")
+
+            // Embed sayfasını çek ve gerçek stream URL'sini bul
+            val embedDoc = app.get(embedUrl, referer = data).document
+            val streamUrl = embedDoc.selectFirst("video source")?.attr("src")
+                ?: embedDoc.selectFirst("video")?.attr("src")
+
+            if (!streamUrl.isNullOrEmpty()) {
                 callback(
                     newExtractorLink(
                         source = this.name,
                         name = this.name,
-                        url = iframeUrl,
-                        type = ExtractorLinkType.VIDEO
+                        url = streamUrl,
+                        type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     ) {
-                        this.referer = data
+                        this.referer = embedUrl
                         this.quality = Qualities.P1080.value
                     }
                 )
                 return true
             }
-        }
 
-        Log.e(name, "Oynatıcı linki bulunamadı.")
-        return false
+            // Eğer doğrudan video elementi yoksa, iframe ara
+            val iframe = embedDoc.selectFirst("iframe")
+            if (iframe != null) {
+                val iframeUrl = iframe.attr("src")
+                if (iframeUrl.isNotEmpty()) {
+                    callback(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = iframeUrl,
+                            type = ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = embedUrl
+                            this.quality = Qualities.P1080.value
+                        }
+                    )
+                    return true
+                }
+            }
+
+            Log.e(name, "Stream URL'si bulunamadı.")
+            false
+        } catch (e: Exception) {
+            Log.e(name, "loadLinks hatası: ${e.message}", e)
+            false
+        }
     }
 
     private fun Element.toSearchResponse(): SearchResponse? {
