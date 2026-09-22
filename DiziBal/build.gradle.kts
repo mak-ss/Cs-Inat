@@ -13,7 +13,7 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
     **/
-    status  = 0 // will be 3 if unspecified
+    status  = 1
     tvTypes = listOf("Movie", "TvSeries", "Anime")
     iconUrl = "https://www.google.com/s2/favicons?domain=dizibal.org&sz=128"
 }
