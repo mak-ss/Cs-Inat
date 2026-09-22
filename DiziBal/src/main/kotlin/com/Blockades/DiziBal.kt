@@ -4,7 +4,6 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
-import com.lagradost.cloudstream3.utils.Response
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -39,7 +38,8 @@ class DiziBal : MainAPI() {
         "Sec-Fetch-User" to "?1"
     )
 
-    private suspend fun safeGet(url: String, referer: String = mainUrl): Response? {
+    // Response yerine NiceResponse kullanıldı
+    private suspend fun safeGet(url: String, referer: String = mainUrl): NiceResponse? {
         return try {
             val res = app.get(url, headers = browserHeaders, referer = referer)
             Log.d(name, "HTTP ${res.code} -> $url")
@@ -177,7 +177,7 @@ class DiziBal : MainAPI() {
                         this.year = year
                         this.tags = tags
                         this.score = score?.let { s -> Score.from10(s.toString()) }
-                        addActors(actors)
+                        this.actors = actors
                         if (trailerUrl != null) addTrailer(trailerUrl)
                     }
                 }
@@ -226,7 +226,7 @@ class DiziBal : MainAPI() {
                         this.year = year
                         this.tags = tags
                         this.score = score?.let { s -> Score.from10(s.toString()) }
-                        addActors(actors)
+                        this.actors = actors
                         if (trailerUrl != null) addTrailer(trailerUrl)
                     }
                 }
