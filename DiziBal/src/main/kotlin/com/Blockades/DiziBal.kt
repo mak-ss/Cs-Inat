@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -231,9 +232,8 @@ class DiziBal : MainAPI() {
                         Log.e(name, "Player iframe ayrıştırma hatası: ${e.message}")
                     }
                 } else if (!iframeUrl.contains("youtube") && !iframeUrl.contains("googletagmanager")) {
-                    // Genel Extractor desteği (varsa sistemdeki varsayılan extractor'ları çağırır)
-                    loadExtractor(iframeUrl, data, subtitleCallback, callback)
-                    linkFound = true
+                    val extracted = loadExtractor(iframeUrl, data, subtitleCallback, callback)
+                    if (extracted) linkFound = true
                 }
             }
 
