@@ -198,17 +198,53 @@ class DiziBal : MainAPI() {
             val body = document.html()
             var linkFound = false
 
-            // 1. HTML5 Video / Source kontrolü
-            val directSrc = document.select("video source, video").mapNotNull { 
-                it.attr("src").ifEmpty { it.attr("data-src") } 
+            // 1. Pilavyer & Diğer iframe Kaynaklarını Çözümleme
+            val iframeElements = document.select("iframe[src]")
+            for (iframe in iframeElements) {
+                val iframeUrl = fixUrl(iframe.attr("src"))
+                
+                if (iframeUrl.contains("pilavyerplay") || iframeUrl.contains("play2.pilavyerplay")) {
+                    try {
+                        val playerRes = app.get(iframeUrl, headers = mapOf(
+                            "User-Agent" to browserHeaders["User-Agent"]!!,
+                            "Referer" to data
+                        )).text
+
+                        // Embed JS içerisinden m3u8 linkini çekme
+                        val m3u8Matches = Regex("""(https?://[^\s"'\\]+\.m3u8[^\s"'\\]*)""").findAll(playerRes)
+                        for (match in m3u8Matches) {
+                            val streamUrl = match.groupValues[1].replace("\\/", "/")
+                            callback(
+                                newExtractorLink(
+                                    source = name,
+                                    name = "$name - Player",
+                                    url = streamUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = iframeUrl
+                                    this.quality = Qualities.P1080.value
+                                }
+                            )
+                            linkFound = true
+                        }
+                    } catch (e: Exception) {
+                        Log.e(name, "Player iframe ayrıştırma hatası: ${e.message}")
+                    }
+                } else if (!iframeUrl.contains("youtube") && !iframeUrl.contains("googletagmanager")) {
+                    // Genel Extractor desteği (varsa sistemdeki varsayılan extractor'ları çağırır)
+                    loadExtractor(iframeUrl, data, subtitleCallback, callback)
+                    linkFound = true
+                }
             }
 
-            for (src in directSrc) {
+            // 2. Doğrudan HTML5 Video / Source kontrolü
+            document.select("video source, video").forEach { element ->
+                val src = element.attr("src").ifEmpty { element.attr("data-src") }
                 if (src.isNotBlank() && src.startsWith("http")) {
                     callback(
                         newExtractorLink(
-                            source = this.name,
-                            name = this.name,
+                            source = name,
+                            name = name,
                             url = src,
                             type = if (src.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) {
@@ -220,18 +256,17 @@ class DiziBal : MainAPI() {
                 }
             }
 
-            // 2. Sayfa içi iFrame kontrolü
-            document.select("iframe[src]").forEach { iframe ->
-                val iframeUrl = iframe.attr("src")
-                if (iframeUrl.isNotBlank() && !iframeUrl.contains("youtube") && !iframeUrl.contains("googletagmanager")) {
-                    val fullIframeUrl = fixUrl(iframeUrl)
-                    
+            // 3. Sayfa içi doğrudan M3U8 Regex Taraması
+            val streamMatches = Regex("""(https?://[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*)""").findAll(body)
+            for (match in streamMatches) {
+                val streamUrl = match.groupValues[1].replace("\\/", "/")
+                if (!streamUrl.contains("favicon")) {
                     callback(
                         newExtractorLink(
-                            source = this.name,
-                            name = this.name,
-                            url = fullIframeUrl,
-                            type = ExtractorLinkType.VIDEO
+                            source = name,
+                            name = name,
+                            url = streamUrl,
+                            type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) {
                             this.referer = data
                             this.quality = Qualities.P1080.value
@@ -239,24 +274,6 @@ class DiziBal : MainAPI() {
                     )
                     linkFound = true
                 }
-            }
-
-            // 3. Regex ile .m3u8 ve .mp4 url taraması
-            val streamMatches = Regex("""(https?://[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*)""").findAll(body)
-            for (match in streamMatches) {
-                val streamUrl = match.groupValues[1].replace("\\/", "/")
-                callback(
-                    newExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = streamUrl,
-                        type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = data
-                        this.quality = Qualities.P1080.value
-                    }
-                )
-                linkFound = true
             }
 
             linkFound
