@@ -1,4 +1,3 @@
-
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 version = 1
 
@@ -16,5 +15,5 @@ cloudstream {
     **/
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("Anime", "AnimeMovie")
-    iconUrl = https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://ww1.henaojara.net/&size=128"
+    iconUrl = "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://ww1.henaojara.net/&size=128"
 }
