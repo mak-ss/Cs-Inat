@@ -19,6 +19,8 @@ class AnimeWorld : MainAPI() {
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.Anime)
 
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
     override val mainPage = mainPageOf(
         "${mainUrl}/updated" to "Nuovi Episodi",
         "${mainUrl}/animes" to "Anime",
@@ -28,7 +30,7 @@ class AnimeWorld : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page == 1) request.data else "${request.data}?page=$page"
-        val document = app.get(url).document
+        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val home = document.select("div.film-list div.item").mapNotNull { it.toMainPageResult() }
 
         return newHomePageResponse(request.name, home, hasNext = true)
@@ -54,7 +56,8 @@ class AnimeWorld : MainAPI() {
             "${mainUrl}/filter?sort=0&keyword=${query}&page=$page"
         }
 
-        val results = app.get(url).document.select("div.film-list div.item")
+        val results = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
+            .select("div.film-list div.item")
             .mapNotNull { it.toMainPageResult() }
 
         return newSearchResponseList(results, hasNext = true)
@@ -63,20 +66,21 @@ class AnimeWorld : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val res = app.get(url)
+        val res = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val document = res.document
         val realUrl = res.url
 
-        val title = document.selectFirst("h2.title")?.text()?.trim() ?: document.selectFirst("h1.title")?.text()?.trim() ?: return null
+        val title = document.selectFirst("h2.title")?.text()?.trim() 
+            ?: document.selectFirst("h1.title")?.text()?.trim() 
+            ?: return null
         val poster = fixUrlNull(document.selectFirst("div.thumb img")?.attr("src"))
         val year = document.select("dl.meta dd")
             .firstOrNull { it.text().contains("20") || it.text().contains("19") }?.text()?.trim()
             ?.takeLast(4)?.toIntOrNull()
         val tags = document.select("dl.meta dd a[href*=/genre/]").map { it.text() }
         val rating = document.selectFirst("span#average-vote")?.text()?.trim()?.toDoubleOrNull()
-        val duration =
-            document.select("dl.meta dd").firstOrNull { it.text().contains("min/ep") }?.text()
-                ?.trim()?.split(" ")?.firstOrNull()?.toIntOrNull()
+        val duration = document.select("dl.meta dd").firstOrNull { it.text().contains("min/ep") }
+            ?.text()?.trim()?.split(" ")?.firstOrNull()?.toIntOrNull()
         val plot = document.selectFirst("div.desc")?.text()?.trim()
         val status = when (document.select("dl.meta dd a[href*=/status/]").text().trim()) {
             "Finito" -> ShowStatus.Completed
@@ -121,26 +125,67 @@ class AnimeWorld : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("AnimeWorld", "loadLinks data = $data")
+        Log.d("AnimeWorld", "loadLinks URL = $data")
 
-        val epDoc = app.get(data).document
+        val epDoc = app.get(data, headers = mapOf("User-Agent" to userAgent)).document
+        var foundLinks = false
+
+        // 1. data-id ile API üzerinden Grabber linki çek
         val epId = epDoc.selectFirst("ul.episodes li.episode a.active")?.attr("data-id")
             ?: epDoc.selectFirst("ul.episodes li.episode a")?.attr("data-id")
-            ?: data.substringAfterLast("/")
 
-        val response = app.get("${mainUrl}/api/episode/info?id=$epId&alt=0").parsedSafe<EpisodeInfo>()
-            ?: return false
+        if (!epId.isNullOrEmpty()) {
+            val apiUrl = "${mainUrl}/api/episode/info?id=$epId&alt=0"
+            val headers = mapOf(
+                "User-Agent" to userAgent,
+                "Referer" to data,
+                "X-Requested-With" to "XMLHttpRequest"
+            )
 
-        val grabberUrl = response.grabber
-        if (!grabberUrl.isNullOrEmpty()) {
-            loadExtractor(grabberUrl, data, subtitleCallback, callback)
-            return true
+            try {
+                val response = app.get(apiUrl, headers = headers).parsedSafe<EpisodeInfo>()
+                val grabberUrl = response?.grabber
+
+                if (!grabberUrl.isNullOrEmpty()) {
+                    if (grabberUrl.contains(".mp4") || grabberUrl.contains(".m3u8")) {
+                        callback(
+                            newExtractorLink(
+                                source = name,
+                                name = name,
+                                url = grabberUrl,
+                                type = if (grabberUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            )
+                        )
+                        foundLinks = true
+                    } else {
+                        loadExtractor(grabberUrl, data, subtitleCallback, callback)
+                        foundLinks = true
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("AnimeWorld", "API isteği başarısız: ${e.message}")
+            }
         }
 
-        return false
+        // 2. Eğer API'den link gelmediyse Sayfadaki Iframe ve Player Linklerini tara (Fallback)
+        if (!foundLinks) {
+            val iframeSrc = fixUrlNull(epDoc.selectFirst("iframe#player-embed, iframe#player, div#player iframe")?.attr("src"))
+            if (!iframeSrc.isNullOrEmpty()) {
+                loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                foundLinks = true
+            } else {
+                val downloadLink = fixUrlNull(epDoc.selectFirst("a#download-link, a.download-link")?.attr("href"))
+                if (!downloadLink.isNullOrEmpty()) {
+                    loadExtractor(downloadLink, data, subtitleCallback, callback)
+                    foundLinks = true
+                }
+            }
+        }
+
+        return foundLinks
     }
 
     data class EpisodeInfo(
-        @JsonProperty("grabber") val grabber: String?
+        @JsonProperty("grabber") val grabber: String? = null
     )
 }
