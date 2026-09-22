@@ -13,6 +13,12 @@ class BirAsyaDizi : MainAPI() {
     override val hasQuickSearch       = false
     override val supportedTypes       = setOf(TvType.AsianDrama)
 
+    // Bot korumasını aşmak için varsayılan header tanımı
+    override val headers = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer" to "$mainUrl/"
+    )
+
     override val mainPage = mainPageOf(
         "${mainUrl}/diziler/aile-dizi/"                 to "Aile dizi",
         "${mainUrl}/diziler/aksiyon-dizi/"              to "Aksiyon Dizi",
@@ -70,14 +76,18 @@ class BirAsyaDizi : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("${request.data}page/$page/").document
-        val home     = document.select("div.frag-k.yedi.yan").mapNotNull { it.toMainPageResult() }
+        val document = app.get("${request.data}page/$page/", headers = headers).document
+        val home     = document.select("div.frag-k").mapNotNull { it.toMainPageResult() }
 
-        return newHomePageResponse(request.name, home)
+        // hasNext = home.isNotEmpty() eklenerek sonsuz kaydırma sağlandı
+        return newHomePageResponse(
+            list = HomePageList(request.name, home),
+            hasNext = home.isNotEmpty()
+        )
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
-        val title     = this.selectFirst("a")?.attr("title") ?: return null
+        val title     = this.selectFirst("a")?.attr("title")?.ifEmpty { null } ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val img       = this.selectFirst("img")
         val posterUrl = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
@@ -86,13 +96,12 @@ class BirAsyaDizi : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("${mainUrl}/?s=${query}").document
-
+        val document = app.get("${mainUrl}/?s=${query}", headers = headers).document
         return document.select("div.frag-k").mapNotNull { it.toSearchResult() }
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title     = this.selectFirst("a")?.attr("title") ?: return null
+        val title     = this.selectFirst("a")?.attr("title")?.ifEmpty { null } ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val img       = this.selectFirst("img")
         val posterUrl = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
@@ -103,7 +112,7 @@ class BirAsyaDizi : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        val document = app.get(url, headers = headers).document
 
         val title = document.selectFirst("div.tab-icerik img")?.attr("title") ?: return null
         val img = document.selectFirst("div.tab-icerik img")
@@ -164,10 +173,9 @@ class BirAsyaDizi : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(data).document
+        val document = app.get(data, headers = headers).document
         val iframe = document.selectFirst("iframe") ?: return false
 
-        // vdo-src yoksa src veya data-src attribute'una bak
         val iframeVid = fixUrlNull(
             iframe.attr("vdo-src").ifEmpty { 
                 iframe.attr("src").ifEmpty { 
