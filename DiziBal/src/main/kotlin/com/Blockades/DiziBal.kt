@@ -10,9 +10,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import java.net.URLDecoder
 import java.net.URLEncoder
 
 class DiziBal : MainAPI() {
@@ -45,9 +43,11 @@ class DiziBal : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         return try {
             val url = request.data + page
+            Log.d(name, "getMainPage: $url")
             val response = app.get(url)
             val res = response.parsedSafe<WListResponse>()
             if (res == null) {
+                Log.e(name, "getMainPage: yanıt parse edilemedi")
                 newHomePageResponse(emptyList())
             } else {
                 val items = res.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
@@ -55,54 +55,81 @@ class DiziBal : MainAPI() {
                 newHomePageResponse(request.name, items, hasNext)
             }
         } catch (e: Exception) {
+            Log.e(name, "getMainPage hatası: ${e.message}", e)
             newHomePageResponse(emptyList())
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val moviesUrl = "$apiUrl/movies?search=$encodedQuery&page=1&limit=20"
-        val seriesUrl = "$apiUrl/series?search=$encodedQuery&page=1&limit=20"
-        val animeUrl = "$apiUrl/anime?search=$encodedQuery&page=1&limit=20"
+        return try {
+            val encodedQuery = URLEncoder.encode(query, "UTF-8")
+            val moviesUrl = "$apiUrl/movies?search=$encodedQuery&page=1&limit=20"
+            val seriesUrl = "$apiUrl/series?search=$encodedQuery&page=1&limit=20"
+            val animeUrl = "$apiUrl/anime?search=$encodedQuery&page=1&limit=20"
 
-        val movies = app.get(moviesUrl).parsedSafe<WListResponse>()?.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-        val series = app.get(seriesUrl).parsedSafe<WListResponse>()?.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
-        val animes = app.get(animeUrl).parsedSafe<WListResponse>()?.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            Log.d(name, "search: $query")
+            val movies = app.get(moviesUrl).parsedSafe<WListResponse>()?.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            val series = app.get(seriesUrl).parsedSafe<WListResponse>()?.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
+            val animes = app.get(animeUrl).parsedSafe<WListResponse>()?.data?.mapNotNull { it.toSearchResponse() } ?: emptyList()
 
-        return movies + series + animes
+            (movies + series + animes).distinctBy { it.url }
+        } catch (e: Exception) {
+            Log.e(name, "search hatası: ${e.message}", e)
+            emptyList()
+        }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
         return try {
+            Log.d(name, "load çağrıldı: $url")
             val parts = url.split("||")
-            if (parts.size < 2) throw Exception("Bozuk URL")
+            if (parts.size < 2) throw Exception("Bozuk URL: $url")
 
             val typeStr = parts[0]
             val slug = parts[1]
             val dbId = if (parts.size > 2) parts[2] else ""
 
-            val isSeries = typeStr.contains(TvType.TvSeries.name) || (typeStr.contains(TvType.Anime.name) && dbId.isNotEmpty())
+            val isSeries = typeStr.contains(TvType.TvSeries.name) ||
+                    (typeStr.contains(TvType.Anime.name) && dbId.isNotEmpty())
 
             val detailUrl = if (isSeries) "$apiUrl/series/$slug" else "$apiUrl/movies/$slug"
+            Log.d(name, "load: detailUrl=$detailUrl, isSeries=$isSeries")
 
-            val res = app.get(detailUrl).parsedSafe<WDetailResponse>()?.data ?: throw Exception("Boş yanıt geldi")
+            val res = app.get(detailUrl).parsedSafe<WDetailResponse>()?.data
+                ?: throw Exception("Boş yanıt geldi: $detailUrl")
 
-            val titleStr = res.title_tr ?: res.title_en ?: res.title ?: res.name_tr ?: res.name_en ?: res.name ?: throw Exception("Başlık bulunamadı")
-            val posterStr = res.poster_url ?: res.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" } ?: res.backdrop_url ?: res.backdrop_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+            val titleStr = res.title_tr ?: res.title_en ?: res.title
+            ?: res.name_tr ?: res.name_en ?: res.name
+            ?: throw Exception("Başlık bulunamadı")
+
+            val posterStr = res.poster_url
+                ?: res.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+                ?: res.backdrop_url
+                ?: res.backdrop_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+
             val descStr = res.overview_tr ?: res.overview_en ?: res.overview
-            val yearInt = res.release_date?.substringBefore("-")?.toIntOrNull() ?: res.first_air_date?.substringBefore("-")?.toIntOrNull()
+            val yearInt = res.release_date?.substringBefore("-")?.toIntOrNull()
+                ?: res.first_air_date?.substringBefore("-")?.toIntOrNull()
             val ratingDbl = res.vote_average
             val tagsList = res.genres?.mapNotNull { it.name }
 
             if (isSeries) {
                 val episodes = mutableListOf<Episode>()
                 val fetchDbId = res._id ?: dbId
+                Log.d(name, "load: dizi bölümleri alınıyor, fetchDbId=$fetchDbId")
+
                 res.seasons?.forEach { season ->
                     val sNum = season.season_number ?: return@forEach
                     val seasonUrl = "$apiUrl/series/$slug/seasons/$sNum"
-                    val seasonData = app.get(seasonUrl).parsedSafe<WSeasonResponse>()?.data ?: return@forEach
+                    Log.d(name, "load: sezon URL=$seasonUrl")
+
+                    val seasonData = app.get(seasonUrl).parsedSafe<WSeasonResponse>()?.data
+                    if (seasonData == null) {
+                        Log.e(name, "load: sezon verisi alınamadı: $seasonUrl")
+                        return@forEach
+                    }
 
                     seasonData.episodes?.forEach { ep ->
                         val eNum = ep.episode_number ?: return@forEach
@@ -118,18 +145,21 @@ class DiziBal : MainAPI() {
                     }
                 }
 
+                Log.d(name, "load: toplam ${episodes.size} bölüm eklendi")
+
                 newTvSeriesLoadResponse(titleStr, url, TvType.TvSeries, episodes) {
                     this.posterUrl = posterStr
                     this.plot = descStr
                     this.year = yearInt
                     this.tags = tagsList
                     if (ratingDbl != null && ratingDbl > 0) {
-                        try { this.score = Score.from10(ratingDbl.toString()) } catch (e: Exception) {}
+                        try { this.score = Score.from10(ratingDbl.toString()) } catch (_: Exception) {}
                     }
                 }
             } else {
                 val streamUrl = res.streamUrl
                 val sourceUrl = if (!streamUrl.isNullOrEmpty()) streamUrl else url
+                Log.d(name, "load: film streamUrl=$sourceUrl")
 
                 newMovieLoadResponse(titleStr, url, TvType.Movie, sourceUrl) {
                     this.posterUrl = posterStr
@@ -137,11 +167,12 @@ class DiziBal : MainAPI() {
                     this.year = yearInt
                     this.tags = tagsList
                     if (ratingDbl != null && ratingDbl > 0) {
-                        try { this.score = Score.from10(ratingDbl.toString()) } catch (e: Exception) {}
+                        try { this.score = Score.from10(ratingDbl.toString()) } catch (_: Exception) {}
                     }
                 }
             }
         } catch (e: Exception) {
+            Log.e(name, "load hatası: ${e.message}", e)
             null
         }
     }
@@ -156,95 +187,101 @@ class DiziBal : MainAPI() {
             var streamUrl = data
             Log.d(name, "loadLinks başladı, data: $data")
 
+            // Dizi bölümü ise önce gerçek stream URL'sini al
             if (data.startsWith("$apiUrl/series/")) {
                 Log.d(name, "Dizi bölümü stream URL'si alınıyor: $data")
                 val res = app.get(data).parsedSafe<WStreamResponse>()?.data
-                streamUrl = res?.streamUrl ?: throw Exception("Gerekli veri bulunamadı")
+                streamUrl = res?.streamUrl ?: throw Exception("Stream verisi bulunamadı")
                 Log.d(name, "Alınan streamUrl: $streamUrl")
             }
 
-            if (streamUrl.contains("/embed-")) {
-                Log.d(name, "Embed URL tespit edildi: $streamUrl")
-                val embedRes = app.get(streamUrl, referer = apiUrl)
-                val html = embedRes.text
-                val fetchPath = Regex("""fetch\(['"](/dl\?op=get_stream.*?)['"]\)""").find(html)?.groupValues?.get(1)
-                Log.d(name, "fetchPath: $fetchPath")
-
-                if (fetchPath != null) {
-                    val host = streamUrl.substringBefore("/embed-")
-                    val jsonUrl = "$host$fetchPath"
-                    val fileId = Regex("""cookie\('file_id',\s*'(\d+)'""").find(html)?.groupValues?.get(1)
-                    Log.d(name, "fileId: $fileId, jsonUrl: $jsonUrl")
-
-                    val customCookies = mutableMapOf<String, String>()
-                    if (fileId != null) customCookies["file_id"] = fileId
-                    customCookies["aff"] = "1"
-                    customCookies["ref_url"] = "dizibal.com"
-
-                    val headers = mapOf(
-                        "Accept" to "application/json, text/plain, */*",
-                        "Accept-Language" to "en-US,en;q=0.9",
-                        "Sec-Fetch-Dest" to "empty",
-                        "Sec-Fetch-Mode" to "cors",
-                        "Sec-Fetch-Site" to "same-origin",
-                        "X-Requested-With" to "XMLHttpRequest"
-                    )
-                    val streamRes = app.get(jsonUrl, referer = streamUrl, headers = headers, cookies = customCookies)
-                    Log.d(name, "JSON yanıtı alındı, uzunluk: ${streamRes.text.length}")
-
-                    val urlToStream = Regex(""""url":"([^"]+)"""").find(streamRes.text)?.groupValues?.get(1)?.replace("\\/", "/")
-                    Log.d(name, "urlToStream: $urlToStream")
-
-                    if (urlToStream != null && urlToStream.isNotBlank()) {
-                        callback(
-                            newExtractorLink(
-                                source = "DiziBal",
-                                name = "DiziBal HD",
-                                url = urlToStream,
-                                type = if(urlToStream.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            ) {
-                                this.quality = Qualities.P1080.value
-                                this.referer = streamUrl
-                            }
-                        )
-                        Log.d(name, "Extractor link eklendi")
-
-                        val subs = Regex(""""subtitle":"([^"]+)"""").find(html)?.groupValues?.get(1)
-                        if (subs != null) {
-                            subs.split(",").forEach { subEntry ->
-                                val subParts = subEntry.split("]")
-                                if (subParts.size > 1) {
-                                    val lang = subParts[0].replace("[", "").trim()
-                                    val subUrlPart = subParts[1].trim()
-                                    val subUrl = if (subUrlPart.startsWith("http")) subUrlPart else host + subUrlPart
-                                    subtitleCallback(SubtitleFile(lang, subUrl))
-                                    Log.d(name, "Altyazı eklendi: $lang -> $subUrl")
-                                }
-                            }
-                        }
-                    } else {
-                        Log.d(name, "urlToStream bulunamadı veya boş")
-                    }
-                } else {
-                    Log.d(name, "fetchPath bulunamadı")
-                }
-
-                loadExtractor(streamUrl, subtitleCallback, callback)
-                Log.d(name, "loadExtractor tamamlandı")
-                true
-            } else {
-                Log.d(name, "streamUrl embed içermiyor: $streamUrl")
-                throw Exception("Gerekli veri bulunamadı")
+            if (!streamUrl.contains("/embed-")) {
+                Log.e(name, "streamUrl embed içermiyor: $streamUrl")
+                return false
             }
+
+            Log.d(name, "Embed URL tespit edildi: $streamUrl")
+            val embedRes = app.get(streamUrl, referer = apiUrl)
+            val html = embedRes.text
+
+            val fetchPath = Regex("""fetch\(['"](/dl\?op=get_stream.*?)['"]\)""")
+                .find(html)?.groupValues?.get(1)
+            Log.d(name, "fetchPath: $fetchPath")
+
+            if (fetchPath == null) {
+                Log.e(name, "fetchPath bulunamadı")
+                return false
+            }
+
+            val host = streamUrl.substringBefore("/embed-")
+            val jsonUrl = "$host$fetchPath"
+            val fileId = Regex("""cookie\('file_id',\s*'(\d+)'""")
+                .find(html)?.groupValues?.get(1)
+            Log.d(name, "fileId: $fileId, jsonUrl: $jsonUrl")
+
+            val customCookies = mutableMapOf<String, String>()
+            if (fileId != null) customCookies["file_id"] = fileId
+            customCookies["aff"] = "1"
+            customCookies["ref_url"] = "dizibal.com"
+
+            val headers = mapOf(
+                "Accept" to "application/json, text/plain, */*",
+                "Accept-Language" to "en-US,en;q=0.9",
+                "Sec-Fetch-Dest" to "empty",
+                "Sec-Fetch-Mode" to "cors",
+                "Sec-Fetch-Site" to "same-origin",
+                "X-Requested-With" to "XMLHttpRequest"
+            )
+
+            val streamRes = app.get(jsonUrl, referer = streamUrl, headers = headers, cookies = customCookies)
+            Log.d(name, "JSON yanıtı alındı, uzunluk: ${streamRes.text.length}")
+
+            val urlToStream = Regex(""""url":"([^"]+)"""")
+                .find(streamRes.text)?.groupValues?.get(1)?.replace("\\/", "/")
+            Log.d(name, "urlToStream: $urlToStream")
+
+            if (urlToStream.isNullOrBlank()) {
+                Log.e(name, "urlToStream bulunamadı veya boş")
+                return false
+            }
+
+            callback(
+                newExtractorLink(
+                    source = "DiziBal",
+                    name = "DiziBal HD",
+                    url = urlToStream,
+                    type = if (urlToStream.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                ) {
+                    this.quality = Qualities.P1080.value
+                    this.referer = streamUrl
+                }
+            )
+            Log.d(name, "Extractor link eklendi")
+
+            // Altyazıları ayrıştır
+            val subs = Regex(""""subtitle":"([^"]+)"""").find(html)?.groupValues?.get(1)
+            if (!subs.isNullOrBlank()) {
+                // Örnek format: [tr]https://.../[en]https://...
+                val subRegex = Regex("""\[([^\]]+)\]([^\[]+)""")
+                subRegex.findAll(subs).forEach { match ->
+                    val lang = match.groupValues[1].trim()
+                    val subUrlPart = match.groupValues[2].trim()
+                    val subUrl = if (subUrlPart.startsWith("http")) subUrlPart else host + subUrlPart
+                    subtitleCallback(SubtitleFile(lang, subUrl))
+                    Log.d(name, "Altyazı eklendi: $lang -> $subUrl")
+                }
+            }
+
+            true
         } catch (e: Exception) {
-            Log.e(name, "loadLinks hatası: ${e.message}")
-            e.printStackTrace()
+            Log.e(name, "loadLinks hatası: ${e.message}", e)
             false
         }
     }
 
     private fun WItem.toSearchResponse(): SearchResponse? {
-        val titleStr = this.title_tr ?: this.title_en ?: this.title ?: this.name_tr ?: this.name_en ?: this.name ?: return null
+        val titleStr = this.title_tr ?: this.title_en ?: this.title
+        ?: this.name_tr ?: this.name_en ?: this.name ?: return null
         val posterStr = this.poster_url ?: this.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
         val slugStr = this.slug ?: return null
         val dbId = this._id ?: ""
@@ -265,6 +302,8 @@ class DiziBal : MainAPI() {
             this.posterUrl = posterStr
         }
     }
+
+    // ---------- Veri Modelleri ----------
 
     data class WListResponse(
         @JsonProperty("success") val success: Boolean?,
