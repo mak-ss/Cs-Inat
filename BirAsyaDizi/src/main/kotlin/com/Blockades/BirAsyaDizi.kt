@@ -13,7 +13,6 @@ class BirAsyaDizi : MainAPI() {
     override val hasQuickSearch       = false
     override val supportedTypes       = setOf(TvType.AsianDrama)
 
-    // Bot korumasını aşmak için varsayılan header tanımı
     override val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer" to "$mainUrl/"
@@ -79,11 +78,7 @@ class BirAsyaDizi : MainAPI() {
         val document = app.get("${request.data}page/$page/", headers = headers).document
         val home     = document.select("div.frag-k").mapNotNull { it.toMainPageResult() }
 
-        // hasNext = home.isNotEmpty() eklenerek sonsuz kaydırma sağlandı
-        return newHomePageResponse(
-            list = HomePageList(request.name, home),
-            hasNext = home.isNotEmpty()
-        )
+        return newHomePageResponse(request.name, home, home.isNotEmpty())
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
