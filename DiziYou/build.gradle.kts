@@ -1,0 +1,20 @@
+
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+version = 1
+
+cloudstream {
+    authors     = listOf("Blockades")
+    language    = "tr"
+    description = "Diziyou en kaliteli Türkçe dublaj ve altyazılı yabancı dizi izleme sitesidir. Güncel ve efsanevi dizileri 1080p Full HD kalitede izlemek için hemen tıkla!"
+
+    /**
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+    **/
+    status  = 1 // will be 3 if unspecified
+    tvTypes = listOf("TvSeries")
+    iconUrl = "https://cdn.diziyou.one/wp-content/uploads/2020/04/diziyou-favicon.png"
+}
