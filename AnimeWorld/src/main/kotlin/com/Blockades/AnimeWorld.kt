@@ -12,13 +12,12 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import org.jsoup.nodes.Document
 
 class AnimeWorld : MainAPI() {
-    override var mainUrl = "https://animeworld.ac"
+    override var mainUrl = "https://www.animeworld.ac"
     override var name = "AnimeWorld"
     override val hasMainPage = true
     override var lang = "it"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.Anime)
-    //Movie, AnimeMovie, TvSeries, Cartoon, Anime, OVA, Torrent, Documentary, AsianDrama, Live, NSFW, Others, Music, AudioBook, CustomMedia, Audio, Podcast,
 
     override val mainPage = mainPageOf(
         "${mainUrl}/updated" to "Nuovi Episodi",
@@ -42,7 +41,7 @@ class AnimeWorld : MainAPI() {
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
         val isDub = this.selectFirst("div.status div.dub") != null
 
-        return newAnimeSearchResponse(title, href, TvType.AnimeMovie) {
+        return newAnimeSearchResponse(title, href, TvType.Anime) {
             this.posterUrl = posterUrl
             addDubStatus(isDub)
         }
@@ -64,10 +63,11 @@ class AnimeWorld : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val realUrl = app.get(url, allowRedirects = false).headers["Location"] ?: return null
-        val document = app.get(realUrl).document
+        val res = app.get(url)
+        val document = res.document
+        val realUrl = res.url
 
-        val title = document.selectFirst("h2.title")?.text()?.trim() ?: return null
+        val title = document.selectFirst("h2.title")?.text()?.trim() ?: document.selectFirst("h1.title")?.text()?.trim() ?: return null
         val poster = fixUrlNull(document.selectFirst("div.thumb img")?.attr("src"))
         val year = document.select("dl.meta dd")
             .firstOrNull { it.text().contains("20") || it.text().contains("19") }?.text()?.trim()
@@ -85,9 +85,9 @@ class AnimeWorld : MainAPI() {
         }
 
         val episodes = document.select("ul.episodes li.episode a").mapNotNull {
-            val epId = it.attr("data-id") ?: return@mapNotNull null
-            val epNum = it.attr("data-episode-num").toIntOrNull() ?: return@mapNotNull null
-            newEpisode(epId) {
+            val epHref = fixUrlNull(it.attr("href")) ?: return@mapNotNull null
+            val epNum = it.attr("data-episode-num").toIntOrNull() ?: it.text().trim().toIntOrNull()
+            newEpisode(epHref) {
                 this.episode = epNum
             }
         }
@@ -121,28 +121,26 @@ class AnimeWorld : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("Ayzen_$name", "data = $data")
+        Log.d("AnimeWorld", "loadLinks data = $data")
 
-        val realData =
-            app.get(data, allowRedirects = false).headers["Location"]?.substringAfterLast("/")
-                ?: return false
-        val response =
-            app.get("${mainUrl}/api/episode/info?id=$realData&alt=0").parsedSafe<EpisodeInfo>()
-                ?: return false
+        val epDoc = app.get(data).document
+        val epId = epDoc.selectFirst("ul.episodes li.episode a.active")?.attr("data-id")
+            ?: epDoc.selectFirst("ul.episodes li.episode a")?.attr("data-id")
+            ?: data.substringAfterLast("/")
 
-        callback(
-            newExtractorLink(
-                source = name,
-                name = name,
-                url = response.grabber,
-                type = ExtractorLinkType.VIDEO
-            )
-        )
+        val response = app.get("${mainUrl}/api/episode/info?id=$epId&alt=0").parsedSafe<EpisodeInfo>()
+            ?: return false
 
-        return true
+        val grabberUrl = response.grabber
+        if (!grabberUrl.isNullOrEmpty()) {
+            loadExtractor(grabberUrl, data, subtitleCallback, callback)
+            return true
+        }
+
+        return false
     }
 
     data class EpisodeInfo(
-        @JsonProperty("grabber") val grabber: String
+        @JsonProperty("grabber") val grabber: String?
     )
 }
