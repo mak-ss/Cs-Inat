@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 @CloudstreamPlugin
 class DizipalPlugin : BasePlugin() {
     override fun load() {
-        registerMainAPI(Dizipal())
+        // 'Dizipal()' yerine 'DiziPal()' yazılmalıdır
+        registerMainAPI(DiziPal()) 
     }
 }
