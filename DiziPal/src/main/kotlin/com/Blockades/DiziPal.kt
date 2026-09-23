@@ -1,4 +1,4 @@
-package com.lagradost.cloudstream3.providers
+package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -18,6 +18,13 @@ class DizipalProvider : MainAPI() {
     override var lang = "tr"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Anime)
+
+    private fun getBrowserHeaders(referer: String): Map<String, String> {
+        return mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer" to referer
+        )
+    }
 
     private val defaultHeaders: Map<String, String>
         get() = mapOf(
