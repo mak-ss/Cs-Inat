@@ -33,23 +33,23 @@ class DiziPal : MainAPI() {
             return newHomePageResponse(allPages)
         }
 
-        // 1. Trend Diziler / Filmler
-        val trendCards = doc.select("a.trend-card")
-        val trendItems = trendCards.mapNotNull { parseCard(it) }.distinctBy { it.url }
-        if (trendItems.isNotEmpty()) {
-            allPages.add(HomePageList("Trendler", trendItems))
+        // Sayfadaki bölümleri tara
+        val sections = doc.select("section")
+        for (sec in sections) {
+            val titleEl = sec.selectFirst("h2, h3, .section-title, .homepage-section-title") ?: continue
+            val rawTitle = titleEl.text().trim()
+            if (rawTitle.isBlank()) continue
+
+            val cards = sec.select("a[href*='/filmler/'], a[href*='/film/'], a[href*='/diziler/'], a[href*='/dizi/'], a[href*='/anime/']")
+            val items = cards.mapNotNull { parseCard(it) }.distinctBy { it.url }
+
+            if (items.isNotEmpty()) {
+                allPages.add(HomePageList(rawTitle, items))
+            }
         }
 
-        // 2. Son Eklenen İçerikler (Homepage Grid)
-        val gridCards = doc.select("a.homepage-card, div.homepage-grid a")
-        val gridItems = gridCards.mapNotNull { parseCard(it) }.distinctBy { it.url }
-        if (gridItems.isNotEmpty()) {
-            allPages.add(HomePageList("Son Eklenenler", gridItems))
-        }
-
-        // 3. Genel Bölüm Taraması (Yedek Seçici)
         if (allPages.isEmpty()) {
-            val generalCards = doc.select("a[href*='/film/'], a[href*='/filmler/'], a[href*='/dizi/'], a[href*='/diziler/'], a[href*='/anime/']")
+            val generalCards = doc.select("a[href*='/filmler/'], a[href*='/film/'], a[href*='/diziler/'], a[href*='/dizi/'], a[href*='/anime/']")
             val items = generalCards.mapNotNull { parseCard(it) }.distinctBy { it.url }
             if (items.isNotEmpty()) {
                 allPages.add(HomePageList("Öne Çıkanlar", items))
@@ -71,7 +71,7 @@ class DiziPal : MainAPI() {
             return emptyList()
         }
 
-        val cards = doc.select("a.homepage-card, a.trend-card, a[href*='/dizi/'], a[href*='/film/'], a[href*='/anime/']")
+        val cards = doc.select("a[href*='/filmler/'], a[href*='/film/'], a[href*='/diziler/'], a[href*='/dizi/'], a[href*='/anime/']")
         return cards.mapNotNull { parseCard(it) }.distinctBy { it.url }
     }
 
@@ -87,8 +87,7 @@ class DiziPal : MainAPI() {
         val title = cleanTitle(rawTitle)
 
         val poster = doc.selectFirst("meta[property='og:image']")?.attr("content")
-            ?: doc.selectFirst("img[src*='image.tmdb.org']")?.attr("src")
-            ?: doc.selectFirst("img[data-src*='image.tmdb.org']")?.attr("data-src")
+            ?: doc.selectFirst("img.watch-mini-hero-poster, img[src*='/storage/posters/']")?.attr("src")
             ?: doc.selectFirst("img")?.attr("src")
 
         val plot = doc.selectFirst("meta[name='description']")?.attr("content")?.trim()
@@ -96,11 +95,11 @@ class DiziPal : MainAPI() {
 
         val year = Regex("""(20\d\d|19\d\d)""").find(doc.text())?.groupValues?.get(1)?.toIntOrNull()
 
-        val tags = doc.select("a[href*='/kategori/'], a[href*='/tur/']").mapNotNull {
+        val tags = doc.select("a[href*='/tur/'], a[href*='/kategori/']").mapNotNull {
             it.text().trim().takeIf { t -> t.isNotBlank() }
         }.distinct()
 
-        val ratingText = doc.selectFirst(".grid-card-rating, .meta-rating, span:contains(.)")?.text()
+        val ratingText = doc.selectFirst(".watch-mini-hero-rating, span:contains(.)")?.text()
         val score = ratingText?.let {
             Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
         }
@@ -126,41 +125,71 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // Dizi / Anime Detayları ve Bölüm Ayıklama
+        // Dizi / Anime Detayları
         val episodes = mutableListOf<Episode>()
-        val epLinks = doc.select("a[href*='/sezon/'], a[href*='/bolum/'], a.episode-row-home, div[class*='episode'] a")
 
-        if (epLinks.isNotEmpty()) {
-            for (card in epLinks) {
-                val epHref = fixUrl(card.attr("href"))
-                val epImg = card.selectFirst("img")?.let { 
-                    it.attr("src").ifEmpty { it.attr("data-src") } 
-                }?.let { fixUrl(it) }
+        // 1. DOM Üzerinden Bölüm Bağlantılarını Çekme
+        val epLinks = doc.select("div.watch-episodes-list a, a[href*='/bolum/'], a[href*='/episode/'], div[class*='episode'] a")
 
-                // URL Kalıbı: /dizi/ornek-dizi/1-sezon/3-bolum
-                val sNum = Regex("""(\d+)-sezon""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: Regex("""(?:sezon|season)[/-](\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: 1
+        for (card in epLinks) {
+            val epHref = fixUrl(card.attr("href"))
+            val epImg = card.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
 
-                val epNum = Regex("""(\d+)-bolum""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: Regex("""(?:bolum|episode)[/-](\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: 1
+            val sNum = Regex("""(\d+)-sezon""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
+                ?: Regex("""(?:sezon|season)[/-](\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
+                ?: 1
 
-                val epNameText = card.selectFirst("h3, .title, .episode-row-title, span")?.text()?.trim()
-                val epName = if (!epNameText.isNullOrBlank() && !epNameText.equals(title, ignoreCase = true)) {
-                    "$epNum. Bölüm - $epNameText"
-                } else {
-                    "$sNum. Sezon $epNum. Bölüm"
-                }
+            val epNum = Regex("""(\d+)-bolum""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
+                ?: Regex("""(?:bolum|episode)[/-](\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
+                ?: 1
 
-                episodes.add(newEpisode(epHref) {
-                    this.name = epName
-                    this.season = sNum
-                    this.episode = epNum
-                    this.posterUrl = epImg ?: poster?.let { fixUrl(it) }
-                })
+            val epNameText = card.selectFirst(".watch-episode-title-text, h3, .title")?.text()?.trim()
+            val epName = if (!epNameText.isNullOrBlank()) {
+                "$epNum. Bölüm - $epNameText"
+            } else {
+                "$sNum. Sezon $epNum. Bölüm"
             }
-        } else {
+
+            episodes.add(newEpisode(epHref) {
+                this.name = epName
+                this.season = sNum
+                this.episode = epNum
+                this.posterUrl = epImg ?: poster?.let { fixUrl(it) }
+            })
+        }
+
+        // 2. window.episodesData İçindeki JSON Verisinden Bölüm Çıkarma
+        val scriptContent = doc.select("script").html()
+        if (scriptContent.contains("window.episodesData")) {
+            val jsonMatch = Regex("""window\.episodesData\s*=\s*(\{.*?\});""").find(scriptContent)
+            if (jsonMatch != null) {
+                val jsonStr = jsonMatch.groupValues[1]
+                val seasonRegex = Regex(""""(\d+)":\s*\{([^}]+)\}""")
+                val epRegex = Regex(""""(\d+)":\s*\{"title":"([^"]*)","iframe_url":"([^"]*)","iframe_url_encrypted":"([^"]*)"""")
+
+                for (sMatch in seasonRegex.findAll(jsonStr)) {
+                    val sNum = sMatch.groupValues[1].toIntOrNull() ?: 1
+                    val seasonBody = sMatch.groupValues[2]
+
+                    for (eMatch in epRegex.findAll(seasonBody)) {
+                        val eNum = eMatch.groupValues[1].toIntOrNull() ?: 1
+                        val epTitle = eMatch.groupValues[2].ifBlank { "S${sNum}E${eNum}" }
+                        val epUrl = "$mainUrl/dizi/3/$sNum-sezon/$eNum-bolum"
+
+                        if (episodes.none { it.season == sNum && it.episode == eNum }) {
+                            episodes.add(newEpisode(epUrl) {
+                                this.name = "$eNum. Bölüm - $epTitle"
+                                this.season = sNum
+                                this.episode = eNum
+                                this.posterUrl = poster?.let { fixUrl(it) }
+                            })
+                        }
+                    }
+                }
+            }
+        }
+
+        if (episodes.isEmpty()) {
             episodes.add(newEpisode(url) {
                 this.name = "$title - 1. Bölüm"
                 this.season = 1
@@ -169,9 +198,9 @@ class DiziPal : MainAPI() {
             })
         }
 
-        val type = if (url.contains("/anime")) TvType.Anime else TvType.TvSeries
+        val type = if (url.contains("/anime/")) TvType.Anime else TvType.TvSeries
 
-        return newTvSeriesLoadResponse(title, url, type, episodes.distinctBy { it.data }) {
+        return newTvSeriesLoadResponse(title, url, type, episodes.distinctBy { "${it.season}-${it.episode}" }) {
             this.posterUrl = poster?.let { fixUrl(it) }
             this.plot = plot
             this.year = year
@@ -197,7 +226,35 @@ class DiziPal : MainAPI() {
         var found = false
         val pageHtml = watchPage.html()
 
-        // 1. M3U8 Regex Taraması
+        // 1. data-src ve src İçindeki Embed/Iframe Linklerini Yakalama
+        val iframeElements = watchPage.select("iframe[src], iframe[data-src]")
+        for (el in iframeElements) {
+            val rawSrc = el.attr("data-src").ifEmpty { el.attr("src") }
+            if (rawSrc.isBlank()) continue
+
+            val fullIframeUrl = fixUrl(rawSrc)
+            if (fullIframeUrl.contains("youtube.com") || fullIframeUrl.contains("google")) continue
+
+            if (loadExtractor(fullIframeUrl, data, subtitleCallback) { link ->
+                callback(
+                    ExtractorLink(
+                        link.source ?: "DiziPal",
+                        "DiziPal - ${link.name}",
+                        link.url ?: "",
+                        link.referer ?: mainUrl,
+                        link.quality,
+                        link.headers ?: emptyMap(),
+                        link.extractorData,
+                        link.type,
+                        link.audioTracks ?: emptyList()
+                    )
+                )
+            }) {
+                found = true
+            }
+        }
+
+        // 2. M3U8 Regex Taraması
         val m3u8Matches = Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").findAll(pageHtml)
         for (match in m3u8Matches) {
             val streamUrl = match.groupValues[1]
@@ -220,34 +277,6 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // 2. Iframe ve Oynatıcı Taraması
-        val iframes = watchPage.select("iframe[src], iframe[data-src]").map {
-            it.attr("src").ifEmpty { it.attr("data-src") }
-        }
-
-        for (iframe in iframes) {
-            val fullIframe = fixUrl(iframe)
-            if (fullIframe.isBlank() || fullIframe.contains("youtube.com") || fullIframe.contains("google")) continue
-
-            if (loadExtractor(fullIframe, data, subtitleCallback) { link ->
-                callback(
-                    ExtractorLink(
-                        link.source ?: "DiziPal",
-                        "DiziPal - ${link.name}",
-                        link.url ?: "",
-                        link.referer ?: mainUrl,
-                        link.quality,
-                        link.headers ?: emptyMap(),
-                        link.extractorData,
-                        link.type,
-                        link.audioTracks ?: emptyList()
-                    )
-                )
-            }) {
-                found = true
-            }
-        }
-
         return found
     }
 
@@ -256,31 +285,32 @@ class DiziPal : MainAPI() {
     private fun parseCard(element: Element): SearchResponse? {
         val anchor = if (element.tagName() == "a") element else element.selectFirst("a") ?: return null
         val href = anchor.attr("href")
-        if (href.isBlank() || href == "#" || href.contains("/account/") || href.contains("/platform/")) return null
+        if (href.isBlank() || href == "#" || href.contains("/kayit") || href.contains("/giris") || href.contains("/account/")) return null
 
         val img = element.selectFirst("img")
-        val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+        val poster = img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            ?: img?.attr("srcset")?.split(",")?.firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+            ?: img?.attr("data-src")?.takeIf { it.isNotBlank() }
 
-        val title = element.selectFirst("h3, .trend-card-title, .homepage-card-title")?.text()?.trim()
+        val title = element.selectFirst("h3, .trend-card-title, .similar-card-title")?.text()?.trim()
             ?: img?.attr("alt")?.trim()
             ?: anchor.text().trim()
 
         val cleanName = cleanTitle(title)
         if (cleanName.isBlank()) return null
 
-        val scoreText = element.selectFirst(".grid-card-rating, .meta-rating, span:contains(.)")?.text()
+        val scoreText = element.selectFirst(".grid-card-rating, span:contains(.)")?.text()
         val cardScore = scoreText?.let {
             Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
         }
 
         val fullUrl = fixUrl(href)
         return when {
-            fullUrl.contains("/film/") || fullUrl.contains("/filmler/") -> newMovieSearchResponse(cleanName, fullUrl, TvType.Movie) {
+            fullUrl.contains("/filmler/") || fullUrl.contains("/film/") -> newMovieSearchResponse(cleanName, fullUrl, TvType.Movie) {
                 this.posterUrl = poster?.let { fixUrl(it) }
                 if (cardScore != null) this.score = Score.from10(cardScore)
             }
-            fullUrl.contains("/anime") -> newTvSeriesSearchResponse(cleanName, fullUrl, TvType.Anime) {
+            fullUrl.contains("/anime/") -> newTvSeriesSearchResponse(cleanName, fullUrl, TvType.Anime) {
                 this.posterUrl = poster?.let { fixUrl(it) }
                 if (cardScore != null) this.score = Score.from10(cardScore)
             }
@@ -292,7 +322,7 @@ class DiziPal : MainAPI() {
     }
 
     private fun cleanTitle(raw: String): String {
-        return raw.replace(Regex("(?i)\\s*(?:dizi|film|anime)\\s*izle"), "")
+        return raw.replace(Regex("(?i)\\s*(?:dizi|film|anime)?\\s*izle"), "")
             .replace(Regex("(?i)\\s*izle.*"), "")
             .trim()
     }
