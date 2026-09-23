@@ -1,272 +1,167 @@
-package com.Blockades
+// ! Bu araç CloudStream eklentisi için güncellenmiştir.
+package com.mebularts
 
+import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.loadExtractor
-import org.json.JSONObject
-import java.net.URLEncoder
+import com.lagradost.cloudstream3.network.CloudflareKiller
+import com.lagradost.cloudstream3.utils.*
+import okhttp3.Interceptor
+import okhttp3.Response
+import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 
 class DiziPal : MainAPI() {
-    override var mainUrl = "https://dizipal6.top"
-    override var name = "DiziPal"
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
-    override var lang = "tr"
-    override val hasMainPage = true
+    override var mainUrl              = "https://dizipal10.com.tr"
+    override var name                 = "DiziPal"
+    override val hasMainPage          = true
+    override var lang                 = "tr"
+    override val hasQuickSearch       = true
+    override val hasChromecastSupport = true
+    override val hasDownloadSupport   = true
+    override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    companion object {
-        private const val DEFAULT_PLAYER_BASE = "https://play2.pilavyerplay.top"
+    // Cloudflare Bypass
+    override var sequentialMainPage = true
+    private val cloudflareKiller by lazy { CloudflareKiller() }
+    private val interceptor      by lazy { CloudflareInterceptor(cloudflareKiller) }
 
-        private val defaultHeaders = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            "Referer" to "https://dizipal6.top/"
-        )
+    class CloudflareInterceptor(private val cloudflareKiller: CloudflareKiller) : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val req = chain.request()
+            val res = chain.proceed(req)
+            val body = res.peekBody(1024 * 1024).string()
+            val doc  = runCatching { Jsoup.parse(body) }.getOrNull()
+            val title = doc?.selectFirst("title")?.text()?.trim().orEmpty()
+            return if (title.equals("Just a moment...", true) || title.contains("Bir dakika", true)) {
+                cloudflareKiller.intercept(chain)
+            } else res
+        }
     }
 
-    // ── Main Page ───────────────────────────────────────────────────────
+    /* -------------------- MainPage -------------------- */
+
+    override val mainPage = mainPageOf(
+        "$mainUrl/diziler" to "Son Eklenen Diziler",
+        "$mainUrl/filmler" to "Son Eklenen Filmler",
+        "$mainUrl/animeler" to "Animeler"
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val allPages = mutableListOf<HomePageList>()
+        val url = if (page > 1) "${request.data}?page=$page" else request.data
+        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
 
-        val doc = try {
-            app.get(mainUrl, headers = defaultHeaders).document
-        } catch (_: Exception) {
-            return newHomePageResponse(allPages)
-        }
+        val cards = mutableListOf<SearchResponse>()
 
-        // Parse each section with an h2 heading and a row of content cards
-        val sections = doc.select("section, div.container-site > div")
-        for (sec in sections) {
-            // Ignore hero slider / carousel section
-            if (sec.hasClass("group/slider") ||
-                sec.attr("role") == "region" ||
-                sec.attr("aria-roledescription") == "kaydırıcı" ||
-                sec.attr("aria-label").contains("Öne çıkan", ignoreCase = true) ||
-                sec.selectFirst("[aria-roledescription='kaydırıcı'], .group\\/slider") != null) {
-                continue
-            }
+        // Yeni DiziPal HTML kart yapıları (homepage-card, trend-card, grid-card)
+        val items = doc.select("a.homepage-card, a.trend-card, a.grid-card, article a[href]")
+            .distinctBy { it.attr("href") }
 
-            // Real content sections use h2.section-title
-            val titleEl = sec.selectFirst("h2.section-title, h2") ?: continue
-            if (titleEl.hasClass("text-display-sm") || titleEl.hasClass("sr-only")) continue
-            val rawTitle = titleEl.text().trim()
-            if (rawTitle.isBlank() || rawTitle.equals("DiziPal", ignoreCase = true)) continue
+        items.forEach { a ->
+            val href = normalizeHref(a.attr("href")) ?: return@forEach
+            if (!href.contains("/dizi/") && !href.contains("/film/") && !href.contains("/anime/")) return@forEach
 
-            val cards = sec.select("a[href*='/series/'], a[href*='/movie/'], a[href*='/anime/'], a[href*='/dizi/'], a[href*='/film/']")
-            val items = cards.mapNotNull { a ->
-                val href = a.attr("href")
-                if (href.isBlank() || href.contains("/season/") || href.contains("/episode/")) return@mapNotNull null
-
-                val img = a.selectFirst("img")
-                val poster = img?.attr("src")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("srcset")?.split(" ")?.firstOrNull()?.takeIf { it.isNotBlank() }
-
-                val rawName = img?.attr("alt")?.takeIf { it.isNotBlank() }
-                    ?: a.selectFirst("p.font-semibold, h3, h4")?.text()
-                    ?: a.text()
-
-                val title = cleanTitle(rawName)
-                if (title.isBlank()) return@mapNotNull null
-
-                val ratingRaw = a.selectFirst(".badge-rating, [class*='badge-rating']")?.text()?.trim()
-                val cardScore = ratingRaw?.let {
-                    Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
-                }
-
-                val fullUrl = fixUrl(href)
-                when {
-                    fullUrl.contains("/movie/") || fullUrl.contains("/film/") -> newMovieSearchResponse(title, fullUrl, TvType.Movie) {
-                        this.posterUrl = poster?.let { fixUrl(it) }
-                        if (cardScore != null) this.score = Score.from10(cardScore)
-                    }
-                    fullUrl.contains("/anime/") -> newTvSeriesSearchResponse(title, fullUrl, TvType.Anime) {
-                        this.posterUrl = poster?.let { fixUrl(it) }
-                        if (cardScore != null) this.score = Score.from10(cardScore)
-                    }
-                    else -> newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
-                        this.posterUrl = poster?.let { fixUrl(it) }
-                        if (cardScore != null) this.score = Score.from10(cardScore)
-                    }
-                }
-            }.distinctBy { it.url }
-
-            if (items.isNotEmpty()) {
-                allPages.add(HomePageList(rawTitle, items))
-            }
-        }
-
-        return newHomePageResponse(allPages)
-    }
-
-    // ── Search ──────────────────────────────────────────────────────────
-
-    override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/ara?q=${URLEncoder.encode(query.trim(), "UTF-8")}"
-
-        val doc = try {
-            app.get(searchUrl, headers = defaultHeaders).document
-        } catch (_: Exception) {
-            return emptyList()
-        }
-
-        val cards = doc.select("a[href*='/movie/'], a[href*='/series/'], a[href*='/anime/'], a[href*='/dizi/'], a[href*='/film/']")
-
-        return cards.mapNotNull { a ->
-            val href = a.attr("href")
-            if (href.isBlank() || href.contains("/season/") || href.contains("/episode/")) return@mapNotNull null
-
-            val img = a.selectFirst("img")
-            val poster = img?.attr("src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("srcset")?.split(" ")?.firstOrNull()?.takeIf { it.isNotBlank() }
-
-            val rawName = img?.attr("alt")?.takeIf { it.isNotBlank() }
-                ?: a.selectFirst("h3, h4, p.font-semibold")?.text()
-                ?: a.text()
-
-            val title = cleanTitle(rawName)
-            if (title.isBlank()) return@mapNotNull null
-
-            val ratingRaw = a.selectFirst(".badge-rating, [class*='badge-rating']")?.text()?.trim()
-            val cardScore = ratingRaw?.let {
-                Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
-            }
-
-            val fullUrl = fixUrl(href)
-            when {
-                fullUrl.contains("/movie/") || fullUrl.contains("/film/") -> newMovieSearchResponse(title, fullUrl, TvType.Movie) {
-                    this.posterUrl = poster?.let { fixUrl(it) }
-                    if (cardScore != null) this.score = Score.from10(cardScore)
-                }
-                fullUrl.contains("/anime/") -> newTvSeriesSearchResponse(title, fullUrl, TvType.Anime) {
-                    this.posterUrl = poster?.let { fixUrl(it) }
-                    if (cardScore != null) this.score = Score.from10(cardScore)
-                }
-                else -> newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
-                    this.posterUrl = poster?.let { fixUrl(it) }
-                    if (cardScore != null) this.score = Score.from10(cardScore)
-                }
-            }
-        }.distinctBy { it.url }
-    }
-
-    // ── Load Details ────────────────────────────────────────────────────
-
-    override suspend fun load(url: String): LoadResponse {
-        val doc = app.get(url, headers = defaultHeaders).document
-
-        val rawTitle = doc.selectFirst("h1")?.text()?.trim()
-            ?: doc.selectFirst("meta[property='og:title']")?.attr("content")?.trim()
-            ?: "İçerik"
-        val title = cleanTitle(rawTitle)
-
-        val poster = doc.selectFirst("meta[property='og:image']")?.attr("content")?.takeIf { it.isNotBlank() }
-            ?: doc.selectFirst(".tb-slot img, img[src*='/posters/']")?.attr("src")?.takeIf { it.isNotBlank() }
-            ?.let { fixUrl(it) }
-
-        val plot = doc.selectFirst("meta[name='description']")?.attr("content")?.trim()
-            ?: doc.selectFirst("p.text-content-secondary")?.text()?.trim()
-
-        val year = Regex("""(20\d\d|19\d\d)""").find(doc.text())?.groupValues?.get(1)?.toIntOrNull()
-
-        val tags = doc.select("a[href*='/tur/']").mapNotNull {
-            it.text().trim().takeIf { t -> t.isNotBlank() }
-        }.distinct()
-
-        val ratingText = doc.selectFirst(".text-star")?.parent()?.text()
-        val score = ratingText?.let {
-            Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
-        }
-
-        val isMovie = url.contains("/movie/") || url.contains("/film/")
-
-        if (isMovie) {
-            val watchUrl = if (url.endsWith("/izle")) url else "${url.removeSuffix("/")}/izle"
-            val episodes = listOf(
-                newEpisode(watchUrl) {
-                    this.name = title
-                    this.season = 1
-                    this.episode = 1
-                    this.posterUrl = poster
-                }
+            val imgEl = a.selectFirst("img")
+            val poster = fixUrlNull(
+                imgEl?.attr("src")?.takeIf { !it.startsWith("data:") }
+                    ?: imgEl?.attr("data-src")
+                    ?: imgEl?.attr("srcset")?.substringBefore(" ")
             )
 
-            return newMovieLoadResponse(title, url, TvType.Movie, episodes) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-                this.score = score?.let { Score.from10(it) }
+            val title = a.selectFirst(".homepage-card-title, .trend-card-title, h3, h2")?.text()?.trim()
+                ?: a.attr("title").ifBlank { a.text() }.ifBlank { href.substringAfterLast("/").replace("-", " ") }
+
+            if (href.contains("/film/")) {
+                cards += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
+            } else {
+                cards += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
             }
         }
 
-        // TV Series or Anime: Extract all seasons and episodes
-        val cleanBaseUrl = url.split("?").first().removeSuffix("/")
+        return newHomePageResponse(request.name, cards, hasNext = cards.isNotEmpty())
+    }
 
-        // Discover available seasons from season tabs (e.g. ?sezon=2#bolumler)
-        val seasonNumbers = doc.select("a[href*='sezon=']").mapNotNull {
-            Regex("""sezon=(\d+)""").find(it.attr("href"))?.groupValues?.get(1)?.toIntOrNull()
-        }.distinct().sorted()
+    /* -------------------- Search -------------------- */
 
-        val seasonsToFetch = if (seasonNumbers.isEmpty()) listOf(1) else seasonNumbers
-        val episodes = mutableListOf<Episode>()
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/search?q=${query.encodeURL()}"
+        val doc = app.get(searchUrl, interceptor = interceptor, referer = "$mainUrl/").document
+        val out = mutableListOf<SearchResponse>()
 
-        for (s in seasonsToFetch) {
-            val seasonDoc = if (s == 1) {
-                doc
-            } else {
-                try {
-                    app.get("$cleanBaseUrl?sezon=$s", headers = defaultHeaders).document
-                } catch (_: Exception) {
-                    continue
-                }
-            }
+        doc.select("a.homepage-card, a.grid-card, a[href*='/dizi/'], a[href*='/film/']").forEach { a ->
+            val href = normalizeHref(a.attr("href")) ?: return@forEach
+            val imgEl = a.selectFirst("img")
+            val poster = fixUrlNull(
+                imgEl?.attr("data-src") ?: imgEl?.attr("src")
+            )
+            val title = a.selectFirst(".homepage-card-title, h3, h2")?.text()?.trim()
+                ?: a.text().ifBlank { href.substringAfterLast("/") }
 
-            // Cards with episode links
-            val epCards = seasonDoc.select("a[href*='/season/$s/episode/'], a[href*='/sezon-$s/bolum-']")
-            val distinctCards = if (epCards.isNotEmpty()) {
-                epCards
-            } else if (s == 1) {
-                seasonDoc.select("a[href*='/episode/'], a[href*='/bolum/']")
-            } else {
-                emptyList()
-            }
-
-            for (card in distinctCards) {
-                val epHref = fixUrl(card.attr("href"))
-                val epImg = card.selectFirst("img")?.attr("src")?.let { fixUrl(it) }
-
-                val sNum = Regex("""/(?:season|sezon)[/-](\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull() ?: s
-                val epNum = Regex("""/(?:episode|bolum)[/-](\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-
-                val epNameText = card.selectFirst("p.truncate")?.text()?.trim()
-                val epName = if (!epNameText.isNullOrBlank()) {
-                    "$epNum. Bölüm - $epNameText"
-                } else {
-                    "$sNum. Sezon $epNum. Bölüm"
-                }
-
-                episodes.add(newEpisode(epHref) {
-                    this.name = epName
-                    this.season = sNum
-                    this.episode = epNum
-                    this.posterUrl = epImg ?: poster
-                })
+            when {
+                href.contains("/film/") -> out += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
+                href.contains("/dizi/") -> out += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
             }
         }
 
-        val type = if (url.contains("/anime/")) TvType.Anime else TvType.TvSeries
+        return out.distinctBy { it.url }
+    }
 
-        return newTvSeriesLoadResponse(title, url, type, episodes.distinctBy { it.data }) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.year = year
-            this.tags = tags
-            this.score = score?.let { Score.from10(it) }
+    override suspend fun quickSearch(query: String) = search(query)
+
+    /* -------------------- Load (details) -------------------- */
+
+    override suspend fun load(url: String): LoadResponse? {
+        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+
+        val poster = fixUrlNull(
+            doc.selectFirst("[property='og:image']")?.attr("content")
+                ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
+                ?: doc.selectFirst("img[src*='image.tmdb.org']")?.attr("src")
+        )
+
+        val title = doc.selectFirst("h1, .site-intro-title")?.text()?.trim()
+            ?: doc.title().substringBefore("—").substringBefore("|").trim()
+
+        return when {
+            url.contains("/dizi/") || url.contains("/anime/") -> {
+                // Bölüm linklerini topla (/dizi/.../1-sezon/1-bolum v.b.)
+                val eps = doc.select("a[href*='-sezon/'], a[href*='/bolum']")
+                    .mapNotNull { a ->
+                        val href = normalizeHref(a.attr("href")) ?: return@mapNotNull null
+                        val (s, e) = parseSeasonEpisode(href, a.text())
+                        newEpisode(href) {
+                            name = a.text().ifBlank { "Bölüm $e" }
+                            season = s
+                            episode = e
+                        }
+                    }
+                    .distinctBy { it.data }
+
+                newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps) {
+                    this.posterUrl = poster
+                }
+            }
+
+            url.contains("/film/") -> {
+                newMovieLoadResponse(title, url, TvType.Movie, url) {
+                    this.posterUrl = poster
+                }
+            }
+
+            else -> null
         }
     }
 
-    // ── Load Links ──────────────────────────────────────────────────────
+    private fun parseSeasonEpisode(href: String, textRaw: String): Pair<Int?, Int?> {
+        Regex("""/(\d+)-sezon/(\d+)-bolum""", RegexOption.IGNORE_CASE).find(href)?.let {
+            return it.groupValues[1].toIntOrNull() to it.groupValues[2].toIntOrNull()
+        }
+        val text = textRaw.lowercase()
+        val s = Regex("""(\d+)\s*\.?\s*sezon""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
+        val e = Regex("""(\d+)\s*\.?\s*bolum""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        return s to e
+    }
+
+    /* -------------------- Links (player) -------------------- */
 
     override suspend fun loadLinks(
         data: String,
@@ -274,116 +169,34 @@ class DiziPal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val watchPage = try {
-            app.get(data, headers = defaultHeaders).document
-        } catch (_: Exception) {
-            return false
-        }
+        Log.d("DZP", "loadLinks: $data")
 
-        var found = false
+        // 1) Router isteği atarak veya doğrudan sayfayı çekerek video kaynağını al
+        val targetUrl = if (!data.contains("router=1")) {
+            if (data.contains("?")) "$data&router=1" else "$data?router=1"
+        } else data
 
-        // 1. Pilavyer player integration (data-pv attribute)
-        val dataPv = watchPage.selectFirst("div[data-pv]")?.attr("data-pv")
-        val coreScriptSrc = watchPage.selectFirst("script[src*='pilavyerplay'], script[src*='/assets/js/core.js']")?.attr("src")
+        val res = app.get(targetUrl, referer = "$mainUrl/", interceptor = interceptor)
+        val body = res.text
+        val doc = res.document
 
-        val playerBase = if (!coreScriptSrc.isNullOrBlank()) {
-            coreScriptSrc.substringBefore("/assets/js/core.js").substringBefore("/e/c.js")
-        } else {
-            DEFAULT_PLAYER_BASE
-        }
+        // Sayfa/XHR yanıtında doğrudan geçen m3u8 veya vd.palv2/stream linkleri
+        var found = pushM3u8s(body, referer = data, callback)
 
-        if (!dataPv.isNullOrBlank()) {
-            val iframeUrl = "$playerBase/assets/js/s.php?s=${URLEncoder.encode(dataPv, "UTF-8")}"
-            try {
-                val iframeHtml = app.get(
-                    iframeUrl,
-                    headers = mapOf(
-                        "User-Agent" to defaultHeaders["User-Agent"]!!,
-                        "Referer" to "$mainUrl/"
-                    )
-                ).text
-
-                val playerMatch = Regex("""window\.__PLAYER__\s*=\s*(\{.*?\});""").find(iframeHtml)
-                if (playerMatch != null) {
-                    val playerJson = JSONObject(playerMatch.groupValues[1])
-                    val streamUrl = playerJson.optString("stream")
-
-                    if (!streamUrl.isNullOrBlank()) {
-                        // Extract subtitles
-                        val subsArray = playerJson.optJSONArray("subs")
-                        if (subsArray != null) {
-                            for (i in 0 until subsArray.length()) {
-                                val sub = subsArray.optJSONObject(i) ?: continue
-                                val subSrc = sub.optString("src")
-                                val subLabel = sub.optString("label", "Türkçe")
-                                if (!subSrc.isNullOrBlank()) {
-                                    subtitleCallback(SubtitleFile(subLabel, subSrc))
-                                }
-                            }
-                        }
-
-                        // Extract available audio tracks
-                        val audiosArray = playerJson.optJSONArray("audios")
-                        val audioLabels = mutableListOf<String>()
-                        if (audiosArray != null) {
-                            for (i in 0 until audiosArray.length()) {
-                                val audio = audiosArray.optJSONObject(i) ?: continue
-                                val label = audio.optString("label")
-                                if (!label.isNullOrBlank()) {
-                                    audioLabels.add(label)
-                                }
-                            }
-                        }
-
-                        val streamName = if (audioLabels.isNotEmpty()) {
-                            "DiziPal (${audioLabels.joinToString(" / ")})"
-                        } else {
-                            "DiziPal (HLS)"
-                        }
-
-                        callback(
-                            ExtractorLink(
-                                source = "Pilavyer",
-                                name = streamName,
-                                url = streamUrl,
-                                referer = iframeUrl,
-                                quality = Qualities.P1080.value,
-                                type = ExtractorLinkType.M3U8,
-                                headers = mapOf(
-                                    "Referer" to iframeUrl,
-                                    "User-Agent" to defaultHeaders["User-Agent"]!!
-                                )
-                            )
-                        )
-                        found = true
-                    }
-                }
-            } catch (_: Exception) {}
-        }
-
-        // 2. Fallback: inspect any embedded iframes or video tags
-        if (!found) {
-            val iframes = watchPage.select("iframe[src]").map { it.attr("src") }
-            for (iframe in iframes) {
-                val fullIframe = fixUrl(iframe)
-                if (fullIframe.contains("youtube.com") || fullIframe.contains("google")) continue
-
-                if (loadExtractor(fullIframe, data, subtitleCallback) { link ->
-                    callback(
-                        ExtractorLink(
-                            link.source ?: "DiziPal",
-                            "DiziPal - ${link.name}",
-                            link.url ?: "",
-                            link.referer ?: mainUrl,
-                            link.quality,
-                            link.headers ?: emptyMap(),
-                            link.extractorData,
-                            link.type,
-                            link.audioTracks ?: emptyList()
-                        )
-                    )
-                }) {
+        // HTML içindeki iframe ve video oynatıcı kaynaklarını tara
+        doc.select("iframe[src], video source[src]").forEach { element ->
+            val src = normalizeHref(element.attr("src")) ?: return@forEach
+            if (pushM3u8s(src, referer = data, callback)) {
+                found = true
+            } else {
+                // Extractor ve iç iframe taraması
+                if (loadExtractor(src, data, subtitleCallback, callback)) {
                     found = true
+                } else {
+                    runCatching {
+                        val subText = app.get(src, referer = data, interceptor = interceptor).text
+                        if (pushM3u8s(subText, referer = src, callback)) found = true
+                    }
                 }
             }
         }
@@ -391,12 +204,34 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────────
+    /** Metin içerisinden .m3u8 ve vd.palv2 / stream adreslerini ayıklar ve ekler */
+    private suspend fun pushM3u8s(
+        text: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var any = false
+        val regex = Regex("""https?://[^\s"'<>]+(?:\.m3u8|/stream/[^\s"'<>]+)""")
 
-    private fun cleanTitle(raw: String): String {
-        return raw.replace(Regex("(?i)\\s*(?:dizi|film|anime)\\s*izle"), "")
-            .replace(Regex("(?i)\\s*izle.*"), "")
-            .replace(Regex("(?i)\\s*\\(\\d{4}\\).*"), "")
-            .trim()
+        regex.findAll(text).map { it.value }.distinct().forEach { link ->
+            val cleanUrl = fixUrl(link)
+            if (cleanUrl.contains(".m3u8") || cleanUrl.contains("/stream/")) {
+                M3u8Helper.generateM3u8(
+                    source    = name,
+                    streamUrl = cleanUrl,
+                    referer   = referer,
+                    name      = name
+                ).forEach(callback)
+                any = true
+            }
+        }
+        return any
     }
+
+    /* -------------------- Utils -------------------- */
+
+    private fun String.encodeURL() = java.net.URLEncoder.encode(this, "utf-8")
+
+    private fun normalizeHref(href: String?): String? =
+        if (href.isNullOrBlank()) null else if (href.startsWith("http")) href else fixUrl(href)
 }
