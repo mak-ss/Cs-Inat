@@ -9,7 +9,7 @@ import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
 class DiziPal : MainAPI() {
-    override var mainUrl = "https://dizipal1432.com"
+    override var mainUrl = "https://dizipal10.com.tr/"
     override var name = "DiziPal"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
     override var lang = "tr"
