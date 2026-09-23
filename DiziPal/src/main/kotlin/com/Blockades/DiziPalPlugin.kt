@@ -1,12 +1,12 @@
 package com.Blockades
 
+import com.Blockades.DiziPal
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 
 @CloudstreamPlugin
-class DizipalPlugin : BasePlugin() {
+class DiziPalPlugin : BasePlugin() {
     override fun load() {
-        // 'Dizipal()' yerine 'DiziPal()' yazılmalıdır
-        registerMainAPI(DiziPal()) 
+        registerMainAPI(DiziPal())
     }
 }
