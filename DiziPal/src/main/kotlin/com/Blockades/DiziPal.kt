@@ -1,5 +1,3 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-
 // ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
 package com.Blockades
@@ -298,6 +296,45 @@ class DiziPalOriginal : MainAPI() {
         }
     }
 
+    private fun findM3u8Url(embedSource: String): String? {
+        val m3u8Patterns = listOf(
+            Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
+            Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
+            Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']"""),
+            Regex("""["'](https?://[^"']+\.urlset/master\.m3u8[^"']*)["']"""),
+            Regex("""v\s*:\s*["']([^"']+\.html[^"']*)["']""")
+        )
+        for (pattern in m3u8Patterns) {
+            val match = pattern.find(embedSource)?.groupValues?.getOrNull(1)
+            if (match != null) {
+                Log.d("DZP", "Pattern eşleşti: $match")
+                return match
+            }
+        }
+        Log.e("DZP", "Embed içeriğinde m3u8 bulunamadı!")
+        return null
+    }
+
+    private fun normalizeM3u8Url(rawUrl: String): String? {
+        return when {
+            rawUrl.contains(".m3u8") -> rawUrl
+
+            rawUrl.contains(".html") -> {
+                val idRegex = Regex("""embed-([^.]+)\.html""")
+                val idMatch = idRegex.find(rawUrl)?.groupValues?.getOrNull(1)
+                if (idMatch != null) {
+                    "https://s8.superadjacentsoddenly.xyz/hls2/01/00009/${idMatch}_,n,h,.urlset/master.m3u8"
+                } else {
+                    Log.e("DZP", "HTML linkinden ID ayıklanamadı: $rawUrl")
+                    null
+                }
+            }
+
+            rawUrl.contains("hls2") -> rawUrl
+            else -> rawUrl
+        }
+    }
+
     private suspend fun extractFromEmbed(
         embedUrl: String,
         referer: String,
@@ -311,57 +348,21 @@ class DiziPalOriginal : MainAPI() {
             return handleImagestoo(embedUrl, userAgent, subtitleCallback, callback)
         }
 
-        val embedResponse = try {
+        val embedSource: String = try {
             app.get(
                 url = embedUrl,
                 referer = referer,
                 headers = mapOf("User-Agent" to userAgent)
-            )
+            ).text
         } catch (e: Exception) {
             Log.e("DZP", "Embed sayfası alınamadı: ${e.message}")
             return false
         }
 
-        val embedSource = embedResponse.text
         Log.d("DZP", "Embed içerik uzunluğu: ${embedSource.length}")
 
-        val m3u8Patterns = listOf(
-            Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
-            Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
-            Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']"""),
-            Regex("""["'](https?://[^"']+\.urlset/master\.m3u8[^"']*)["']"""),
-            Regex("""v\s*:\s*["']([^"']+\.html[^"']*)["']""")
-        )
-
-        val extractedUrl: String = run {
-            for (pattern in m3u8Patterns) {
-                val match = pattern.find(embedSource)?.groupValues?.getOrNull(1)
-                if (match != null) {
-                    Log.d("DZP", "Pattern eşleşti: $match")
-                    return@run match
-                }
-            }
-            Log.e("DZP", "Embed içeriğinde m3u8 bulunamadı!")
-            return false
-        }
-
-        val finalM3u8Url: String = when {
-            extractedUrl.contains(".m3u8") -> extractedUrl
-
-            extractedUrl.contains(".html") -> {
-                val idRegex = Regex("""embed-([^.]+)\.html""")
-                val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
-                if (idMatch != null) {
-                    "https://s8.superadjacentsoddenly.xyz/hls2/01/00009/${idMatch}_,n,h,.urlset/master.m3u8"
-                } else {
-                    Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
-                    return false
-                }
-            }
-
-            extractedUrl.contains("hls2") -> extractedUrl
-            else -> extractedUrl
-        }
+        val rawUrl: String = findM3u8Url(embedSource) ?: return false
+        val finalM3u8Url: String = normalizeM3u8Url(rawUrl) ?: return false
 
         Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
 
@@ -378,7 +379,6 @@ class DiziPalOriginal : MainAPI() {
         )
 
         extractSubtitles(embedSource, subtitleCallback)
-
         return true
     }
 
