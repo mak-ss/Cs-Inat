@@ -1,9 +1,9 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
+
 package com.Blockades
 
 import com.fasterxml.jackson.annotation.JsonProperty
-
 
 data class DizipalSearchData(
     @JsonProperty("success") val success: Boolean?,
