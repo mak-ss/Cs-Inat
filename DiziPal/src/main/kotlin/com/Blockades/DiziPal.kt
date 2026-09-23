@@ -2,7 +2,6 @@
 
 package com.Blockades
 
-
 import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -14,9 +13,14 @@ import java.net.URLEncoder
 class Dizipal : MainAPI() {
     override var mainUrl = "https://dizipal1432.com"
     override var name = "Dizipal"
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    // Medya türü çakışmalarını ve ContentProvider uyarısını engellemek için uyumlu tipler kümesi
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Asian)
     override var lang = "tr"
     override val hasMainPage = true
+
+    private fun cleanDomainForFavicon(url: String): String {
+        return url.replace("https://", "").replace("http://", "").substringBefore("/").trim()
+    }
 
     // 1. ANA SAYFA
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -43,7 +47,8 @@ class Dizipal : MainAPI() {
         val ldCombined = document.select("script[type=application/ld+json]").joinToString("\n") { it.data() }
 
         val title = document.selectFirst("h1, .entry-title, .title")?.text()?.trim() ?: "Bilinmeyen Başlık"
-        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content") ?: document.selectFirst("img")?.attr("src"))
+        val rawPoster = document.selectFirst("meta[property=og:image]")?.attr("content") ?: document.selectFirst("img")?.attr("src")
+        val poster = fixUrlNull(rawPoster)
         
         val descriptionFromLd = Regex("\"description\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])+)\"")
             .findAll(ldCombined).map { match ->
@@ -117,7 +122,10 @@ class Dizipal : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var foundLinks = false
-        val response = app.get(data, headers = mapOf("User-Agent" to USER_AGENT))
+        val response = runCatching { 
+            app.get(data, headers = mapOf("User-Agent" to USER_AGENT)) 
+        }.getOrNull() ?: return false
+
         val rawHtml = response.text
         val iframeLinks = mutableSetOf<String>()
 
@@ -146,9 +154,14 @@ class Dizipal : MainAPI() {
         
         response.document.select("iframe, [data-frame], [data-video], [data-src]").forEach {
             val src = it.attr("data-frame").ifEmpty { it.attr("data-video") }.ifEmpty { it.attr("data-src") }.ifEmpty { it.attr("src") }
-            if (src.isNotBlank() && !src.startsWith("#")) iframeLinks.add(fixUrl(src))
+            if (src.isNotBlank() && !src.startsWith("#")) {
+                fixUrlNull(src)?.let { cleanedSrc -> iframeLinks.add(cleanedSrc) }
+            }
         }
-        Regex("""(?i)(?:src|iframe|file|url)\s*[:=]\s*["'](https?://[^"']+)["']""").findAll(rawHtml).forEach { iframeLinks.add(fixUrl(it.groupValues[1])) }
+        
+        Regex("""(?i)(?:src|iframe|file|url)\s*[:=]\s*["'](https?://[^"']+)["']""").findAll(rawHtml).forEach { 
+            fixUrlNull(it.groupValues[1])?.let { cleanedUrl -> iframeLinks.add(cleanedUrl) }
+        }
 
         for (iframeUrl in iframeLinks.distinct()) {
             val cleanIframe = iframeUrl.replace("&amp;", "&").trim()
@@ -161,14 +174,17 @@ class Dizipal : MainAPI() {
                     val normalizedIframe = "https://imagestoo.com/video/$hash"
                     
                     val allCookies = mutableMapOf<String, String>()
-                    val iframeResp = app.get(
-                        url = normalizedIframe,
-                        headers = mapOf(
-                            "User-Agent" to USER_AGENT,
-                            "Referer" to "$mainUrl/"
+                    val iframeResp = runCatching {
+                        app.get(
+                            url = normalizedIframe,
+                            headers = mapOf(
+                                "User-Agent" to USER_AGENT,
+                                "Referer" to "$mainUrl/"
+                            )
                         )
-                    )
-                    allCookies.putAll(iframeResp.cookies)
+                    }.getOrNull()
+
+                    iframeResp?.cookies?.let { allCookies.putAll(it) }
 
                     val apiResponseText = runCatching {
                         app.post(
@@ -216,18 +232,19 @@ class Dizipal : MainAPI() {
                                     }
                                 }
 
-                                val finalPlaybackUrl = if (targetUrl.contains(".m3u8")) targetUrl else "$targetUrl#.m3u8"
+                                val isM3u8 = targetUrl.contains(".m3u8")
+                                val finalPlaybackUrl = if (isM3u8) targetUrl else "$targetUrl#.m3u8"
 
                                 callback.invoke(
-                                    newExtractorLink(
+                                    ExtractorLink(
                                         source = name,
                                         name = "Imagestoo VIP",
                                         url = finalPlaybackUrl,
-                                        type = ExtractorLinkType.VIDEO
-                                    ) {
-                                        this.referer = normalizedIframe
-                                        this.headers = exoHeaders
-                                    }
+                                        referer = normalizedIframe,
+                                        quality = Qualities.Unknown.value,
+                                        type = ExtractorLinkType.M3U8,
+                                        headers = exoHeaders
+                                    )
                                 )
                                 foundLinks = true
                             }
@@ -239,15 +256,16 @@ class Dizipal : MainAPI() {
 
             // --- Standart M3U8/MP4 Doğrudan Bağlantılar ---
             if (cleanIframe.contains(".m3u8") || cleanIframe.contains(".mp4")) {
+                val isM3u8 = cleanIframe.contains(".m3u8")
                 callback.invoke(
-                    newExtractorLink(
+                    ExtractorLink(
                         source = name,
                         name = "Dizipal Kaynak",
                         url = cleanIframe,
-                        type = if (cleanIframe.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = mainUrl
-                    }
+                        referer = mainUrl,
+                        quality = Qualities.Unknown.value,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    )
                 )
                 foundLinks = true
                 continue
@@ -273,21 +291,22 @@ class Dizipal : MainAPI() {
 
             if (extractedVideo != null) {
                 val finalVideoUrl = extractedVideo.replace("\\/", "/").replace("\\u0026", "&")
+                val isM3u8 = finalVideoUrl.contains(".m3u8")
                 callback.invoke(
-                    newExtractorLink(
+                    ExtractorLink(
                         source = name,
                         name = "Dizipal Alternatif",
                         url = finalVideoUrl,
-                        type = if (finalVideoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = cleanIframe
-                        this.headers = mapOf(
+                        referer = cleanIframe,
+                        quality = Qualities.Unknown.value,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                        headers = mapOf(
                             "Referer" to cleanIframe, 
                             "User-Agent" to USER_AGENT, 
                             "Origin" to getBaseUrl(cleanIframe), 
                             "Cookie" to genericCookieStr
                         )
-                    }
+                    )
                 )
                 foundLinks = true
             } else {
@@ -317,7 +336,10 @@ class Dizipal : MainAPI() {
         val href = fixUrl(linkElem.attr("href"))
         val title = this.selectFirst(".title, h2, h3, .name")?.text()?.trim()?.removeSuffix(" izle") ?: linkElem.text().trim()
         if (title.isEmpty()) return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src") ?: this.selectFirst("img")?.attr("src"))
+        
+        val rawImg = this.selectFirst("img")?.attr("data-src") ?: this.selectFirst("img")?.attr("src")
+        val posterUrl = fixUrlNull(rawImg)
+
         return if (href.contains("/dizi/")) newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = posterUrl }
         else newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
     }
