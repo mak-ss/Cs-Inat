@@ -7,6 +7,7 @@ import android.content.Context
 @CloudstreamPlugin
 class DiziPalPlugin: Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(DiziPal())
+        // Class ismi DiziPalOriginal olarak kaydediliyor
+        registerMainAPI(DiziPalOriginal())
     }
 }
