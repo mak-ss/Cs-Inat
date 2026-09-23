@@ -1,6 +1,7 @@
 // ! Bu araç @Blocades tarafından | @Cs-Inat için yazılmıştır.
 
-package com.Blocades
+
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -8,7 +9,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class DiziPalOriginal : MainAPI() {
-    override var mainUrl              = "https://dizipal2133.com"
+    override var mainUrl              = "https://dizipal2131.com"
     override var name                 = "DiziPal"
     override val hasMainPage          = true
     override var lang                 = "tr"
@@ -43,7 +44,7 @@ class DiziPalOriginal : MainAPI() {
             document.select("ul.content-grid > li").mapNotNull { it.diziler() }
         }
 
-        return newHomePageResponse(request.name, home, hasNext=false)
+        return newHomePageResponse(request.name, home, hasNext = false)
     }
 
     private fun Element.sonBolumler(): SearchResponse? {
@@ -135,10 +136,10 @@ class DiziPalOriginal : MainAPI() {
                 val anchor = wrap.selectFirst("a.detail-episode-item") ?: return@mapNotNull null
                 val epHref = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
                 val epName = anchor.selectFirst("div.detail-episode-title")?.text()?.trim() ?: return@mapNotNull null
-                
+
                 val subtitle = anchor.selectFirst("div.detail-episode-subtitle")?.text()?.trim() ?: ""
                 val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
-                
+
                 val epSeason = match?.groupValues?.getOrNull(1)?.toIntOrNull()
                 val epEpisode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
 
@@ -157,8 +158,8 @@ class DiziPalOriginal : MainAPI() {
                 this.duration  = duration
             }
         } else {
-            val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim() 
-                ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" izle")?.trim() 
+            val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim()
+                ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" izle")?.trim()
                 ?: ""
 
             if (title.isEmpty()) return null
@@ -274,12 +275,12 @@ class DiziPalOriginal : MainAPI() {
         val finalM3u8Url = when {
             // Doğrudan m3u8 gelirse
             extractedUrl.contains(".m3u8") -> extractedUrl
-            
+
             // HTML linki gelirse (embed-xxxx.html)
             extractedUrl.contains(".html") -> {
                 val idRegex = Regex("""embed-([^.]+)\.html""")
                 val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
-                
+
                 if (idMatch != null) {
                     // Yeni domain yapısı: s8.superadjacentsoddenly.xyz
                     // Path yapısı: /hls2/01/00009/{id}_,n,h,.urlset/master.m3u8
@@ -289,10 +290,10 @@ class DiziPalOriginal : MainAPI() {
                     null
                 }
             }
-            
+
             // URL'de zaten hls2 varsa doğrudan kullan
             extractedUrl.contains("hls2") -> extractedUrl
-            
+
             else -> extractedUrl
         }
 
@@ -349,7 +350,7 @@ class DiziPalOriginal : MainAPI() {
                 val vttUrl = match.groupValues[1]
                 val langMatch = Regex("""_([a-z]{2})\.vtt""").find(vttUrl)
                 val lang = langMatch?.groupValues?.getOrNull(1) ?: "Unknown"
-                
+
                 subtitleCallback.invoke(
                     SubtitleFile(
                         lang = lang,
