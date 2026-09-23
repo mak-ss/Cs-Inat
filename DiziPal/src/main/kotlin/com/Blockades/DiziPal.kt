@@ -184,8 +184,8 @@ class DiziPalOriginal : MainAPI() {
 
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-        // 1. AŞAMA: GET isteği atıp hem Token'ı hem de ÇEREZLERİ alıyoruz
-        val getResponse = app.get(
+        // 1. AŞAMA: Bölüm sayfasına git ve data-cfg token'ını al
+        val pageResponse = app.get(
             url = data,
             headers = mapOf(
                 "User-Agent"    to userAgent,
@@ -194,54 +194,156 @@ class DiziPalOriginal : MainAPI() {
             )
         )
 
-        val document = getResponse.document
-        val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
+        val pageDocument = pageResponse.document
+        val videoContainer = pageDocument.selectFirst("#videoContainer")
 
-        if (configToken.isNullOrEmpty()) {
-            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) alınamadı!")
+        if (videoContainer == null) {
+            Log.e("DZP", "#videoContainer elementi bulunamadı!")
             return false
         }
 
-        val cookies = getResponse.cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        val configToken = videoContainer.attr("data-cfg").trim()
 
-        Log.d("DZP", "Bulunan Token » $configToken")
-        Log.d("DZP", "Yakalanan Çerezler » $cookies")
-
-        // 2. AŞAMA: Token'ı Base64 Decode Et
-        val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
-        val decodedToken = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
-        Log.d("DZP", "Decoded Token » $decodedToken")
-
-        val embedUrlRaw = Regex(""""v"\s*:\s*"([^"]+)"""").find(decodedToken)?.groupValues?.getOrNull(1)
-            ?.replace("\\/", "/")
-
-        if (embedUrlRaw.isNullOrEmpty()) {
-            Log.e("DZP", "Embed URL token içinden alınamadı! Dönen yanıt: $decodedToken")
+        if (configToken.isEmpty()) {
+            Log.e("DZP", "data-cfg token'ı boş!")
             return false
         }
 
-        val embedUrl = fixUrl(embedUrlRaw)
-        Log.d("DZP", "Çözülen Embed URL » $embedUrl")
+        Log.d("DZP", "Bulunan data-cfg Token » $configToken")
+
+        // 2. AŞAMA: BASE_URL + "ajax" adresine POST isteği at (JavaScript'teki mantık)
+        val ajaxResponse = app.post(
+            url = "$mainUrl/ajax",
+            data = mapOf("cfg" to configToken),
+            headers = mapOf(
+                "User-Agent"        to userAgent,
+                "Content-Type"      to "application/x-www-form-urlencoded",
+                "X-Requested-With"  to "XMLHttpRequest",
+                "Accept"            to "application/json, text/javascript, */*; q=0.01"
+            ),
+            referer = data
+        )
+
+        val ajaxText = ajaxResponse.text
+        Log.d("DZP", "Ajax yanıtı » $ajaxText")
+
+        // 3. AŞAMA: Ajax yanıtını parse et
+        val ajaxJson = try {
+            AppUtils.parseJson<Map<String, Any>>(ajaxText)
+        } catch (e: Exception) {
+            Log.e("DZP", "Ajax yanıtı JSON olarak parse edilemedi: ${e.message}")
+            return false
+        }
+
+        val success = ajaxJson["success"] as? Boolean ?: false
+        if (!success) {
+            Log.e("DZP", "Ajax yanıtı başarısız!")
+            return false
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val config = ajaxJson["config"] as? Map<String, Any> ?: run {
+            Log.e("DZP", "Ajax yanıtında 'config' alanı yok!")
+            return false
+        }
+
+        val videoUrl = config["v"] as? String
+        val videoType = config["t"] as? String ?: "iframe"
+        val videoPoster = config["p"] as? String ?: ""
+
+        if (videoUrl.isNullOrEmpty()) {
+            Log.e("DZP", "Config içinde video URL (v) bulunamadı!")
+            return false
+        }
+
+        Log.d("DZP", "Çözülen Video URL » $videoUrl")
+        Log.d("DZP", "Video Tipi » $videoType")
+
+        // 4. AŞAMA: Video tipine göre işlem yap
+        return when {
+            // Doğrudan m3u8 veya mp4 ise
+            videoType == "m3u8" || videoType == "mp4" ||
+            videoUrl.contains(".m3u8") || videoUrl.contains(".mp4") -> {
+
+                val linkType = if (videoUrl.contains(".m3u8")) {
+                    ExtractorLinkType.M3U8
+                } else {
+                    ExtractorLinkType.VIDEO
+                }
+
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = "Dizipal (Ana Sunucu)",
+                        url = videoUrl,
+                        type = linkType
+                    ) {
+                        referer = data
+                        quality = Qualities.Unknown.value
+                    }
+                )
+                true
+            }
+
+            // iframe içeren bir yapı ise (HTML olarak geliyorsa)
+            videoUrl.contains("<iframe") -> {
+                val iframeSrc = Regex("""src=["']([^"']+)["']""").find(videoUrl)?.groupValues?.getOrNull(1)
+                if (iframeSrc != null) {
+                    extractFromEmbed(fixUrl(iframeSrc), data, userAgent, subtitleCallback, callback)
+                } else {
+                    false
+                }
+            }
+
+            // URL iframe kaynağı ise
+            videoType == "iframe" -> {
+                extractFromEmbed(fixUrl(videoUrl), data, userAgent, subtitleCallback, callback)
+            }
+
+            else -> {
+                // Bilinmeyen tip, yine de embed olarak dene
+                extractFromEmbed(fixUrl(videoUrl), data, userAgent, subtitleCallback, callback)
+            }
+        }
+    }
+
+    /**
+     * Embed URL'den m3u8 ve altyazı çıkarır
+     */
+    private suspend fun extractFromEmbed(
+        embedUrl: String,
+        referer: String,
+        userAgent: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        Log.d("DZP", "Embed URL işleniyor » $embedUrl")
 
         // Imagestoo özel durumu
         if (embedUrl.contains("imagestoo")) {
             return handleImagestoo(embedUrl, userAgent, subtitleCallback, callback)
         }
 
-        // 3. AŞAMA: Embed sayfasından m3u8 ve altyazıları çek
-        val embedSource = app.get(
-            url = embedUrl,
-            referer = data,
-            headers = mapOf("User-Agent" to userAgent)
-        ).text
+        val embedResponse = try {
+            app.get(
+                url = embedUrl,
+                referer = referer,
+                headers = mapOf("User-Agent" to userAgent)
+            )
+        } catch (e: Exception) {
+            Log.e("DZP", "Embed sayfası alınamadı: ${e.message}")
+            return false
+        }
 
-        Log.d("DZP", "Embed kaynak içeriği alındı, uzunluk: ${embedSource.length}")
+        val embedSource = embedResponse.text
+        Log.d("DZP", "Embed içerik uzunluğu: ${embedSource.length}")
 
-        // m3u8 URL'sini bul - birden fazla pattern dene
+        // m3u8 URL'sini bul
         val m3u8Patterns = listOf(
             Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
             Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
             Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']"""),
+            Regex("""["'](https?://[^"']+\.urlset/master\.m3u8[^"']*)["']"""),
             Regex("""v\s*:\s*["']([^"']+\.html[^"']*)["']""")
         )
 
@@ -255,45 +357,23 @@ class DiziPalOriginal : MainAPI() {
         }
 
         if (extractedUrl == null) {
-            Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı!")
-            // Son çare: sayfa içinde script tag'lerini kontrol et
-            val scripts = document.select("script").map { it.data() }
-            for (script in scripts) {
-                if (script.contains("m3u8") || script.contains("master")) {
-                    Log.d("DZP", "Script içinde m3u8 aranıyor...")
-                    val found = Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(script)?.groupValues?.getOrNull(1)
-                    if (found != null) {
-                        extractedUrl = found
-                        break
-                    }
-                }
-            }
-            if (extractedUrl == null) return false
+            Log.e("DZP", "Embed içeriğinde m3u8 bulunamadı!")
+            return false
         }
 
-        // URL dönüşümü - yeni yapıya göre güncellendi
+        // URL dönüşümü
         val finalM3u8Url = when {
-            // Doğrudan m3u8 gelirse
             extractedUrl.contains(".m3u8") -> extractedUrl
 
-            // HTML linki gelirse (embed-xxxx.html)
             extractedUrl.contains(".html") -> {
                 val idRegex = Regex("""embed-([^.]+)\.html""")
                 val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
-
                 if (idMatch != null) {
-                    // Yeni domain yapısı: s8.superadjacentsoddenly.xyz
-                    // Path yapısı: /hls2/01/00009/{id}_,n,h,.urlset/master.m3u8
                     "https://s8.superadjacentsoddenly.xyz/hls2/01/00009/${idMatch}_,n,h,.urlset/master.m3u8"
-                } else {
-                    Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
-                    null
-                }
+                } else null
             }
 
-            // URL'de zaten hls2 varsa doğrudan kullan
             extractedUrl.contains("hls2") -> extractedUrl
-
             else -> extractedUrl
         }
 
@@ -304,7 +384,6 @@ class DiziPalOriginal : MainAPI() {
 
         Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
 
-        // Ana video linkini ekle
         callback.invoke(
             newExtractorLink(
                 source = this.name,
@@ -317,7 +396,22 @@ class DiziPalOriginal : MainAPI() {
             }
         )
 
-        // 4. AŞAMA: Altyazıları (Tracks) Yakala - XHR'den gelen yapıya göre
+        // Altyazıları yakala
+        extractSubtitles(embedSource, subtitleCallback)
+
+        return true
+    }
+
+    /**
+     * Embed kaynağından altyazıları çıkarır
+     */
+    private fun extractSubtitles(
+        embedSource: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        var found = false
+
+        // tracks bloğundan
         val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(embedSource)
 
         tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
@@ -325,7 +419,6 @@ class DiziPalOriginal : MainAPI() {
 
             trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
                 val itemStr = itemMatch.groupValues[1]
-
                 val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
                 val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
 
@@ -334,35 +427,36 @@ class DiziPalOriginal : MainAPI() {
 
                 if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
                     subtitleCallback.invoke(
-                        SubtitleFile(
-                            lang = label,
-                            url = fixUrl(fileUrl)
-                        )
+                        SubtitleFile(lang = label, url = fixUrl(fileUrl))
                     )
+                    found = true
                 }
             }
         }
 
-        // Alternatif altyazı yakalama: XHR'deki gibi vtt URL'lerini regex ile bul
-        if (tracksBlockMatch == null) {
+        // Doğrudan VTT URL'lerini regex ile bul (XHR'deki gibi)
+        if (!found) {
             val vttRegex = Regex("""["'](https?://[^"']+\.vtt[^"']*)["']""")
             vttRegex.findAll(embedSource).forEach { match ->
                 val vttUrl = match.groupValues[1]
-                val langMatch = Regex("""_([a-z]{2})\.vtt""").find(vttUrl)
-                val lang = langMatch?.groupValues?.getOrNull(1) ?: "Unknown"
+                val langMatch = Regex("""_([a-z]{2,3})\.vtt""").find(vttUrl)
+                val langCode = langMatch?.groupValues?.getOrNull(1)
+                val lang = when (langCode) {
+                    "tur" -> "Türkçe"
+                    "eng" -> "English"
+                    else  -> langCode ?: "Unknown"
+                }
 
                 subtitleCallback.invoke(
-                    SubtitleFile(
-                        lang = lang,
-                        url = fixUrl(vttUrl)
-                    )
+                    SubtitleFile(lang = lang, url = fixUrl(vttUrl))
                 )
             }
         }
-
-        return true
     }
 
+    /**
+     * Imagestoo özel durumu
+     */
     private suspend fun handleImagestoo(
         embedUrl: String,
         userAgent: String,
