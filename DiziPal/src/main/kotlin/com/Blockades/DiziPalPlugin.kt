@@ -3,7 +3,7 @@ package com.Blockades
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
-import com.mebularts.DiziPal // DiziPal.kt dosyasındaki paketi import ediyoruz
+import com.Blockades.DiziPal // DiziPal.kt dosyasındaki paketi import ediyoruz
 
 @CloudstreamPlugin
 class DiziPalPlugin: Plugin() {
