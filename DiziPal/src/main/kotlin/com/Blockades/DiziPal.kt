@@ -9,21 +9,6 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 // ============================================================================
-// Data Class Modelleri (Arama Yanıtları İçin)
-// ============================================================================
-data class DizipalSearchData(
-    @JsonProperty("results") val results: List<DizipalSearchResult>? = null
-)
-
-data class DizipalSearchResult(
-    @JsonProperty("title") val title: String? = null,
-    @JsonProperty("url") val url: String? = null,
-    @JsonProperty("type") val type: String? = null,
-    @JsonProperty("poster") val poster: String? = null,
-    @JsonProperty("year") val year: Int? = null
-)
-
-// ============================================================================
 // MainAPI Sağlayıcısı
 // ============================================================================
 class DiziPal : MainAPI() {
