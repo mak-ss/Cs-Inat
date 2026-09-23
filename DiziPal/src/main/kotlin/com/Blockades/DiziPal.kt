@@ -13,14 +13,10 @@ import java.net.URLEncoder
 class Dizipal : MainAPI() {
     override var mainUrl = "https://dizipal1432.com"
     override var name = "Dizipal"
-    // Medya türü çakışmalarını ve ContentProvider uyarısını engellemek için uyumlu tipler kümesi
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Asian)
+    // Cloudstream SDK'sında geçerli olan ana medya tipleri
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "tr"
     override val hasMainPage = true
-
-    private fun cleanDomainForFavicon(url: String): String {
-        return url.replace("https://", "").replace("http://", "").substringBefore("/").trim()
-    }
 
     // 1. ANA SAYFA
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -232,19 +228,18 @@ class Dizipal : MainAPI() {
                                     }
                                 }
 
-                                val isM3u8 = targetUrl.contains(".m3u8")
-                                val finalPlaybackUrl = if (isM3u8) targetUrl else "$targetUrl#.m3u8"
+                                val finalPlaybackUrl = if (targetUrl.contains(".m3u8")) targetUrl else "$targetUrl#.m3u8"
 
                                 callback.invoke(
-                                    ExtractorLink(
+                                    newExtractorLink(
                                         source = name,
                                         name = "Imagestoo VIP",
                                         url = finalPlaybackUrl,
-                                        referer = normalizedIframe,
-                                        quality = Qualities.Unknown.value,
-                                        type = ExtractorLinkType.M3U8,
-                                        headers = exoHeaders
-                                    )
+                                        type = ExtractorLinkType.VIDEO
+                                    ) {
+                                        this.referer = normalizedIframe
+                                        this.headers = exoHeaders
+                                    }
                                 )
                                 foundLinks = true
                             }
@@ -256,16 +251,15 @@ class Dizipal : MainAPI() {
 
             // --- Standart M3U8/MP4 Doğrudan Bağlantılar ---
             if (cleanIframe.contains(".m3u8") || cleanIframe.contains(".mp4")) {
-                val isM3u8 = cleanIframe.contains(".m3u8")
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = "Dizipal Kaynak",
                         url = cleanIframe,
-                        referer = mainUrl,
-                        quality = Qualities.Unknown.value,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    )
+                        type = if (cleanIframe.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = mainUrl
+                    }
                 )
                 foundLinks = true
                 continue
@@ -291,22 +285,21 @@ class Dizipal : MainAPI() {
 
             if (extractedVideo != null) {
                 val finalVideoUrl = extractedVideo.replace("\\/", "/").replace("\\u0026", "&")
-                val isM3u8 = finalVideoUrl.contains(".m3u8")
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = "Dizipal Alternatif",
                         url = finalVideoUrl,
-                        referer = cleanIframe,
-                        quality = Qualities.Unknown.value,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                        headers = mapOf(
+                        type = if (finalVideoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = cleanIframe
+                        this.headers = mapOf(
                             "Referer" to cleanIframe, 
                             "User-Agent" to USER_AGENT, 
                             "Origin" to getBaseUrl(cleanIframe), 
                             "Cookie" to genericCookieStr
                         )
-                    )
+                    }
                 )
                 foundLinks = true
             } else {
