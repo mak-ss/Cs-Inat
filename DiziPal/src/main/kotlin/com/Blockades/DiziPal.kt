@@ -1,4 +1,6 @@
-package com.Blockades
+// ! Bu araç @Blocades tarafından | @Cs-Inat için yazılmıştır.
+
+package com.Blocades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -13,34 +15,35 @@ class DiziPalOriginal : MainAPI() {
     override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
+    // ! CloudFlare bypass
     override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/bolumler"               to "Son Bölümler",
-        "${mainUrl}/diziler"                to "Yeni Diziler",
-        "${mainUrl}/filmler"                to "Yeni Filmler",
-        "${mainUrl}/platform/netflix"       to "Netflix",
-        "${mainUrl}/platform/exxen"         to "Exxen",
-        "${mainUrl}/platform/blutv"         to "BluTV",
-        "${mainUrl}/platform/disney-plus"   to "Disney+",
-        "${mainUrl}/platform/prime-video"   to "Amazon Prime",
-        "${mainUrl}/platform/tabii"         to "Tabii",
-        "${mainUrl}/platform/gain"          to "Gain",
-        "${mainUrl}/platform/max"           to "Max",
-        "${mainUrl}/kategori/bilim-kurgu"   to "Bilimkurgu Filmleri",
-        "${mainUrl}/kategori/komedi"        to "Komedi Filmleri",
-        "${mainUrl}/kategori/belgesel"      to "Belgesel Filmleri",
+        "${mainUrl}/bolumler"                                      to "Son Bölümler",
+        "${mainUrl}/diziler"                                       to "Yeni Diziler",
+        "${mainUrl}/filmler"                                       to "Yeni Filmler",
+        "${mainUrl}/platform/netflix"                              to "Netflix",
+        "${mainUrl}/platform/exxen"                                to "Exxen",
+        "${mainUrl}/platform/blutv"                                to "BluTV",
+        "${mainUrl}/platform/disney-plus"                          to "Disney+",
+        "${mainUrl}/platform/prime-video"                          to "Amazon Prime",
+        "${mainUrl}/platform/tabii"                                to "Tabii",
+        "${mainUrl}/platform/gain"                                 to "Gain",
+        "${mainUrl}/platform/max"                                  to "Max",
+        "${mainUrl}/kategori/bilim-kurgu"                          to "Bilimkurgu Filmleri",
+        "${mainUrl}/kategori/komedi"                               to "Komedi Filmleri",
+        "${mainUrl}/kategori/belgesel"                             to "Belgesel Filmleri",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
-        val home = if (request.data.contains("/bolumler")) {
+        val home     = if (request.data.contains("/bolumler")) {
             document.select("div.episodes-list-grid > a.episode-list-item").mapNotNull { it.sonBolumler() }
         } else {
             document.select("ul.content-grid > li").mapNotNull { it.diziler() }
         }
 
-        return newHomePageResponse(request.name, home, hasNext = false)
+        return newHomePageResponse(request.name, home, hasNext=false)
     }
 
     private fun Element.sonBolumler(): SearchResponse? {
@@ -113,7 +116,8 @@ class DiziPalOriginal : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         if (url.contains("/bolum/")) {
-            val seriesUrl = url.replace("/bolum/", "/dizi/").replace(Regex("-\\d+-sezon.*"), "")
+            val seriesUrl = url.replace("/bolum/", "/dizi/")
+                .replace(Regex("-\\d+-sezon.*"), "")
             return load(seriesUrl)
         }
 
@@ -122,6 +126,7 @@ class DiziPalOriginal : MainAPI() {
         val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")?.text()?.trim()?.toIntOrNull()
         val description = document.selectFirst("p.series-description")?.text()?.trim()
         val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a").map { it.text().trim() }
+        val duration: Int? = null
 
         if (url.contains("/dizi/")) {
             val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
@@ -149,6 +154,7 @@ class DiziPalOriginal : MainAPI() {
                 this.year      = year
                 this.plot      = description
                 this.tags      = tags
+                this.duration  = duration
             }
         } else {
             val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim() 
@@ -162,6 +168,7 @@ class DiziPalOriginal : MainAPI() {
                 this.year      = year
                 this.plot      = description
                 this.tags      = tags
+                this.duration  = duration
             }
         }
     }
@@ -176,6 +183,7 @@ class DiziPalOriginal : MainAPI() {
 
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
+        // 1. AŞAMA: GET isteği atıp hem Token'ı hem de ÇEREZLERİ alıyoruz
         val getResponse = app.get(
             url = data,
             headers = mapOf(
@@ -193,120 +201,230 @@ class DiziPalOriginal : MainAPI() {
             return false
         }
 
-        // Base64 Decode
+        val cookies = getResponse.cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+
+        Log.d("DZP", "Bulunan Token » $configToken")
+        Log.d("DZP", "Yakalanan Çerezler » $cookies")
+
+        // 2. AŞAMA: Token'ı Base64 Decode Et
         val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
         val decodedToken = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
+        Log.d("DZP", "Decoded Token » $decodedToken")
 
-        val embedUrlRaw = Regex(""""v"\s*:\s*"([^"]+)"""").find(decodedToken)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-        if (embedUrlRaw.isNullOrEmpty()) return false
+        val embedUrlRaw = Regex(""""v"\s*:\s*"([^"]+)"""").find(decodedToken)?.groupValues?.getOrNull(1)
+            ?.replace("\\/", "/")
+
+        if (embedUrlRaw.isNullOrEmpty()) {
+            Log.e("DZP", "Embed URL token içinden alınamadı! Dönen yanıt: $decodedToken")
+            return false
+        }
 
         val embedUrl = fixUrl(embedUrlRaw)
         Log.d("DZP", "Çözülen Embed URL » $embedUrl")
 
-        // Imagestoo Player Kontrolü
+        // Imagestoo özel durumu
         if (embedUrl.contains("imagestoo")) {
-            val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
-            val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
-
-            val apiResponse = app.post(
-                url = imagestooApiUrl,
-                referer = embedUrl,
-                headers = mapOf(
-                    "User-Agent" to userAgent,
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Accept" to "*/*"
-                )
-            )
-
-            var sessionCookie = ""
-            val playerToken = apiResponse.cookies["fireplayer_player"]
-
-            if (!playerToken.isNullOrEmpty()) {
-                sessionCookie = "fireplayer_player=$playerToken"
-            } else {
-                val rawSetCookie = apiResponse.headers["Set-Cookie"] ?: apiResponse.headers["set-cookie"]
-                if (rawSetCookie != null && rawSetCookie.contains("fireplayer_player")) {
-                    val cleanCookie = rawSetCookie.split(";").firstOrNull()
-                    if (cleanCookie != null) sessionCookie = "$cleanCookie;"
-                }
-            }
-
-            val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""").find(apiResponse.text)?.groupValues?.getOrNull(1)
-
-            if (videoSourceRaw != null) {
-                val finalM3u8Url = fixUrl(videoSourceRaw.replace("\\/", "/"))
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = "Dizipal (Imagestoo)",
-                        url = finalM3u8Url,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        referer = embedUrl
-                        headers = mapOf("Cookie" to sessionCookie)
-                        quality = Qualities.Unknown.value
-                    }
-                )
-                return true
-            }
+            return handleImagestoo(embedUrl, userAgent, subtitleCallback, callback)
         }
 
-        // Ana Embed Sayfasının Çekilmesi (s8.superadjacentsoddenly.xyz vb.)
+        // 3. AŞAMA: Embed sayfasından m3u8 ve altyazıları çek
         val embedSource = app.get(
             url = embedUrl,
             referer = data,
             headers = mapOf("User-Agent" to userAgent)
         ).text
 
-        // M3U8 Master Linkini Yakalama (Genel / HLS2 URL Deseni)
-        val m3u8Match = Regex("""https?://[^\s"'<>]+/hls2/[^\s"'<>]+/master\.m3u8[^\s"'<>]*""").find(embedSource)
-            ?: Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
-            ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
+        Log.d("DZP", "Embed kaynak içeriği alındı, uzunluk: ${embedSource.length}")
 
-        var finalM3u8Url = m3u8Match?.groupValues?.getOrNull(1) ?: m3u8Match?.value
+        // m3u8 URL'sini bul - birden fazla pattern dene
+        val m3u8Patterns = listOf(
+            Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
+            Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
+            Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']"""),
+            Regex("""v\s*:\s*["']([^"']+\.html[^"']*)["']""")
+        )
 
-        if (finalM3u8Url != null && finalM3u8Url.contains(".html")) {
-            val idRegex = Regex("""embed-([^.]+)\.html""")
-            val idMatch = idRegex.find(finalM3u8Url)?.groupValues?.getOrNull(1)
-            if (idMatch != null) {
-                finalM3u8Url = "https://s8.superadjacentsoddenly.xyz/hls2/01/00009/${idMatch}_,n,h,.urlset/master.m3u8"
+        var extractedUrl: String? = null
+        for (pattern in m3u8Patterns) {
+            extractedUrl = pattern.find(embedSource)?.groupValues?.getOrNull(1)
+            if (extractedUrl != null) {
+                Log.d("DZP", "Pattern eşleşti: $extractedUrl")
+                break
             }
         }
 
-        if (!finalM3u8Url.isNullOrEmpty()) {
-            val cleanM3u8 = fixUrl(finalM3u8Url.replace("\\/", "/"))
-            Log.d("DZP", "Başarıyla yakalanan M3U8 URL » $cleanM3u8")
+        if (extractedUrl == null) {
+            Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı!")
+            // Son çare: sayfa içinde script tag'lerini kontrol et
+            val scripts = document.select("script").map { it.data() }
+            for (script in scripts) {
+                if (script.contains("m3u8") || script.contains("master")) {
+                    Log.d("DZP", "Script içinde m3u8 aranıyor...")
+                    val found = Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(script)?.groupValues?.getOrNull(1)
+                    if (found != null) {
+                        extractedUrl = found
+                        break
+                    }
+                }
+            }
+            if (extractedUrl == null) return false
+        }
+
+        // URL dönüşümü - yeni yapıya göre güncellendi
+        val finalM3u8Url = when {
+            // Doğrudan m3u8 gelirse
+            extractedUrl.contains(".m3u8") -> extractedUrl
+            
+            // HTML linki gelirse (embed-xxxx.html)
+            extractedUrl.contains(".html") -> {
+                val idRegex = Regex("""embed-([^.]+)\.html""")
+                val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
+                
+                if (idMatch != null) {
+                    // Yeni domain yapısı: s8.superadjacentsoddenly.xyz
+                    // Path yapısı: /hls2/01/00009/{id}_,n,h,.urlset/master.m3u8
+                    "https://s8.superadjacentsoddenly.xyz/hls2/01/00009/${idMatch}_,n,h,.urlset/master.m3u8"
+                } else {
+                    Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
+                    null
+                }
+            }
+            
+            // URL'de zaten hls2 varsa doğrudan kullan
+            extractedUrl.contains("hls2") -> extractedUrl
+            
+            else -> extractedUrl
+        }
+
+        if (finalM3u8Url == null) {
+            Log.e("DZP", "Final m3u8 URL oluşturulamadı!")
+            return false
+        }
+
+        Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
+
+        // Ana video linkini ekle
+        callback.invoke(
+            newExtractorLink(
+                source = this.name,
+                name = "Dizipal (Ana Sunucu)",
+                url = finalM3u8Url,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = embedUrl
+                quality = Qualities.Unknown.value
+            }
+        )
+
+        // 4. AŞAMA: Altyazıları (Tracks) Yakala - XHR'den gelen yapıya göre
+        val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(embedSource)
+
+        tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
+            val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
+
+            trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
+                val itemStr = itemMatch.groupValues[1]
+
+                val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
+                val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
+
+                val fileUrl = fileMatch?.groupValues?.getOrNull(1)
+                val label = labelMatch?.groupValues?.getOrNull(1) ?: "Unknown"
+
+                if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
+                    subtitleCallback.invoke(
+                        SubtitleFile(
+                            lang = label,
+                            url = fixUrl(fileUrl)
+                        )
+                    )
+                }
+            }
+        }
+
+        // Alternatif altyazı yakalama: XHR'deki gibi vtt URL'lerini regex ile bul
+        if (tracksBlockMatch == null) {
+            val vttRegex = Regex("""["'](https?://[^"']+\.vtt[^"']*)["']""")
+            vttRegex.findAll(embedSource).forEach { match ->
+                val vttUrl = match.groupValues[1]
+                val langMatch = Regex("""_([a-z]{2})\.vtt""").find(vttUrl)
+                val lang = langMatch?.groupValues?.getOrNull(1) ?: "Unknown"
+                
+                subtitleCallback.invoke(
+                    SubtitleFile(
+                        lang = lang,
+                        url = fixUrl(vttUrl)
+                    )
+                )
+            }
+        }
+
+        return true
+    }
+
+    private suspend fun handleImagestoo(
+        embedUrl: String,
+        userAgent: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
+        val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
+        Log.d("DZP", "Imagestoo API URL » $imagestooApiUrl")
+
+        val apiResponse = app.post(
+            url = imagestooApiUrl,
+            referer = embedUrl,
+            headers = mapOf(
+                "User-Agent" to userAgent,
+                "X-Requested-With" to "XMLHttpRequest",
+                "Accept" to "*/*"
+            )
+        )
+
+        var sessionCookie = ""
+        val playerToken = apiResponse.cookies["fireplayer_player"]
+
+        if (!playerToken.isNullOrEmpty()) {
+            sessionCookie = "fireplayer_player=$playerToken"
+        } else {
+            val rawSetCookie = apiResponse.headers["Set-Cookie"] ?: apiResponse.headers["set-cookie"]
+            if (rawSetCookie != null && rawSetCookie.contains("fireplayer_player")) {
+                val cleanCookie = rawSetCookie.split(";").firstOrNull()
+                if (cleanCookie != null) {
+                    sessionCookie = "$cleanCookie;"
+                }
+            }
+        }
+
+        Log.d("DZP", "Yakalanan Cookie » $sessionCookie")
+
+        val responseText = apiResponse.text
+        val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""").find(responseText)?.groupValues?.getOrNull(1)
+
+        if (videoSourceRaw != null) {
+            val cleanUrl = videoSourceRaw.replace("\\/", "/")
+            val finalM3u8Url = fixUrl(cleanUrl)
+
+            Log.d("DZP", "Imagestoo Çözülen Video Kaynağı » $finalM3u8Url")
 
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
-                    name = "Dizipal (Ana Sunucu)",
-                    url = cleanM3u8,
+                    name = "Dizipal (Imagestoo)",
+                    url = finalM3u8Url,
                     type = ExtractorLinkType.M3U8
                 ) {
                     referer = embedUrl
+                    headers = mapOf("Cookie" to sessionCookie)
                     quality = Qualities.Unknown.value
                 }
             )
-        }
 
-        // Altyazıları Yakalama (.vtt / .srt)
-        val vttRegex = Regex("""https?://[^\s"'<>]+/[^\s"'<>]+\.(?:vtt|srt)""")
-        vttRegex.findAll(embedSource).forEach { match ->
-            val subUrl = fixUrl(match.value.replace("\\/", "/"))
-            val label = when {
-                subUrl.contains("_tur") -> "Türkçe"
-                subUrl.contains("_eng") -> "English"
-                else -> "Altyazı"
-            }
-            subtitleCallback.invoke(
-                SubtitleFile(
-                    lang = label,
-                    url = subUrl
-                )
-            )
+            return true
+        } else {
+            Log.e("DZP", "Imagestoo API yanıtından videoSource çıkarılamadı! Yanıt: $apiResponse")
+            return false
         }
-
-        return true
     }
 }
