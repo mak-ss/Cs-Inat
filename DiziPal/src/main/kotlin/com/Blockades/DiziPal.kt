@@ -1,8 +1,7 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-
 package com.Blockades
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
@@ -13,33 +12,60 @@ import java.net.URLEncoder
 class Dizipal : MainAPI() {
     override var mainUrl = "https://dizipal1432.com"
     override var name = "Dizipal"
-    // Cloudstream SDK'sında geçerli olan ana medya tipleri
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "tr"
     override val hasMainPage = true
 
+    companion object {
+        private const val TAG = "DiziPalLog"
+    }
+
     // 1. ANA SAYFA
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val items = document.select("a[href*='/film/'], a[href*='/dizi/']")
-            .distinctBy { it.attr("href") }
-            .mapNotNull { it.toSearchResult() }
-        val homeLists = if (items.isEmpty()) emptyList() else listOf(HomePageList("Öne Çıkanlar", items))
-        return newHomePageResponse(homeLists)
+        Log.d(TAG, "getMainPage çağrıldı. Sayfa: $page, URL: $mainUrl")
+        return runCatching {
+            val response = app.get(mainUrl)
+            Log.d(TAG, "getMainPage HTTP Yanıt Kodu: ${response.code}")
+            
+            val document = response.document
+            val items = document.select("a[href*='/film/'], a[href*='/dizi/']")
+                .distinctBy { it.attr("href") }
+                .mapNotNull { it.toSearchResult() }
+            
+            Log.d(TAG, "getMainPage bulunan içerik sayısı: ${items.size}")
+            val homeLists = if (items.isEmpty()) emptyList() else listOf(HomePageList("Öne Çıkanlar", items))
+            newHomePageResponse(homeLists)
+        }.getOrElse { e ->
+            Log.e(TAG, "getMainPage hatası!", e)
+            newHomePageResponse(emptyList())
+        }
     }
 
     // 2. ARAMA
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/arama?q=${URLEncoder.encode(query, "UTF-8")}"
-        val document = app.get(searchUrl).document
-        return document.select("a[href*='/film/'], a[href*='/dizi/']").distinctBy { it.attr("href") }.mapNotNull {
-            it.toSearchResult()
+        Log.d(TAG, "search çağrıldı. Sorgu: $query")
+        return runCatching {
+            val searchUrl = "$mainUrl/arama?q=${URLEncoder.encode(query, "UTF-8")}"
+            val response = app.get(searchUrl)
+            Log.d(TAG, "search HTTP Yanıt Kodu: ${response.code}")
+
+            val results = response.document.select("a[href*='/film/'], a[href*='/dizi/']")
+                .distinctBy { it.attr("href") }
+                .mapNotNull { it.toSearchResult() }
+
+            Log.d(TAG, "search sonuç sayısı: ${results.size}")
+            results
+        }.getOrElse { e ->
+            Log.e(TAG, "search hatası! Sorgu: $query", e)
+            emptyList()
         }
     }
 
     // 3. DETAY VE BÖLÜM LİSTESİ
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
+        Log.d(TAG, "load çağrıldı. URL: $url")
+        val response = app.get(url)
+        val document = response.document
         val ldCombined = document.select("script[type=application/ld+json]").joinToString("\n") { it.data() }
 
         val title = document.selectFirst("h1, .entry-title, .title")?.text()?.trim() ?: "Bilinmeyen Başlık"
@@ -56,12 +82,8 @@ class Dizipal : MainAPI() {
             ?: document.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.trim()
 
         val year = Regex("\"datePublished\"\\s*:\\s*\"?((?:19|20)\\d{2})\"?").find(ldCombined)?.groupValues?.get(1)?.toIntOrNull()
-        
         val imdbScore = Regex("\"ratingValue\"\\s*:\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?").find(ldCombined)?.groupValues?.get(1)?.toDoubleOrNull()
-            ?: Regex("([0-9]+(?:\\.[0-9]+)?)\\s*IMDB", RegexOption.IGNORE_CASE).find(document.text())?.groupValues?.get(1)?.toDoubleOrNull()
-            
         val durationMinutes = Regex("\"duration\"\\s*:\\s*\"PT(\\d+)M\"", RegexOption.IGNORE_CASE).find(ldCombined)?.groupValues?.get(1)?.toIntOrNull()
-            ?: Regex("(\\d+)\\s*dk", RegexOption.IGNORE_CASE).find(document.text())?.groupValues?.get(1)?.toIntOrNull()
 
         val trailerUrl = document.select("a[href]").firstOrNull {
             it.text().contains("Fragman", ignoreCase = true) || it.attr("href").contains("youtube.com|youtu.be".toRegex(RegexOption.IGNORE_CASE))
@@ -69,6 +91,8 @@ class Dizipal : MainAPI() {
 
         val episodeElements = document.select("a[href*='/bolum/']")
         val isSeries = url.contains("/dizi/")
+        
+        Log.d(TAG, "load parsed -> Başlık: $title, Tür: ${if (isSeries) "Dizi" else "Film"}, Bölüm Sayısı: ${episodeElements.size}")
 
         return if (isSeries) {
             val episodes = episodeElements.mapIndexed { index: Int, element: Element ->
@@ -76,12 +100,10 @@ class Dizipal : MainAPI() {
                 val rawText = element.text()
 
                 val seasonNum = Regex("-(\\d+)-sezon", RegexOption.IGNORE_CASE).find(epUrl)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: Regex("(\\d+)\\.\\s*Sezon", RegexOption.IGNORE_CASE).find(rawText)?.groupValues?.get(1)?.toIntOrNull() 
-                    ?: 1
+                    ?: Regex("(\\d+)\\.\\s*Sezon", RegexOption.IGNORE_CASE).find(rawText)?.groupValues?.get(1)?.toIntOrNull() ?: 1
                     
                 val epNum = Regex("-(\\d+)-bolum", RegexOption.IGNORE_CASE).find(epUrl)?.groupValues?.get(1)?.toIntOrNull()
-                    ?: Regex("(\\d+)\\.\\s*Bölüm", RegexOption.IGNORE_CASE).find(rawText)?.groupValues?.get(1)?.toIntOrNull() 
-                    ?: (index + 1)
+                    ?: Regex("(\\d+)\\.\\s*Bölüm", RegexOption.IGNORE_CASE).find(rawText)?.groupValues?.get(1)?.toIntOrNull() ?: (index + 1)
 
                 newEpisode(epUrl) {
                     this.season = seasonNum
@@ -103,25 +125,28 @@ class Dizipal : MainAPI() {
                 this.year = year
                 this.score = imdbScore?.let { Score.from10(it) }
                 this.duration = durationMinutes
-                trailerUrl?.let {
-                    this.trailers = mutableListOf(TrailerData(it, referer = url, raw = false))
-                }
+                trailerUrl?.let { this.trailers = mutableListOf(TrailerData(it, referer = url, raw = false)) }
             }
         }
     }
 
-    // 4. VİDEO KAYNAKLARI
+    // 4. VİDEO KAYNAKLARI (LOG DETAYLANDIRILDI)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d(TAG, "loadLinks başlatıldı. İstenen Target Data: $data")
         var foundLinks = false
+
         val response = runCatching { 
             app.get(data, headers = mapOf("User-Agent" to USER_AGENT)) 
+        }.onFailure { e ->
+            Log.e(TAG, "loadLinks target URL çekilirken ağ hatası alındı: $data", e)
         }.getOrNull() ?: return false
 
+        Log.d(TAG, "Target Sayfa Yüklendi. HTTP Status: ${response.code}")
         val rawHtml = response.text
         val iframeLinks = mutableSetOf<String>()
 
@@ -132,53 +157,49 @@ class Dizipal : MainAPI() {
                 if (decoded.contains("imagestoo") || decoded.contains("v\"")) {
                     val json = JSONObject(decoded)
                     listOf("v", "file", "url").forEach { key ->
-                        json.optString(key).takeIf { it.startsWith("http") }?.let { iframeLinks.add(it) }
+                        json.optString(key).takeIf { it.startsWith("http") }?.let { 
+                            iframeLinks.add(it)
+                            Log.d(TAG, "Base64 içinden iframe linki çözümlendi: $it")
+                        }
                     }
+                }
+            }.onFailure { Log.w(TAG, "Base64 çözme esnasında hata/atlanıldı.", it) }
+        }
+
+        // 2. DOM Iframe Taraması
+        response.document.select("iframe, [data-frame], [data-video], [data-src]").forEach {
+            val src = it.attr("data-frame").ifEmpty { it.attr("data-video") }.ifEmpty { it.attr("data-src") }.ifEmpty { it.attr("src") }
+            if (src.isNotBlank() && !src.startsWith("#")) {
+                fixUrlNull(src)?.let { cleanedSrc -> 
+                    iframeLinks.add(cleanedSrc)
+                    Log.d(TAG, "DOM üzerinde iframe/video tagi bulundu: $cleanedSrc")
                 }
             }
         }
 
-        // 2. data-cfg & DOM Iframe Taraması
-        response.document.select("[data-cfg]").forEach { elem ->
-            runCatching {
-                val cfg = elem.attr("data-cfg")
-                if (cfg.isNotBlank()) {
-                    JSONObject(String(Base64.decode(cfg, Base64.DEFAULT), Charsets.UTF_8)).optString("v").takeIf { it.startsWith("http") }?.let { iframeLinks.add(it) }
-                }
-            }
-        }
-        
-        response.document.select("iframe, [data-frame], [data-video], [data-src]").forEach {
-            val src = it.attr("data-frame").ifEmpty { it.attr("data-video") }.ifEmpty { it.attr("data-src") }.ifEmpty { it.attr("src") }
-            if (src.isNotBlank() && !src.startsWith("#")) {
-                fixUrlNull(src)?.let { cleanedSrc -> iframeLinks.add(cleanedSrc) }
-            }
-        }
-        
-        Regex("""(?i)(?:src|iframe|file|url)\s*[:=]\s*["'](https?://[^"']+)["']""").findAll(rawHtml).forEach { 
-            fixUrlNull(it.groupValues[1])?.let { cleanedUrl -> iframeLinks.add(cleanedUrl) }
-        }
+        Log.d(TAG, "İşlenecek toplam iframe sayısı: ${iframeLinks.size}")
 
         for (iframeUrl in iframeLinks.distinct()) {
             val cleanIframe = iframeUrl.replace("&amp;", "&").trim()
             if (!cleanIframe.startsWith("http")) continue
 
+            Log.d(TAG, "Iframe işleniyor -> $cleanIframe")
+
             // --- Imagestoo API İşleme ---
             if (cleanIframe.contains("imagestoo.com")) {
                 val hash = cleanIframe.substringAfter("video/").substringBefore("?").trim()
+                Log.d(TAG, "Imagestoo tespit edildi. Extracted Hash: $hash")
+                
                 if (hash.isNotBlank()) {
                     val normalizedIframe = "https://imagestoo.com/video/$hash"
-                    
                     val allCookies = mutableMapOf<String, String>()
+
                     val iframeResp = runCatching {
                         app.get(
                             url = normalizedIframe,
-                            headers = mapOf(
-                                "User-Agent" to USER_AGENT,
-                                "Referer" to "$mainUrl/"
-                            )
+                            headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")
                         )
-                    }.getOrNull()
+                    }.onFailure { Log.e(TAG, "Imagestoo iframe isteği başarısız!", it) }.getOrNull()
 
                     iframeResp?.cookies?.let { allCookies.putAll(it) }
 
@@ -187,7 +208,6 @@ class Dizipal : MainAPI() {
                             url = "https://imagestoo.com/player/index.php?data=$hash&do=getVideo",
                             headers = mapOf(
                                 "User-Agent" to USER_AGENT,
-                                "Accept" to "*/*",
                                 "X-Requested-With" to "XMLHttpRequest",
                                 "Origin" to "https://imagestoo.com",
                                 "Referer" to normalizedIframe,
@@ -196,39 +216,19 @@ class Dizipal : MainAPI() {
                             data = mapOf("hash" to hash, "r" to "$mainUrl/"),
                             cookies = allCookies
                         ).text
-                    }.getOrNull()
+                    }.onFailure { Log.e(TAG, "Imagestoo POST (getVideo) isteği başarısız!", it) }.getOrNull()
 
                     if (apiResponseText != null) {
+                        Log.d(TAG, "Imagestoo API Yanıtı: $apiResponseText")
                         runCatching {
                             val json = JSONObject(apiResponseText)
                             val securedLink = json.optString("securedLink").takeIf { it.isNotBlank() }?.replace("\\/", "/")
                             val videoSource = json.optString("videoSource").takeIf { it.isNotBlank() }?.replace("\\/", "/")
-                            
                             val targetUrl = securedLink ?: videoSource
 
                             if (targetUrl != null) {
-                                val finalCookieStr = allCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-                                val exoHeaders = mapOf(
-                                    "Origin" to "https://imagestoo.com",
-                                    "Referer" to normalizedIframe,
-                                    "User-Agent" to USER_AGENT,
-                                    "Cookie" to finalCookieStr
-                                )
-
-                                // VTT Altyazı kontrolü
-                                runCatching {
-                                    val masterText = app.get(targetUrl, headers = exoHeaders).text
-                                    val subRegex = Regex("""TYPE=SUBTITLES.*?URI="([^"]+)"""")
-                                    subRegex.findAll(masterText).forEach { match ->
-                                        subtitleCallback.invoke(
-                                            newSubtitleFile("Türkçe", match.groupValues[1]) {
-                                                this.headers = exoHeaders
-                                            }
-                                        )
-                                    }
-                                }
-
                                 val finalPlaybackUrl = if (targetUrl.contains(".m3u8")) targetUrl else "$targetUrl#.m3u8"
+                                Log.d(TAG, "Imagestoo Başarılı! Oynatma Bağlantısı: $finalPlaybackUrl")
 
                                 callback.invoke(
                                     newExtractorLink(
@@ -238,12 +238,19 @@ class Dizipal : MainAPI() {
                                         type = ExtractorLinkType.VIDEO
                                     ) {
                                         this.referer = normalizedIframe
-                                        this.headers = exoHeaders
+                                        this.headers = mapOf(
+                                            "Origin" to "https://imagestoo.com",
+                                            "Referer" to normalizedIframe,
+                                            "User-Agent" to USER_AGENT,
+                                            "Cookie" to allCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+                                        )
                                     }
                                 )
                                 foundLinks = true
+                            } else {
+                                Log.w(TAG, "Imagestoo JSON yanıtında 'securedLink' veya 'videoSource' bulunamadı.")
                             }
-                        }
+                        }.onFailure { Log.e(TAG, "Imagestoo JSON parse hatası!", it) }
                     }
                 }
                 continue 
@@ -251,15 +258,14 @@ class Dizipal : MainAPI() {
 
             // --- Standart M3U8/MP4 Doğrudan Bağlantılar ---
             if (cleanIframe.contains(".m3u8") || cleanIframe.contains(".mp4")) {
+                Log.d(TAG, "Doğrudan Medya Bağlantısı Bulundu: $cleanIframe")
                 callback.invoke(
                     newExtractorLink(
                         source = name,
                         name = "Dizipal Kaynak",
                         url = cleanIframe,
                         type = if (cleanIframe.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = mainUrl
-                    }
+                    ) { this.referer = mainUrl }
                 )
                 foundLinks = true
                 continue
@@ -267,49 +273,36 @@ class Dizipal : MainAPI() {
 
             // --- JS Unpack & Alternatif Kaynaklar ---
             val embedResReq = runCatching {
-                app.get(
-                    url = cleanIframe,
-                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")
-                )
-            }.getOrNull() ?: continue
+                app.get(url = cleanIframe, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/"))
+            }.onFailure { Log.e(TAG, "Alternatif Embed isteği başarısız: $cleanIframe", it) }.getOrNull() ?: continue
 
             val unpacked = unpackJs(embedResReq.text) ?: embedResReq.text
-            val genericCookieStr = embedResReq.cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-
-            val extractedVideo = listOf(
-                Regex("""(?i)file\s*[:=]\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']"""),
-                Regex("""(?i)source\s*[:=]\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']"""),
-                Regex("""(?i)src\s*[:=]\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']"""),
-                Regex("""(https?://[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)""")
-            ).firstNotNullOfOrNull { it.find(unpacked)?.groupValues?.get(1) }
+            val extractedVideo = Regex("""(?i)(?:file|source|src)\s*[:=]\s*["'](https?://[^"']+\.(?:m3u8|mp4)[^"']*)["']""").find(unpacked)?.groupValues?.get(1)
 
             if (extractedVideo != null) {
-                val finalVideoUrl = extractedVideo.replace("\\/", "/").replace("\\u0026", "&")
+                val finalVideoUrl = extractedVideo.replace("\\/", "/")
+                Log.d(TAG, "Unpacked/Regex üzerinden alternatif video bulundu: $finalVideoUrl")
                 callback.invoke(
                     newExtractorLink(
                         source = name,
                         name = "Dizipal Alternatif",
                         url = finalVideoUrl,
                         type = if (finalVideoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = cleanIframe
-                        this.headers = mapOf(
-                            "Referer" to cleanIframe, 
-                            "User-Agent" to USER_AGENT, 
-                            "Origin" to getBaseUrl(cleanIframe), 
-                            "Cookie" to genericCookieStr
-                        )
-                    }
+                    ) { this.referer = cleanIframe }
                 )
                 foundLinks = true
             } else {
-                if (loadExtractor(cleanIframe, subtitleCallback, callback)) foundLinks = true
+                Log.d(TAG, "Otomatik Extractor yükleyicisine yönlendiriliyor -> $cleanIframe")
+                if (loadExtractor(cleanIframe, subtitleCallback, callback)) {
+                    foundLinks = true
+                    Log.d(TAG, "loadExtractor başarılı bir şekilde kaynak buldu.")
+                }
             }
         }
+
+        Log.d(TAG, "loadLinks tamamlandı. Sonuç (Link Bulundu mu?): $foundLinks")
         return foundLinks
     }
-
-    private fun getBaseUrl(url: String): String = runCatching { val uri = URI(url); "${uri.scheme}://${uri.host}" }.getOrDefault(url)
 
     private fun unpackJs(packed: String): String? {
         val pattern = Regex("""eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)""", RegexOption.DOT_MATCHES_ALL)
