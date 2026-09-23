@@ -1,5 +1,5 @@
 // ! Bu araç CloudStream eklentisi için güncellenmiştir.
-package com.mebularts
+package com.Blockades // <- Burayı DiziPalPlugin.kt ile aynı yapıyoruz
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.*
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipal10.com.tr"
