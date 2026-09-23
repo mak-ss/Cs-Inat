@@ -1,5 +1,4 @@
-// ! Bu araç @Blocades tarafından | @Cs-Inat için yazılmıştır.
-
+// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
 package com.Blockades
 
@@ -16,24 +15,23 @@ class DiziPalOriginal : MainAPI() {
     override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    // ! CloudFlare bypass
     override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/bolumler"                                      to "Son Bölümler",
-        "${mainUrl}/diziler"                                       to "Yeni Diziler",
-        "${mainUrl}/filmler"                                       to "Yeni Filmler",
-        "${mainUrl}/platform/netflix"                              to "Netflix",
-        "${mainUrl}/platform/exxen"                                to "Exxen",
-        "${mainUrl}/platform/blutv"                                to "BluTV",
-        "${mainUrl}/platform/disney-plus"                          to "Disney+",
-        "${mainUrl}/platform/prime-video"                          to "Amazon Prime",
-        "${mainUrl}/platform/tabii"                                to "Tabii",
-        "${mainUrl}/platform/gain"                                 to "Gain",
-        "${mainUrl}/platform/max"                                  to "Max",
-        "${mainUrl}/kategori/bilim-kurgu"                          to "Bilimkurgu Filmleri",
-        "${mainUrl}/kategori/komedi"                               to "Komedi Filmleri",
-        "${mainUrl}/kategori/belgesel"                             to "Belgesel Filmleri",
+        "${mainUrl}/bolumler"                     to "Son Bölümler",
+        "${mainUrl}/diziler"                      to "Yeni Diziler",
+        "${mainUrl}/filmler"                      to "Yeni Filmler",
+        "${mainUrl}/platform/netflix"             to "Netflix",
+        "${mainUrl}/platform/exxen"               to "Exxen",
+        "${mainUrl}/platform/blutv"               to "BluTV",
+        "${mainUrl}/platform/disney-plus"         to "Disney+",
+        "${mainUrl}/platform/prime-video"         to "Amazon Prime",
+        "${mainUrl}/platform/tabii"               to "Tabii",
+        "${mainUrl}/platform/gain"                to "Gain",
+        "${mainUrl}/platform/max"                 to "Max",
+        "${mainUrl}/kategori/bilim-kurgu"         to "Bilimkurgu Filmleri",
+        "${mainUrl}/kategori/komedi"              to "Komedi Filmleri",
+        "${mainUrl}/kategori/belgesel"            to "Belgesel Filmleri",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -184,7 +182,6 @@ class DiziPalOriginal : MainAPI() {
 
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-        // 1. AŞAMA: Bölüm sayfasına git ve data-cfg token'ını al
         val pageResponse = app.get(
             url = data,
             headers = mapOf(
@@ -211,7 +208,6 @@ class DiziPalOriginal : MainAPI() {
 
         Log.d("DZP", "Bulunan data-cfg Token » $configToken")
 
-        // 2. AŞAMA: BASE_URL + "ajax" adresine POST isteği at (JavaScript'teki mantık)
         val ajaxResponse = app.post(
             url = "$mainUrl/ajax",
             data = mapOf("cfg" to configToken),
@@ -227,7 +223,6 @@ class DiziPalOriginal : MainAPI() {
         val ajaxText = ajaxResponse.text
         Log.d("DZP", "Ajax yanıtı » $ajaxText")
 
-        // 3. AŞAMA: Ajax yanıtını parse et
         val ajaxJson = try {
             AppUtils.parseJson<Map<String, Any>>(ajaxText)
         } catch (e: Exception) {
@@ -249,7 +244,6 @@ class DiziPalOriginal : MainAPI() {
 
         val videoUrl = config["v"] as? String
         val videoType = config["t"] as? String ?: "iframe"
-        val videoPoster = config["p"] as? String ?: ""
 
         if (videoUrl.isNullOrEmpty()) {
             Log.e("DZP", "Config içinde video URL (v) bulunamadı!")
@@ -259,9 +253,7 @@ class DiziPalOriginal : MainAPI() {
         Log.d("DZP", "Çözülen Video URL » $videoUrl")
         Log.d("DZP", "Video Tipi » $videoType")
 
-        // 4. AŞAMA: Video tipine göre işlem yap
         return when {
-            // Doğrudan m3u8 veya mp4 ise
             videoType == "m3u8" || videoType == "mp4" ||
             videoUrl.contains(".m3u8") || videoUrl.contains(".mp4") -> {
 
@@ -285,7 +277,6 @@ class DiziPalOriginal : MainAPI() {
                 true
             }
 
-            // iframe içeren bir yapı ise (HTML olarak geliyorsa)
             videoUrl.contains("<iframe") -> {
                 val iframeSrc = Regex("""src=["']([^"']+)["']""").find(videoUrl)?.groupValues?.getOrNull(1)
                 if (iframeSrc != null) {
@@ -295,21 +286,16 @@ class DiziPalOriginal : MainAPI() {
                 }
             }
 
-            // URL iframe kaynağı ise
             videoType == "iframe" -> {
                 extractFromEmbed(fixUrl(videoUrl), data, userAgent, subtitleCallback, callback)
             }
 
             else -> {
-                // Bilinmeyen tip, yine de embed olarak dene
                 extractFromEmbed(fixUrl(videoUrl), data, userAgent, subtitleCallback, callback)
             }
         }
     }
 
-    /**
-     * Embed URL'den m3u8 ve altyazı çıkarır
-     */
     private suspend fun extractFromEmbed(
         embedUrl: String,
         referer: String,
@@ -319,7 +305,6 @@ class DiziPalOriginal : MainAPI() {
     ): Boolean {
         Log.d("DZP", "Embed URL işleniyor » $embedUrl")
 
-        // Imagestoo özel durumu
         if (embedUrl.contains("imagestoo")) {
             return handleImagestoo(embedUrl, userAgent, subtitleCallback, callback)
         }
@@ -338,7 +323,6 @@ class DiziPalOriginal : MainAPI() {
         val embedSource = embedResponse.text
         Log.d("DZP", "Embed içerik uzunluğu: ${embedSource.length}")
 
-        // m3u8 URL'sini bul
         val m3u8Patterns = listOf(
             Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
             Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']"""),
@@ -349,8 +333,9 @@ class DiziPalOriginal : MainAPI() {
 
         var extractedUrl: String? = null
         for (pattern in m3u8Patterns) {
-            extractedUrl = pattern.find(embedSource)?.groupValues?.getOrNull(1)
-            if (extractedUrl != null) {
+            val match = pattern.find(embedSource)?.groupValues?.getOrNull(1)
+            if (match != null) {
+                extractedUrl = match
                 Log.d("DZP", "Pattern eşleşti: $extractedUrl")
                 break
             }
@@ -361,7 +346,6 @@ class DiziPalOriginal : MainAPI() {
             return false
         }
 
-        // URL dönüşümü
         val finalM3u8Url: String? = when {
             extractedUrl.contains(".m3u8") -> extractedUrl
 
@@ -396,22 +380,17 @@ class DiziPalOriginal : MainAPI() {
             }
         )
 
-        // Altyazıları yakala
         extractSubtitles(embedSource, subtitleCallback)
 
         return true
     }
 
-    /**
-     * Embed kaynağından altyazıları çıkarır
-     */
     private fun extractSubtitles(
         embedSource: String,
         subtitleCallback: (SubtitleFile) -> Unit
     ) {
         var found = false
 
-        // tracks bloğundan
         val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(embedSource)
 
         tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
@@ -434,29 +413,28 @@ class DiziPalOriginal : MainAPI() {
             }
         }
 
-        // Doğrudan VTT URL'lerini regex ile bul (XHR'deki gibi)
         if (!found) {
             val vttRegex = Regex("""["'](https?://[^"']+\.vtt[^"']*)["']""")
             vttRegex.findAll(embedSource).forEach { match ->
                 val vttUrl = match.groupValues[1]
                 val langMatch = Regex("""_([a-z]{2,3})\.vtt""").find(vttUrl)
                 val langCode = langMatch?.groupValues?.getOrNull(1)
-                val lang = when (langCode) {
-                    "tur" -> "Türkçe"
-                    "eng" -> "English"
-                    else  -> langCode ?: "Unknown"
+
+                val langText: String = if (langCode == "tur") {
+                    "Türkçe"
+                } else if (langCode == "eng") {
+                    "English"
+                } else {
+                    langCode ?: "Unknown"
                 }
 
                 subtitleCallback.invoke(
-                    SubtitleFile(lang = lang, url = fixUrl(vttUrl))
+                    SubtitleFile(lang = langText, url = fixUrl(vttUrl))
                 )
             }
         }
     }
 
-    /**
-     * Imagestoo özel durumu
-     */
     private suspend fun handleImagestoo(
         embedUrl: String,
         userAgent: String,
