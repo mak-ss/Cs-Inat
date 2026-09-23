@@ -1,10 +1,12 @@
-// ! Bu araç CloudStream eklentisi için güncellenmiştir.
 package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
@@ -24,11 +26,14 @@ class DiziPal : MainAPI() {
     private val cloudflareKiller by lazy { CloudflareKiller() }
     private val interceptor      by lazy { CloudflareInterceptor(cloudflareKiller) }
 
-    // Standart Headers
     private val defaultHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
     )
+
+    private val mapper = jacksonObjectMapper().apply {
+        configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+    }
 
     class CloudflareInterceptor(private val cloudflareKiller: CloudflareKiller) : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
@@ -56,7 +61,6 @@ class DiziPal : MainAPI() {
         val doc = app.get(url, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/").document
 
         val cards = mutableListOf<SearchResponse>()
-
         val items = doc.select("a.homepage-card, a.trend-card, a.grid-card, article a[href]")
             .distinctBy { it.attr("href") }
 
@@ -114,7 +118,13 @@ class DiziPal : MainAPI() {
     /* -------------------- Load (details) -------------------- */
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get(url, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/").document
+        val reqUrl = if (!url.contains("router=1")) {
+            if (url.contains("?")) "$url&router=1" else "$url?router=1"
+        } else url
+
+        val res = app.get(reqUrl, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/")
+        val body = res.text
+        val doc = res.document
 
         val poster = fixUrlNull(
             doc.selectFirst("[property='og:image']")?.attr("content")
@@ -122,22 +132,60 @@ class DiziPal : MainAPI() {
                 ?: doc.selectFirst("img[src*='image.tmdb.org']")?.attr("src")
         )
 
-        val title = doc.selectFirst("h1, .site-intro-title")?.text()?.trim()
+        val title = doc.selectFirst("h1, .series-title")?.text()?.replace(" izle", "")?.trim()
             ?: doc.title().substringBefore("—").substringBefore("|").trim()
 
         return when {
             url.contains("/dizi/") || url.contains("/anime/") -> {
-                val eps = doc.select("a[href*='-sezon/'], a[href*='/bolum']")
-                    .mapNotNull { a ->
-                        val href = normalizeHref(a.attr("href")) ?: return@mapNotNull null
-                        val (s, e) = parseSeasonEpisode(href, a.text())
-                        newEpisode(href) {
-                            name = a.text().ifBlank { "Bölüm $e" }
-                            season = s
-                            episode = e
+                val eps = mutableListOf<Episode>()
+
+                // window.episodesData JSON verisini yakala
+                val jsonRegex = Regex("""window\.episodesData\s*=\s*(\{.*?\}\});""", RegexOption.DOTMATCHESALL)
+                val jsonMatch = jsonRegex.find(body)?.groupValues?.get(1)
+
+                if (jsonMatch != null) {
+                    runCatching {
+                        val parsed = mapper.readValue<Map<String, Map<String, EpisodeJson>>>(jsonMatch)
+                        parsed.forEach { (seasonNum, episodesMap) ->
+                            val s = seasonNum.toIntOrNull() ?: 1
+                            episodesMap.forEach { (epNum, epData) ->
+                                val e = epNum.toIntOrNull()
+                                val embedPath = epData.iframe_url_encrypted ?: epData.iframe_url
+                                if (!embedPath.isNullOrBlank()) {
+                                    val fullEmbedUrl = fixUrl(embedPath)
+                                    eps.add(
+                                        newEpisode(fullEmbedUrl) {
+                                            name = epData.title ?: "Bölüm $e"
+                                            season = s
+                                            episode = e
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
-                    .distinctBy { it.data }
+                }
+
+                // Eğe JSON parse başarısız olursa HTML üzerindeki data attribute'larından çek
+                if (eps.isEmpty()) {
+                    doc.select("a.episode-card-link").forEach { a ->
+                        val embedPath = a.attr("data-iframe-url")
+                        if (embedPath.isNotBlank()) {
+                            val s = a.attr("data-season").toIntOrNull()
+                            val e = a.attr("data-episode").toIntOrNull()
+                            val epTitle = a.attr("data-title").ifBlank { "Bölüm $e" }
+                            val fullEmbedUrl = fixUrl(embedPath)
+
+                            eps.add(
+                                newEpisode(fullEmbedUrl) {
+                                    name = epTitle
+                                    season = s
+                                    episode = e
+                                }
+                            )
+                        }
+                    }
+                }
 
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps) {
                     this.posterUrl = poster
@@ -154,16 +202,6 @@ class DiziPal : MainAPI() {
         }
     }
 
-    private fun parseSeasonEpisode(href: String, textRaw: String): Pair<Int?, Int?> {
-        Regex("""/(\d+)-sezon/(\d+)-bolum""", RegexOption.IGNORE_CASE).find(href)?.let {
-            return it.groupValues[1].toIntOrNull() to it.groupValues[2].toIntOrNull()
-        }
-        val text = textRaw.lowercase()
-        val s = Regex("""(\d+)\s*\.?\s*sezon""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
-        val e = Regex("""(\d+)\s*\.?\s*bolum""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        return s to e
-    }
-
     /* -------------------- Links (player) -------------------- */
 
     override suspend fun loadLinks(
@@ -172,42 +210,36 @@ class DiziPal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DZP", "loadLinks baslatildi: $data")
+        Log.d("DZP", "loadLinks tetiklendi: $data")
 
         var found = false
         val reqHeaders = defaultHeaders + mapOf("Referer" to "$mainUrl/")
 
-        // 1) Ana bölüm/film sayfasını çek
+        // data parametresi doğrudan embed URL'si olabilir (/embed/?token=...)
         val res = app.get(data, headers = reqHeaders, interceptor = interceptor)
         val body = res.text
         val doc = res.document
 
-        // Sayfa metni içinden (.m3u8, /stream/ vb.) direkt linkleri ara
+        // 1) Oynatıcı HTML metninden doğrudan m3u8 adreslerini ara
         if (pushM3u8s(body, referer = data, callback)) {
             found = true
         }
 
-        // 2) HTML içerisindeki iframe, video kaynakları ve data-src niteliklerini tara
-        val elements = doc.select("iframe[src], iframe[data-src], iframe[data-player], video source[src]")
-        
-        elements.forEach { element ->
-            val rawSrc = element.attr("src")
-                .ifBlank { element.attr("data-src") }
-                .ifBlank { element.attr("data-player") }
-
+        // 2) Embed sayfası içindeki iframe ve video elementlerini tara
+        val playerElements = doc.select("iframe[src], iframe[data-src], video source[src]")
+        playerElements.forEach { element ->
+            val rawSrc = element.attr("src").ifBlank { element.attr("data-src") }
             val src = normalizeHref(rawSrc) ?: return@forEach
 
             if (pushM3u8s(src, referer = data, callback)) {
                 found = true
             } else {
-                // CloudStream yerleşik Extractor'larını çalıştır
                 if (loadExtractor(src, referer = data, subtitleCallback, callback)) {
                     found = true
                 } else {
-                    // Iframe kaynağına girip metin içerisinden m3u8 ayıkla
                     runCatching {
-                        val iframeRes = app.get(src, headers = reqHeaders, referer = data, interceptor = interceptor).text
-                        if (pushM3u8s(iframeRes, referer = src, callback)) {
+                        val subRes = app.get(src, headers = reqHeaders, referer = data, interceptor = interceptor).text
+                        if (pushM3u8s(subRes, referer = src, callback)) {
                             found = true
                         }
                     }
@@ -218,17 +250,14 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /** Metin içerisinden .m3u8 ve video akış adreslerini ayıklar ve oynatıcıya iletir */
+    /** Metin içerisinden .m3u8 veya /stream/ adreslerini çıkarır */
     private suspend fun pushM3u8s(
         text: String,
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var any = false
-        // JSON formatındaki kaçış karakterlerini (\/) düzgün URL biçimine çevir
         val unescapedText = text.replace("\\/", "/")
-
-        // .m3u8 veya /stream/ uzantılı tüm HTTP/HTTPS URL'lerini yakalayan regex
         val regex = Regex("""https?://[^\s"'<>\\]+(?:\.m3u8|/stream/[^\s"'<>\\]+)""")
 
         regex.findAll(unescapedText).map { it.value }.distinct().forEach { cleanUrl ->
@@ -245,7 +274,13 @@ class DiziPal : MainAPI() {
         return any
     }
 
-    /* -------------------- Utils -------------------- */
+    /* -------------------- Data Models & Utils -------------------- */
+
+    data class EpisodeJson(
+        val title: String? = null,
+        val iframe_url: String? = null,
+        val iframe_url_encrypted: String? = null
+    )
 
     private fun String.encodeURL() = java.net.URLEncoder.encode(this, "utf-8")
 
