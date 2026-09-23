@@ -4,12 +4,14 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
+import java.net.URLEncoder
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipal10.com.tr"
@@ -34,6 +36,14 @@ class DiziPal : MainAPI() {
     private val mapper = jacksonObjectMapper().apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     }
+
+    /* -------------------- Data Models -------------------- */
+
+    data class EpisodeJson(
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("iframe_url") val iframeUrl: String? = null,
+        @JsonProperty("iframe_url_encrypted") val iframeUrlEncrypted: String? = null
+    )
 
     class CloudflareInterceptor(private val cloudflareKiller: CloudflareKiller) : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
@@ -91,7 +101,7 @@ class DiziPal : MainAPI() {
     /* -------------------- Search -------------------- */
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchUrl = "$mainUrl/search?q=${query.encodeURL()}"
+        val searchUrl = "$mainUrl/search?q=${URLEncoder.encode(query, "UTF-8")}"
         val doc = app.get(searchUrl, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/").document
         val out = mutableListOf<SearchResponse>()
 
@@ -139,25 +149,24 @@ class DiziPal : MainAPI() {
             url.contains("/dizi/") || url.contains("/anime/") -> {
                 val eps = mutableListOf<Episode>()
 
-                // window.episodesData JSON verisini yakala
-                val jsonRegex = Regex("""window\.episodesData\s*=\s*(\{.*?\}\});""", RegexOption.DOTMATCHESALL)
+                val jsonRegex = Regex("""window\.episodesData\s*=\s*(\{.*?\}\});""", RegexOption.DOT_MATCHES_ALL)
                 val jsonMatch = jsonRegex.find(body)?.groupValues?.get(1)
 
                 if (jsonMatch != null) {
                     runCatching {
-                        val parsed = mapper.readValue<Map<String, Map<String, EpisodeJson>>>(jsonMatch)
+                        val parsed: Map<String, Map<String, EpisodeJson>> = mapper.readValue(jsonMatch)
                         parsed.forEach { (seasonNum, episodesMap) ->
                             val s = seasonNum.toIntOrNull() ?: 1
                             episodesMap.forEach { (epNum, epData) ->
                                 val e = epNum.toIntOrNull()
-                                val embedPath = epData.iframe_url_encrypted ?: epData.iframe_url
+                                val embedPath = epData.iframeUrlEncrypted ?: epData.iframeUrl
                                 if (!embedPath.isNullOrBlank()) {
                                     val fullEmbedUrl = fixUrl(embedPath)
                                     eps.add(
                                         newEpisode(fullEmbedUrl) {
-                                            name = epData.title ?: "Bölüm $e"
-                                            season = s
-                                            episode = e
+                                            this.name = epData.title ?: "Bölüm $e"
+                                            this.season = s
+                                            this.episode = e
                                         }
                                     )
                                 }
@@ -166,7 +175,6 @@ class DiziPal : MainAPI() {
                     }
                 }
 
-                // Eğe JSON parse başarısız olursa HTML üzerindeki data attribute'larından çek
                 if (eps.isEmpty()) {
                     doc.select("a.episode-card-link").forEach { a ->
                         val embedPath = a.attr("data-iframe-url")
@@ -178,9 +186,9 @@ class DiziPal : MainAPI() {
 
                             eps.add(
                                 newEpisode(fullEmbedUrl) {
-                                    name = epTitle
-                                    season = s
-                                    episode = e
+                                    this.name = epTitle
+                                    this.season = s
+                                    this.episode = e
                                 }
                             )
                         }
@@ -215,17 +223,14 @@ class DiziPal : MainAPI() {
         var found = false
         val reqHeaders = defaultHeaders + mapOf("Referer" to "$mainUrl/")
 
-        // data parametresi doğrudan embed URL'si olabilir (/embed/?token=...)
         val res = app.get(data, headers = reqHeaders, interceptor = interceptor)
         val body = res.text
         val doc = res.document
 
-        // 1) Oynatıcı HTML metninden doğrudan m3u8 adreslerini ara
         if (pushM3u8s(body, referer = data, callback)) {
             found = true
         }
 
-        // 2) Embed sayfası içindeki iframe ve video elementlerini tara
         val playerElements = doc.select("iframe[src], iframe[data-src], video source[src]")
         playerElements.forEach { element ->
             val rawSrc = element.attr("src").ifBlank { element.attr("data-src") }
@@ -250,7 +255,6 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /** Metin içerisinden .m3u8 veya /stream/ adreslerini çıkarır */
     private suspend fun pushM3u8s(
         text: String,
         referer: String,
@@ -274,15 +278,7 @@ class DiziPal : MainAPI() {
         return any
     }
 
-    /* -------------------- Data Models & Utils -------------------- */
-
-    data class EpisodeJson(
-        val title: String? = null,
-        val iframe_url: String? = null,
-        val iframe_url_encrypted: String? = null
-    )
-
-    private fun String.encodeURL() = java.net.URLEncoder.encode(this, "utf-8")
+    /* -------------------- Utils -------------------- */
 
     private fun normalizeHref(href: String?): String? =
         if (href.isNullOrBlank()) null else if (href.startsWith("http")) href else fixUrl(href)
