@@ -1,5 +1,7 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
+// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
+
 package com.Blockades
 
 import android.util.Log
@@ -331,22 +333,19 @@ class DiziPalOriginal : MainAPI() {
             Regex("""v\s*:\s*["']([^"']+\.html[^"']*)["']""")
         )
 
-        var extractedUrl: String? = null
-        for (pattern in m3u8Patterns) {
-            val match = pattern.find(embedSource)?.groupValues?.getOrNull(1)
-            if (match != null) {
-                extractedUrl = match
-                Log.d("DZP", "Pattern eşleşti: $extractedUrl")
-                break
+        val extractedUrl: String = run {
+            for (pattern in m3u8Patterns) {
+                val match = pattern.find(embedSource)?.groupValues?.getOrNull(1)
+                if (match != null) {
+                    Log.d("DZP", "Pattern eşleşti: $match")
+                    return@run match
+                }
             }
-        }
-
-        if (extractedUrl == null) {
             Log.e("DZP", "Embed içeriğinde m3u8 bulunamadı!")
             return false
         }
 
-        val finalM3u8Url: String? = when {
+        val finalM3u8Url: String = when {
             extractedUrl.contains(".m3u8") -> extractedUrl
 
             extractedUrl.contains(".html") -> {
@@ -354,16 +353,14 @@ class DiziPalOriginal : MainAPI() {
                 val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
                 if (idMatch != null) {
                     "https://s8.superadjacentsoddenly.xyz/hls2/01/00009/${idMatch}_,n,h,.urlset/master.m3u8"
-                } else null
+                } else {
+                    Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
+                    return false
+                }
             }
 
             extractedUrl.contains("hls2") -> extractedUrl
             else -> extractedUrl
-        }
-
-        if (finalM3u8Url == null) {
-            Log.e("DZP", "Final m3u8 URL oluşturulamadı!")
-            return false
         }
 
         Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
