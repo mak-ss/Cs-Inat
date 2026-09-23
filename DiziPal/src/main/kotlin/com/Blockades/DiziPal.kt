@@ -198,17 +198,33 @@ class DiziPal : MainAPI() {
         )
 
         val document = getResponse.document
-        val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
+        
+        // 1. Yöntem: #videoContainer verisini alma
+        var configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
 
+        // 2. Yöntem: Alternatif iframe veya video div'lerini deneme
         if (configToken.isNullOrEmpty()) {
-            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) alınamadı!")
+            configToken = document.selectFirst("div[data-cfg]")?.attr("data-cfg")?.trim()
+        }
+
+        // 3. Yöntem: Doğrudan iframe src içerisinden alma (Eğer token kullanılmıyorsa)
+        if (configToken.isNullOrEmpty()) {
+            val iframeSrc = document.selectFirst("iframe[src*=embed], iframe[src*=player]")?.attr("src")
+            if (!iframeSrc.isNullOrEmpty()) {
+                val embedUrl = fixUrl(iframeSrc)
+                return extractDirectEmbed(embedUrl, data, userAgent, subtitleCallback, callback)
+            }
+            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) veya iframe bulunamadı!")
             return false
         }
 
-        val cookies = getResponse.cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-
         val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
-        val decodedToken = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
+        val decodedToken = try {
+            String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
+        } catch (e: Exception) {
+            Log.e("DZP", "Base64 decode hatası: ${e.message}")
+            return false
+        }
 
         val embedUrlRaw = Regex(""""v"\s*:\s*"([^"]+)"""").find(decodedToken)?.groupValues?.getOrNull(1)
             ?.replace("\\/", "/")
@@ -219,7 +235,16 @@ class DiziPal : MainAPI() {
         }
 
         val embedUrl = fixUrl(embedUrlRaw)
+        return extractDirectEmbed(embedUrl, data, userAgent, subtitleCallback, callback)
+    }
 
+    private suspend fun extractDirectEmbed(
+        embedUrl: String,
+        refererUrl: String,
+        userAgent: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         if (embedUrl.contains("imagestoo")) {
             val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
             val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
@@ -269,19 +294,17 @@ class DiziPal : MainAPI() {
                     }
                 )
                 return true
-            } else {
-                Log.e("DZP", "Imagestoo API yanıtından videoSource çıkarılamadı!")
-                return false
             }
         }
 
         val embedSource = app.get(
             url = embedUrl,
-            referer = data,
+            referer = refererUrl,
             headers = mapOf("User-Agent" to userAgent)
         ).text
 
         val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
+            ?: Regex("""file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
             ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
 
         val extractedUrl = m3u8Match?.groupValues?.getOrNull(1) ?: return false
@@ -311,6 +334,7 @@ class DiziPal : MainAPI() {
             }
         )
 
+        // Altyazı çekme mantığı
         val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(embedSource)
         tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
             val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
