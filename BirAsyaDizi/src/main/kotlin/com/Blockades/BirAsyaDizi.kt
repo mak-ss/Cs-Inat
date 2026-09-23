@@ -1,3 +1,4 @@
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
 import android.util.Log
@@ -13,7 +14,6 @@ class BirAsyaDizi : MainAPI() {
     override val hasQuickSearch       = false
     override val supportedTypes       = setOf(TvType.AsianDrama)
 
-    // override kelimesi kaldırıldı, private val yapıldı
     private val mainHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer" to "$mainUrl/"
