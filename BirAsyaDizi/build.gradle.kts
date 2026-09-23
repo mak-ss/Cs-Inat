@@ -1,4 +1,3 @@
-
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 version = 1
 
@@ -14,7 +13,7 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
     **/
-    status  = 1 // will be 3 if unspecified
+    status  = 1
     tvTypes = listOf("AsianDrama")
-    iconUrl = "https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://www.birasyadizi.com/&size=16"
+    iconUrl = "https://www.google.com/s2/favicons?domain=www.birasyadizi.cx&sz=128"
 }
