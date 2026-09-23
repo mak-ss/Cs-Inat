@@ -1,5 +1,5 @@
 // ! Bu araç CloudStream eklentisi için güncellenmiştir.
-package com.Blockades // <- Burayı DiziPalPlugin.kt ile aynı yapıyoruz
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -24,6 +24,12 @@ class DiziPal : MainAPI() {
     private val cloudflareKiller by lazy { CloudflareKiller() }
     private val interceptor      by lazy { CloudflareInterceptor(cloudflareKiller) }
 
+    // Standart Headers
+    private val defaultHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+    )
+
     class CloudflareInterceptor(private val cloudflareKiller: CloudflareKiller) : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val req = chain.request()
@@ -47,11 +53,10 @@ class DiziPal : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) "${request.data}?page=$page" else request.data
-        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+        val doc = app.get(url, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/").document
 
         val cards = mutableListOf<SearchResponse>()
 
-        // Yeni DiziPal HTML kart yapıları (homepage-card, trend-card, grid-card)
         val items = doc.select("a.homepage-card, a.trend-card, a.grid-card, article a[href]")
             .distinctBy { it.attr("href") }
 
@@ -83,7 +88,7 @@ class DiziPal : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/search?q=${query.encodeURL()}"
-        val doc = app.get(searchUrl, interceptor = interceptor, referer = "$mainUrl/").document
+        val doc = app.get(searchUrl, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/").document
         val out = mutableListOf<SearchResponse>()
 
         doc.select("a.homepage-card, a.grid-card, a[href*='/dizi/'], a[href*='/film/']").forEach { a ->
@@ -109,7 +114,7 @@ class DiziPal : MainAPI() {
     /* -------------------- Load (details) -------------------- */
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+        val doc = app.get(url, headers = defaultHeaders, interceptor = interceptor, referer = "$mainUrl/").document
 
         val poster = fixUrlNull(
             doc.selectFirst("[property='og:image']")?.attr("content")
@@ -122,7 +127,6 @@ class DiziPal : MainAPI() {
 
         return when {
             url.contains("/dizi/") || url.contains("/anime/") -> {
-                // Bölüm linklerini topla (/dizi/.../1-sezon/1-bolum v.b.)
                 val eps = doc.select("a[href*='-sezon/'], a[href*='/bolum']")
                     .mapNotNull { a ->
                         val href = normalizeHref(a.attr("href")) ?: return@mapNotNull null
@@ -168,33 +172,44 @@ class DiziPal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DZP", "loadLinks: $data")
+        Log.d("DZP", "loadLinks baslatildi: $data")
 
-        // 1) Router isteği atarak veya doğrudan sayfayı çekerek video kaynağını al
-        val targetUrl = if (!data.contains("router=1")) {
-            if (data.contains("?")) "$data&router=1" else "$data?router=1"
-        } else data
+        var found = false
+        val reqHeaders = defaultHeaders + mapOf("Referer" to "$mainUrl/")
 
-        val res = app.get(targetUrl, referer = "$mainUrl/", interceptor = interceptor)
+        // 1) Ana bölüm/film sayfasını çek
+        val res = app.get(data, headers = reqHeaders, interceptor = interceptor)
         val body = res.text
         val doc = res.document
 
-        // Sayfa/XHR yanıtında doğrudan geçen m3u8 veya vd.palv2/stream linkleri
-        var found = pushM3u8s(body, referer = data, callback)
+        // Sayfa metni içinden (.m3u8, /stream/ vb.) direkt linkleri ara
+        if (pushM3u8s(body, referer = data, callback)) {
+            found = true
+        }
 
-        // HTML içindeki iframe ve video oynatıcı kaynaklarını tara
-        doc.select("iframe[src], video source[src]").forEach { element ->
-            val src = normalizeHref(element.attr("src")) ?: return@forEach
+        // 2) HTML içerisindeki iframe, video kaynakları ve data-src niteliklerini tara
+        val elements = doc.select("iframe[src], iframe[data-src], iframe[data-player], video source[src]")
+        
+        elements.forEach { element ->
+            val rawSrc = element.attr("src")
+                .ifBlank { element.attr("data-src") }
+                .ifBlank { element.attr("data-player") }
+
+            val src = normalizeHref(rawSrc) ?: return@forEach
+
             if (pushM3u8s(src, referer = data, callback)) {
                 found = true
             } else {
-                // Extractor ve iç iframe taraması
-                if (loadExtractor(src, data, subtitleCallback, callback)) {
+                // CloudStream yerleşik Extractor'larını çalıştır
+                if (loadExtractor(src, referer = data, subtitleCallback, callback)) {
                     found = true
                 } else {
+                    // Iframe kaynağına girip metin içerisinden m3u8 ayıkla
                     runCatching {
-                        val subText = app.get(src, referer = data, interceptor = interceptor).text
-                        if (pushM3u8s(subText, referer = src, callback)) found = true
+                        val iframeRes = app.get(src, headers = reqHeaders, referer = data, interceptor = interceptor).text
+                        if (pushM3u8s(iframeRes, referer = src, callback)) {
+                            found = true
+                        }
                     }
                 }
             }
@@ -203,18 +218,21 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /** Metin içerisinden .m3u8 ve vd.palv2 / stream adreslerini ayıklar ve ekler */
+    /** Metin içerisinden .m3u8 ve video akış adreslerini ayıklar ve oynatıcıya iletir */
     private suspend fun pushM3u8s(
         text: String,
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var any = false
-        val regex = Regex("""https?://[^\s"'<>]+(?:\.m3u8|/stream/[^\s"'<>]+)""")
+        // JSON formatındaki kaçış karakterlerini (\/) düzgün URL biçimine çevir
+        val unescapedText = text.replace("\\/", "/")
 
-        regex.findAll(text).map { it.value }.distinct().forEach { link ->
-            val cleanUrl = fixUrl(link)
-            if (cleanUrl.contains(".m3u8") || cleanUrl.contains("/stream/")) {
+        // .m3u8 veya /stream/ uzantılı tüm HTTP/HTTPS URL'lerini yakalayan regex
+        val regex = Regex("""https?://[^\s"'<>\\]+(?:\.m3u8|/stream/[^\s"'<>\\]+)""")
+
+        regex.findAll(unescapedText).map { it.value }.distinct().forEach { cleanUrl ->
+            runCatching {
                 M3u8Helper.generateM3u8(
                     source    = name,
                     streamUrl = cleanUrl,
