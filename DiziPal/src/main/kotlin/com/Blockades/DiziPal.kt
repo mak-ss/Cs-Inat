@@ -362,7 +362,7 @@ class DiziPalOriginal : MainAPI() {
         }
 
         // URL dönüşümü
-        val finalM3u8Url = when {
+        val finalM3u8Url: String? = when {
             extractedUrl.contains(".m3u8") -> extractedUrl
 
             extractedUrl.contains(".html") -> {
