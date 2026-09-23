@@ -1,4 +1,4 @@
-// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
 package com.Blockades
 
