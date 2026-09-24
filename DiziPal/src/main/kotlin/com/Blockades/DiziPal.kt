@@ -36,18 +36,21 @@ class DiziPal : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(
-            request.data,
-        ).document
-        val home     = if (request.data.contains("/bolumler")) {
-            document.select("div.episodes-list-grid > a.episode-list-item").mapNotNull { it.sonBolumler() }
-        } else if (request.data.contains("/filmler") || request.data.contains("/kategori/")) {
-            document.select("article.dp-card").mapNotNull { it.filmler() }
-        } else {
-            document.select("ul.content-grid > li").mapNotNull { it.diziler() }
+        val document = app.get(request.data).document
+
+        val home = when {
+            request.data.contains("/bolumler") -> {
+                document.select("div.episodes-list-grid > a.episode-list-item").mapNotNull { it.sonBolumler() }
+            }
+            request.data.contains("/filmler") || request.data.contains("/kategori/") -> {
+                document.select("article.dp-card").mapNotNull { it.filmler() }
+            }
+            else -> {
+                document.select("ul.content-grid > li").mapNotNull { it.diziler() }
+            }
         }
 
-        return newHomePageResponse(request.name, home, hasNext=false)
+        return newHomePageResponse(request.name, home, hasNext = false)
     }
 
     private fun Element.sonBolumler(): SearchResponse? {
@@ -77,10 +80,10 @@ class DiziPal : MainAPI() {
     }
 
     private fun Element.filmler(): SearchResponse? {
-        val title = this.selectFirst("h3 a")?.text() ?: return null
-        val href = fixUrlNull(this.selectFirst("h3 a")?.attr("href")) ?: return null
+        val title     = this.selectFirst("h3 a")?.text() ?: return null
+        val href      = fixUrlNull(this.selectFirst("h3 a")?.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
-        val year = this.selectFirst("div.dp-card-meta span:first-child")?.text()?.toIntOrNull()
+        val year      = this.selectFirst("div.dp-card-meta span:first-child")?.text()?.toIntOrNull()
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
             this.posterUrl = posterUrl
@@ -221,8 +224,36 @@ class DiziPal : MainAPI() {
         val document = getResponse.document
 
         // Sayfa hem film hem dizi bölümü olabilir. Token'ı ikisinden de almaya çalış.
-        val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
-            ?: document.selectFirst("div[data-rm-k]")?.attr("data-cfg")?.trim()
+        var configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
+
+        // Film sayfası için (221v.d.txt) - data-rm-k içindeki JSON benzeri metni al
+        if (configToken.isNullOrEmpty()) {
+            val rmKElement = document.selectFirst("div[data-rm-k]")
+            if (rmKElement != null) {
+                // div içindeki text content'i al (HTML entity'leri decode edilmiş olarak)
+                val rawText = rmKElement.text().trim()
+                Log.d("DZP", "data-rm-k içeriği » $rawText")
+
+                // JSON içinden "ciphertext" değerini çıkar
+                // Format: {"ciphertext":"...","iv":"...","salt":"..."}
+                val ciphertextMatch = Regex(""""ciphertext"\s*:\s*"([^"]+)"""").find(rawText)
+                val ivMatch = Regex(""""iv"\s*:\s*"([^"]+)"""").find(rawText)
+                val saltMatch = Regex(""""salt"\s*:\s*"([^"]+)"""").find(rawText)
+
+                val ciphertext = ciphertextMatch?.groupValues?.getOrNull(1)
+                val iv = ivMatch?.groupValues?.getOrNull(1)
+                val salt = saltMatch?.groupValues?.getOrNull(1)
+
+                if (!ciphertext.isNullOrEmpty() && !iv.isNullOrEmpty() && !salt.isNullOrEmpty()) {
+                    // Bu değerleri birleştirip API'ye göndereceğiz
+                    // Format: ciphertext|iv|salt
+                    configToken = "$ciphertext|$iv|$salt"
+                    Log.d("DZP", "Film için ciphertext bulundu » $ciphertext")
+                    Log.d("DZP", "Film için IV » $iv")
+                    Log.d("DZP", "Film için Salt » $salt")
+                }
+            }
+        }
 
         if (configToken.isNullOrEmpty()) {
             Log.e("DZP", "Sayfadan video config token'ı (data-cfg) alınamadı!")
