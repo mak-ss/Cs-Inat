@@ -16,9 +16,7 @@ class DiziPal : MainAPI() {
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
     // ! CloudFlare bypass
-    override var sequentialMainPage = true        // * https://recloudstream.github.io/dokka/-cloudstream/com.lagradost.cloudstream3/-main-a-p-i/index.html#-2049735995%2FProperties%2F101969414
-    // override var sequentialMainPageDelay       = 250L // ? 0.25 saniye
-    // override var sequentialMainPageScrollDelay = 250L // ? 0.25 saniye
+    override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
         "${mainUrl}/bolumler"                                      to "Son Bölümler",
@@ -62,7 +60,7 @@ class DiziPal : MainAPI() {
         val posterUrl = fixUrlNull(imgElement?.attr("data-src")?.ifEmpty { imgElement.attr("src") })
 
         val seriesUrl = href
-            .replace(Regex("-\\d+-sezon-\\d+-bolum.*$"), "") // Sonundaki sezon-bölüm tagini at
+            .replace(Regex("-\\d+-sezon-\\d+-bolum.*$"), "")
             .replace("/bolum/", "/dizi/")
 
         return newTvSeriesSearchResponse(title, seriesUrl, TvType.TvSeries) {
@@ -90,26 +88,7 @@ class DiziPal : MainAPI() {
         }
     }
 
-    private fun DizipalSearchResult.toPostSearchResult(): SearchResponse? {
-        // Zorunlu alanların kontrolü (Early return)
-        val title = this.title ?: return null
-        val href  = this.url ?: return null
-
-        return if (this.type.equals("Dizi", ignoreCase = true)) {
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = this@toPostSearchResult.poster
-                this.year      = this@toPostSearchResult.year
-            }
-        } else {
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = this@toPostSearchResult.poster
-                this.year      = this@toPostSearchResult.year
-            }
-        }
-    }
-
     override suspend fun search(query: String): List<SearchResponse> {
-        // Arama URL'sini doğrudan parametre ile oluşturuyoruz
         val searchUrl = "$mainUrl/ajax-search?q=$query"
 
         val responseRaw = app.get(
@@ -121,18 +100,15 @@ class DiziPal : MainAPI() {
             referer = "$mainUrl/"
         )
 
-        // JSON'ı yeni data class yapımızla parse ediyoruz
         val jsonResponse = AppUtils.parseJson<DizipalSearchData>(responseRaw.text)
 
         val searchResponses = mutableListOf<SearchResponse>()
 
-        // Eğer results null dönerse veya boşsa güvenli şekilde geçiyoruz
         jsonResponse.results?.forEach { item ->
             val title = item.title ?: return@forEach
             val url = item.url ?: return@forEach
             val poster = item.poster
 
-            // Dizi mi Film mi olduğunu API'den gelen "type" alanına göre belirliyoruz
             if (item.type == "Dizi") {
                 searchResponses.add(
                     newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
@@ -168,20 +144,14 @@ class DiziPal : MainAPI() {
         // Genel Meta Bilgileri
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
 
-        // .info-row içindeki span yapısından veriyi çekiyoruz
         val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")?.text()?.trim()?.toIntOrNull()
         val description = document.selectFirst("p.series-description")?.text()?.trim()
 
-        // "Kategoriler" altındaki tüm <a> tag'lerini çekip listeye çeviriyoruz
         val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a").map { it.text().trim() }
 
-        // HTML'de süre bilgisi mevcut değil, gelirse diye hazırlıklı bırakıyorum:
-        // val durationText = document.selectFirst("div.info-row:contains(Süre) span.info-value")?.text()
-        // val duration = Regex("(\\d+)").find(durationText ?: "")?.value?.toIntOrNull()
         val duration: Int? = null
 
         if (url.contains("/dizi/")) {
-            // Yeni DOM yapısında başlık h1 tag'inde class ile tutuluyor
             val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
 
             val episodes = document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
@@ -189,7 +159,6 @@ class DiziPal : MainAPI() {
                 val epHref = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
                 val epName = anchor.selectFirst("div.detail-episode-title")?.text()?.trim() ?: return@mapNotNull null
 
-                // Format: "1. Sezon 1. Bölüm" -> Regex ile güvenli parse işlemi
                 val subtitle = anchor.selectFirst("div.detail-episode-subtitle")?.text()?.trim() ?: ""
                 val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
 
@@ -211,14 +180,13 @@ class DiziPal : MainAPI() {
                 this.duration  = duration
             }
         } else {
-            // Film detay sayfası HTML'i (221v.d.txt) selector'larına göre güncellendi.
+            // Film detay sayfası (221v.d.txt) selector'larına göre güncellendi.
             val title = document.selectFirst("h1")?.text()?.substringBefore(" (")?.trim() ?: return null
 
             val movieYear = document.selectFirst("div.dp-detail-meta span:first-child")?.text()?.toIntOrNull()
             val moviePlot = document.selectFirst("div.dp-description")?.text()?.trim()
             val movieTags = document.select("div.dp-detail-meta a[rel=tag]").map { it.text().trim() }
             val movieDuration = document.selectFirst("div.dp-detail-meta span:nth-child(2)")?.text()?.replace(" dk", "")?.toIntOrNull()
-
 
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
@@ -298,14 +266,10 @@ class DiziPal : MainAPI() {
         // YENİ EKLENEN AŞAMA: İMAGESTOO SUNUCUSU KONTROLÜ
         // ---------------------------------------------------------
         if (embedUrl.contains("imagestoo")) {
-            // 1. URL'nin sonundan video ID'sini çek (Örn: decff3a1f694fccd108d4ce07b2587b5)
             val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
-
-            // 2. İlgili API endpoint'ini oluştur
             val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
             Log.d("DZP", "Imagestoo API URL » $imagestooApiUrl")
 
-            // 3. API'ye istek at (X-Requested-With header'ı bu tür AJAX isteklerinde önemlidir)
             val apiResponse = app.post(
                 url = imagestooApiUrl,
                 referer = embedUrl,
@@ -318,19 +282,13 @@ class DiziPal : MainAPI() {
 
             var sessionCookie = ""
 
-// 1. Önce CloudStream'in kendi parse ettiği "cookies" map'ine bakalım (En kolayı)
             val playerToken = apiResponse.cookies["fireplayer_player"]
 
             if (!playerToken.isNullOrEmpty()) {
                 sessionCookie = "fireplayer_player=$playerToken"
             } else {
-                // 2. Eğer orada yoksa, Headers içinden manuel okuyalım.
-                // Büyük/küçük harf duyarlılığından kaçınmak için ikisini de kontrol ediyoruz.
                 val rawSetCookie = apiResponse.headers["Set-Cookie"] ?: apiResponse.headers["set-cookie"]
-
-                // rawSetCookie bir String olarak döndü, artık String metodlarını güvenle kullanabiliriz
                 if (rawSetCookie != null && rawSetCookie.contains("fireplayer_player")) {
-                    // substringBefore yerine split kullanmak tip çıkarımı açısından her zaman daha garantilidir
                     val cleanCookie = rawSetCookie.split(";").firstOrNull()
                     if (cleanCookie != null) {
                         sessionCookie = "$cleanCookie;"
@@ -342,11 +300,9 @@ class DiziPal : MainAPI() {
 
             val responseText = apiResponse.text
 
-            // 4. JSON benzeri veriden securedLink değerini yakala
             val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""").find(responseText)?.groupValues?.getOrNull(1)
 
             if (videoSourceRaw != null) {
-                // Kaçış karakterlerini (\/) temizle ve fixUrl ile son halini ver
                 val cleanUrl = videoSourceRaw.replace("\\/", "/")
                 val finalM3u8Url = fixUrl(cleanUrl)
 
@@ -365,8 +321,6 @@ class DiziPal : MainAPI() {
                     }
                 )
 
-                // Imagestoo için altyazı çekme işlemi gerekiyorsa API yanıtından aynı Regex mantığıyla çekilebilir.
-                // Şimdilik işlemi burada sonlandırıyoruz.
                 return true
 
             } else {
@@ -378,14 +332,12 @@ class DiziPal : MainAPI() {
         // STANDART AŞAMA: ANA SUNUCU VEYA FARKLI KAYNAK
         // ---------------------------------------------------------
 
-        // 3. AŞAMA: Embed Sayfasına Git ve JWPlayer Verilerini Ayıkla
         val embedSource = app.get(
             url = embedUrl,
             referer = data,
             headers = mapOf("User-Agent" to userAgent)
         ).text
 
-// 1. Regex'leri ve ilk eşleşmeyi koruyoruz
         val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
             ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
 
@@ -396,35 +348,25 @@ class DiziPal : MainAPI() {
             return false
         }
 
-// 2. Dönüştürülmüş nihai URL'yi tutacak değişken
         val finalM3u8Url = if (extractedUrl.contains(".html")) {
-            // URL'den sadece ID'yi (x6sctfgmyfws) güvenli bir şekilde ayıklıyoruz
-            // Örn: .../embed-x6sctfgmyfws.html -> x6sctfgmyfws
             val idRegex = Regex("""embed-([^.]+)\.html""")
             val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
 
             if (idMatch != null) {
-                // İstenen formata göre string interpolation ile yeni URL'yi inşa ediyoruz
                 "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
             } else {
                 Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
                 null
             }
         } else {
-            // Eğer ilk regex'ten doğrudan m3u8 geldiyse olduğu gibi kullanıyoruz
             extractedUrl
         }
 
-// 3. Son kontrol ve validation
         if (finalM3u8Url == null) {
             return false
         }
 
-// Artık elimizde işlenmiş nihai m3u8 URL'si var
         Log.d("DZP", "Başarıyla üretilen M3U8 URL: $finalM3u8Url")
-
-// Bundan sonraki stream ekleme veya return işlemlerini finalM3u8Url ile yapabilirsin.
-
         Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
 
         callback.invoke(
@@ -468,15 +410,3 @@ class DiziPal : MainAPI() {
         return true
     }
 }
-
-data class DizipalSearchData(
-    val results: List<DizipalSearchResult>?
-)
-
-data class DizipalSearchResult(
-    val title: String?,
-    val url: String?,
-    val poster: String?,
-    val year: Int?,
-    val type: String?
-)
