@@ -6,12 +6,10 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
-import com.Blockades.DizipalSearchData
-import com.Blockades.DizipalSearchResult
 
-class DiziPalOriginal : MainAPI() {
+class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipal10.com.tr/"
-    override var name                 = "DiziPalOriginal"
+    override var name                 = "DiziPal"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -169,78 +167,78 @@ class DiziPalOriginal : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-    // 1. BÖLÜM LİNKİ YÖNLENDİRMESİ
-    if (url.contains("/bolum/")) {
-        val seriesUrl = url.replace("/bolum/", "/dizi/")
-            .replace(Regex("-\\d+-sezon.*"), "")
-        return load(seriesUrl)
-    }
+        // 1. BÖLÜM LİNKİ YÖNLENDİRMESİ
+        if (url.contains("/bolum/")) {
+            val seriesUrl = url.replace("/bolum/", "/dizi/")
+                .replace(Regex("-\\d+-sezon.*"), "")
+            return load(seriesUrl)
+        }
 
-    val document = app.get(url).document
+        val document = app.get(url).document
 
-    // Genel Meta Bilgileri
-    val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-    
-    // .info-row içindeki span yapısından veriyi çekiyoruz
-    val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")?.text()?.trim()?.toIntOrNull()
-    val description = document.selectFirst("p.series-description")?.text()?.trim()
-    
-    // "Kategoriler" altındaki tüm <a> tag'lerini çekip listeye çeviriyoruz
-    val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a").map { it.text().trim() }
-    
-    // HTML'de süre bilgisi mevcut değil, gelirse diye hazırlıklı bırakıyorum:
-    // val durationText = document.selectFirst("div.info-row:contains(Süre) span.info-value")?.text()
-    // val duration = Regex("(\\d+)").find(durationText ?: "")?.value?.toIntOrNull()
-    val duration: Int? = null 
+        // Genel Meta Bilgileri
+        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
 
-    if (url.contains("/dizi/")) {
-        // Yeni DOM yapısında başlık h1 tag'inde class ile tutuluyor
-        val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
+        // .info-row içindeki span yapısından veriyi çekiyoruz
+        val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")?.text()?.trim()?.toIntOrNull()
+        val description = document.selectFirst("p.series-description")?.text()?.trim()
 
-        val episodes = document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
-            val anchor = wrap.selectFirst("a.detail-episode-item") ?: return@mapNotNull null
-            val epHref = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
-            val epName = anchor.selectFirst("div.detail-episode-title")?.text()?.trim() ?: return@mapNotNull null
-            
-            // Format: "1. Sezon 1. Bölüm" -> Regex ile güvenli parse işlemi
-            val subtitle = anchor.selectFirst("div.detail-episode-subtitle")?.text()?.trim() ?: ""
-            val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
-            
-            val epSeason = match?.groupValues?.getOrNull(1)?.toIntOrNull()
-            val epEpisode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+        // "Kategoriler" altındaki tüm <a> tag'lerini çekip listeye çeviriyoruz
+        val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a").map { it.text().trim() }
 
-            newEpisode(epHref) {
-                this.name    = epName
-                this.episode = epEpisode
-                this.season  = epSeason
+        // HTML'de süre bilgisi mevcut değil, gelirse diye hazırlıklı bırakıyorum:
+        // val durationText = document.selectFirst("div.info-row:contains(Süre) span.info-value")?.text()
+        // val duration = Regex("(\\d+)").find(durationText ?: "")?.value?.toIntOrNull()
+        val duration: Int? = null
+
+        if (url.contains("/dizi/")) {
+            // Yeni DOM yapısında başlık h1 tag'inde class ile tutuluyor
+            val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
+
+            val episodes = document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
+                val anchor = wrap.selectFirst("a.detail-episode-item") ?: return@mapNotNull null
+                val epHref = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
+                val epName = anchor.selectFirst("div.detail-episode-title")?.text()?.trim() ?: return@mapNotNull null
+
+                // Format: "1. Sezon 1. Bölüm" -> Regex ile güvenli parse işlemi
+                val subtitle = anchor.selectFirst("div.detail-episode-subtitle")?.text()?.trim() ?: ""
+                val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
+
+                val epSeason = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val epEpisode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+
+                newEpisode(epHref) {
+                    this.name    = epName
+                    this.episode = epEpisode
+                    this.season  = epSeason
+                }
+            }
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.year      = year
+                this.plot      = description
+                this.tags      = tags
+                this.duration  = duration
+            }
+        } else {
+            // Film detay sayfası HTML'i elimizde olmadığı için en olası selector'ları fallback ile yazdım.
+            // Gerekirse og:title meta tag'inden de çekebilirsin.
+            val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim()
+                ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" izle")?.trim()
+                ?: ""
+
+            if (title.isEmpty()) return null
+
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.year      = year
+                this.plot      = description
+                this.tags      = tags
+                this.duration  = duration
             }
         }
-
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            this.posterUrl = poster
-            this.year      = year
-            this.plot      = description
-            this.tags      = tags
-            this.duration  = duration
-        }
-    } else {
-        // Film detay sayfası HTML'i elimizde olmadığı için en olası selector'ları fallback ile yazdım.
-        // Gerekirse og:title meta tag'inden de çekebilirsin.
-        val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim() 
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.substringBefore(" izle")?.trim() 
-            ?: ""
-
-        if (title.isEmpty()) return null
-
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = poster
-            this.year      = year
-            this.plot      = description
-            this.tags      = tags
-            this.duration  = duration
-        }
     }
-}
 
     override suspend fun loadLinks(
         data: String,
@@ -291,16 +289,13 @@ class DiziPalOriginal : MainAPI() {
         val embedUrl = fixUrl(embedUrlRaw)
         Log.d("DZP", "Çözülen Embed URL » $embedUrl")
 
-
         if (embedUrl.contains("imagestoo")) {
-            
+
             val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
 
-            
             val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
             Log.d("DZP", "Imagestoo API URL » $imagestooApiUrl")
 
-            
             val apiResponse = app.post(
                 url = imagestooApiUrl,
                 referer = embedUrl,
@@ -312,7 +307,6 @@ class DiziPalOriginal : MainAPI() {
             )
 
             var sessionCookie = ""
-
 
             val playerToken = apiResponse.cookies["fireplayer_player"]
 
@@ -337,11 +331,10 @@ class DiziPalOriginal : MainAPI() {
 
             val responseText = apiResponse.text
 
-            
             val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""").find(responseText)?.groupValues?.getOrNull(1)
 
             if (videoSourceRaw != null) {
-                
+
                 val cleanUrl = videoSourceRaw.replace("\\/", "/")
                 val finalM3u8Url = fixUrl(cleanUrl)
 
@@ -355,11 +348,10 @@ class DiziPalOriginal : MainAPI() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         referer = mapOf("Referer" to embedUrl).toString()
-                        headers= mapOf("Cookie" to sessionCookie)
+                        headers = mapOf("Cookie" to sessionCookie)
                         quality = Qualities.Unknown.value
                     }
                 )
-
 
                 return true
 
@@ -375,7 +367,6 @@ class DiziPalOriginal : MainAPI() {
             headers = mapOf("User-Agent" to userAgent)
         ).text
 
-
         val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
             ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
 
@@ -385,7 +376,6 @@ class DiziPalOriginal : MainAPI() {
             Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı!")
             return false
         }
-
 
         val finalM3u8Url = if (extractedUrl.contains(".html")) {
             // URL'den sadece ID'yi (x6sctfgmyfws) güvenli bir şekilde ayıklıyoruz
@@ -405,15 +395,13 @@ class DiziPalOriginal : MainAPI() {
             extractedUrl
         }
 
-// 3. Son kontrol ve validation
+        // 3. Son kontrol ve validation
         if (finalM3u8Url == null) {
             return false
         }
 
-// Artık elimizde işlenmiş nihai m3u8 URL'si var
+        // Artık elimizde işlenmiş nihai m3u8 URL'si var
         Log.d("DZP", "Başarıyla üretilen M3U8 URL: $finalM3u8Url")
-
-// Bundan sonraki stream ekleme veya return işlemlerini finalM3u8Url ile yapabilirsin.
 
         Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
 
@@ -446,7 +434,7 @@ class DiziPalOriginal : MainAPI() {
 
                 if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
                     subtitleCallback.invoke(
-                        SubtitleFile(
+                        newSubtitleFile(
                             lang = label,
                             url = fixUrl(fileUrl)
                         )
