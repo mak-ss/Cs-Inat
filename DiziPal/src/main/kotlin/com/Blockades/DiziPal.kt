@@ -6,6 +6,8 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import com.Blockades.DizipalSearchData
+import com.Blockades.DizipalSearchResult
 
 class DiziPalOriginal : MainAPI() {
     override var mainUrl              = "https://dizipal10.com.tr/"
