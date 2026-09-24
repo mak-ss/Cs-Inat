@@ -1,8 +1,7 @@
-// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
-
-package com.keyiflerolsun
+package com.Blockades
 
 import android.util.Log
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.HomePageResponse
@@ -22,11 +21,37 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
+
+// Search verileri için Jackson data sınıfı
+data class SearchItem(
+    @JsonProperty("title") val title: String,
+    @JsonProperty("slug") val slug: String,
+    @JsonProperty("poster") val poster: String?,
+    @JsonProperty("type") val type: String?
+)
+
+// Video linklerini çekmek için Extractor sınıfı
+class DizipalPlayer : ExtractorApi() {
+    override var name = "DiziPal"
+    override var mainUrl = "https://dizipal2221.com"
+    override val requiresReferer = true
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        loadExtractor(url, referer, subtitleCallback, callback)
+    }
+}
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipal2221.com/"
@@ -36,13 +61,11 @@ class DiziPal : MainAPI() {
     override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    // ! CloudFlare bypass
-// ! CloudFlare bypass
-    override var sequentialMainPage = true        // * https://recloudstream.github.io/dokka/-cloudstream/com.lagradost.cloudstream3/-main-a-p-i/index.html#-2049735995%2FProperties%2F101969414
-    override var sequentialMainPageDelay       = 150L  // ? 0.15 saniye
-    override var sequentialMainPageScrollDelay = 150L  // ? 0.15 saniye
+    // Cloudflare Bypass
+    override var sequentialMainPage           = true
+    override var sequentialMainPageDelay       = 150L
+    override var sequentialMainPageScrollDelay = 150L
 
-    // ! CloudFlare v2
     private val cloudflareKiller by lazy { CloudflareKiller() }
     private val interceptor      by lazy { CloudflareInterceptor(cloudflareKiller) }
 
@@ -61,48 +84,19 @@ class DiziPal : MainAPI() {
     }
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/yabanci-dizi-izle"                 to "Yeni Diziler",
-        "${mainUrl}/hd-film-izle"                                  to "Yeni Filmler",
-        "${mainUrl}/kanal/netflix"                                 to "Netflix",
-        "${mainUrl}/kanal/exxen"                                   to "Exxen",
-        "${mainUrl}/kanal/max"                                     to "Max",
-        "${mainUrl}/kanal/disney"                                  to "Disney+",
-        "${mainUrl}/kanal/amazon"                                  to "Amazon Prime",
-        "${mainUrl}/kanal/tod"                                     to "TOD (beIN)",
-        "${mainUrl}/kanal/tabii"                                   to "Tabii",
-        "${mainUrl}/kanal/hulu"                                    to "Hulu",
-        //"${mainUrl}/diziler?kelime=&durum=&tur=26&type=&siralama=" to "Anime",
-        //"${mainUrl}/diziler?kelime=&durum=&tur=5&type=&siralama="  to "Bilimkurgu Dizileri",
-        //"${mainUrl}/tur/bilimkurgu"                                to "Bilimkurgu Filmleri",
-        //"${mainUrl}/diziler?kelime=&durum=&tur=11&type=&siralama=" to "Komedi Dizileri",
-        //"${mainUrl}/tur/komedi"                                    to "Komedi Filmleri",
-        //"${mainUrl}/diziler?kelime=&durum=&tur=4&type=&siralama="  to "Belgesel Dizileri",
-        //"${mainUrl}/tur/belgesel"                                  to "Belgesel Filmleri",
-        //"${mainUrl}/diziler?kelime=&durum=&tur=25&type=&siralama=" to "Erotik Diziler",
-        //"${mainUrl}/tur/erotik"                                    to "Erotik Filmler",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=1&type=&siralama="  to "Aile",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=2&type=&siralama="  to "Aksiyon",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=3&type=&siralama="  to "Animasyon",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=4&type=&siralama="  to "Belgesel",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=6&type=&siralama="  to "Biyografi",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=7&type=&siralama="  to "Dram",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=8&type=&siralama="  to "Fantastik",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=9&type=&siralama="  to "Gerilim",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=10&type=&siralama=" to "Gizem",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=12&type=&siralama=" to "Korku",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=13&type=&siralama=" to "Macera",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=14&type=&siralama=" to "Müzik",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=16&type=&siralama=" to "Romantik",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=17&type=&siralama=" to "Savaş",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=24&type=&siralama=" to "Yerli",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=18&type=&siralama=" to "Spor",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=19&type=&siralama=" to "Suç",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=20&type=&siralama=" to "Tarih",
-        // "${mainUrl}/diziler?kelime=&durum=&tur=21&type=&siralama=" to "Western",
+        "${mainUrl}/yabanci-dizi-izle" to "Yeni Diziler",
+        "${mainUrl}/hd-film-izle"      to "Yeni Filmler",
+        "${mainUrl}/kanal/netflix"     to "Netflix",
+        "${mainUrl}/kanal/exxen"       to "Exxen",
+        "${mainUrl}/kanal/max"         to "Max",
+        "${mainUrl}/kanal/disney"      to "Disney+",
+        "${mainUrl}/kanal/amazon"      to "Amazon Prime",
+        "${mainUrl}/kanal/tod"         to "TOD (beIN)",
+        "${mainUrl}/kanal/tabii"       to "Tabii",
+        "${mainUrl}/kanal/hulu"        to "Hulu",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Normal sayfalar için sayfa URL'sini ayarla (yabancı-dizi-izle?sayfa=2 gibi)
         val url = if (page > 1 && !request.data.contains("/kanal/")) {
             if (request.data.contains("?")) "${request.data}&sayfa=$page" else "${request.data}?sayfa=$page"
         } else {
@@ -115,7 +109,6 @@ class DiziPal : MainAPI() {
 
         val home = mutableListOf<SearchResponse>()
 
-        // 1. HTML içindeki mevcut dizileri al
         if (!request.data.contains("/kanal/") || page == 1) {
             if (request.data.contains("/yabanci-dizi-izle") || request.data.contains("/hd-film-izle")) {
                 home.addAll(document.select("div.new-added-list div.bg-\\[\\#22232a\\]").mapNotNull { it.sonBolumler() })
@@ -124,9 +117,7 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // 2. Eğer bir kanal sayfasındaysak, senin verdiğin parametrelerle API'den verileri çek
         if (request.data.contains("/kanal/")) {
-            // HTML içinden channelId'yi dinamik olarak çekmeye çalışalım (bulamazsak boş göndeririz)
             val channelIdFromDoc = document.selectFirst("input[name=channelId]")?.attr("value")
                 ?: Regex("""channelId\s*[:=]\s*(\d+)""").find(document.html())?.groupValues?.get(1)
             val channelSlug = request.data.substringAfterLast("/")
@@ -143,9 +134,9 @@ class DiziPal : MainAPI() {
                         "cKey"       to "c61f91c5141d178450934fe81c0a2029",
                         "cValue"     to "MTc4NDQwNzIwMDhkMzJhNTc1YzUwOGU1ZjQwMjdjMjIyOWVjOGVhMTcwNGQyM2FjODM2YTI4YTU0NjUyMjI2ZmVjMzFkYzBkMWQyMWY4YzdiNA==",
                         "curPage"    to page.toString(),
-                        "channelId"  to (channelIdFromDoc ?: "1"), // capture ettiğin veri 1 olduğu için default 1
+                        "channelId"  to (channelIdFromDoc ?: "1"),
                         "languageId" to "2,3,4",
-                        "slug"       to channelSlug // Bazı durumlarda slug da gerekebilir
+                        "slug"       to channelSlug
                     )
                 )
 
@@ -158,7 +149,6 @@ class DiziPal : MainAPI() {
                     val parsedDoc = Jsoup.parse(htmlContent)
                     val apiResults = parsedDoc.select("div.bg-\\[\\#22232a\\]").mapNotNull { it.diziler() }
 
-                    // HTML'de zaten olanları ekleme (tekilleştirme)
                     apiResults.forEach { res ->
                         if (home.none { it.url == res.url }) {
                             home.add(res)
@@ -170,7 +160,6 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // Eğer sonuç geldiyse bir sonraki sayfa vardır diyelim
         return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
@@ -209,38 +198,32 @@ class DiziPal : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-    val responseRaw = app.post(
-        "${mainUrl}/bg/searchcontent",
-        headers = mapOf(
-            "Accept" to "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With" to "XMLHttpRequest"
-        ),
-        referer = "${mainUrl}/",
-        data = mapOf(
-            "cKey" to "c61f91c5141d178450934fe81c0a2029",
-            "cValue" to "MTc4NDQwNzIwMDhkMzJhNTc1YzUwOGU1ZjQwMjdjMjIyOWVjOGVhMTcwNGQyM2FjODM2YTI4YTU0NjUyMjI2ZmVjMzFkYzBkMWQyMWY4YzdiNA==",
-            "type" to "hepsi", 
-            "searchterm" to query
+        val responseRaw = app.post(
+            "${mainUrl}/bg/searchcontent",
+            headers = mapOf(
+                "Accept" to "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With" to "XMLHttpRequest"
+            ),
+            referer = "${mainUrl}/",
+            data = mapOf(
+                "cKey" to "c61f91c5141d178450934fe81c0a2029",
+                "cValue" to "MTc4NDQwNzIwMDhkMzJhNTc1YzUwOGU1ZjQwMjdjMjIyOWVjOGVhMTcwNGQyM2FjODM2YTI4YTU0NjUyMjI2ZmVjMzFkYzBkMWQyMWY4YzdiNA==",
+                "type" to "hepsi", 
+                "searchterm" to query
+            )
         )
-    )
 
-    val mapper = jacksonObjectMapper()
-    val rootNode = mapper.readTree(responseRaw.text)
-    
-    // JSON Pointer ile doğrudan "data" içindeki "result" array'ine iniyoruz
-    val resultArrayNode = rootNode.at("/data/result")
+        val mapper = jacksonObjectMapper()
+        val rootNode = mapper.readTree(responseRaw.text)
+        val resultArrayNode = rootNode.at("/data/result")
 
-    // Fail-safe: Eğer API değişirse, state false gelirse veya boş dönerse provider'ın crash olmasını engelliyoruz
-    if (resultArrayNode.isMissingNode || !resultArrayNode.isArray) {
-        return emptyList()
+        if (resultArrayNode.isMissingNode || !resultArrayNode.isArray) {
+            return emptyList()
+        }
+
+        val searchItems: List<SearchItem> = mapper.readValue(resultArrayNode.traverse())
+        return searchItems.map { it.toPostSearchResult() }
     }
-
-    // Sadece hedefteki result array'ini SearchItem listesine dönüştürüyoruz
-    val searchItems: List<SearchItem> = mapper.readValue(resultArrayNode.traverse())
-
-    // Idiomatic Kotlin: for döngüsü ve mutable liste yerine "map" ile fonksiyonel ve temiz dönüşüm
-    return searchItems.map { it.toPostSearchResult() }
-}
     
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
@@ -257,16 +240,12 @@ class DiziPal : MainAPI() {
             val title       = document.selectFirst("div.flex h2")?.text() ?: return null
             val episodeElements = document.select("div.relative.w-full.flex.items-start.gap-4")
             val episodes = episodeElements.mapNotNull { element ->
-                // 1. Link ve İsim Bilgisi
                 val linkElement = element.selectFirst("a[data-dizipal-pageloader]") ?: return@mapNotNull null
                 val epHref = fixUrlNull(linkElement.attr("href")) ?: return@mapNotNull null
                 val epName = linkElement.selectFirst("h2")?.text()?.trim() ?: "Bölüm"
 
-                // 2. Sezon ve Bölüm Metni (Örn: "1. Sezon 1. Bölüm")
                 val infoText = linkElement.selectFirst("div.text-white.text-sm.opacity-80")?.text()?.trim() ?: ""
 
-                // 3. Regex ile Sayıları Ayıklama (Daha güvenli yöntem)
-                // Bu pattern "1. Sezon 5. Bölüm" gibi bir metinden sayıları çeker.
                 val epSeason = Regex("""(\d+)\.\s*Sezon""").find(infoText)?.groupValues?.get(1)?.toIntOrNull()
                 val epEpisode = Regex("""(\d+)\.\s*Bölüm""").find(infoText)?.groupValues?.get(1)?.toIntOrNull()
 
@@ -297,7 +276,6 @@ class DiziPal : MainAPI() {
         }
     }
 
-    // 2. LOAD LINKS: Asıl şifre çözme ve Iframe yakalama işleminin yapıldığı yer
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -307,7 +285,6 @@ class DiziPal : MainAPI() {
         Log.d("DiziPal", "--> loadLinks ÇAĞRILDI. Gelen URL: $data")
         val doc = app.get(data).document
         
-        // Şifreli div'i bul
         val encryptedText = doc.selectFirst("div[data-rm-k=true]")?.text() ?: ""
         Log.d("DiziPal", "--> Şifreli metin uzunluğu: ${encryptedText.length}")
         
@@ -327,10 +304,9 @@ class DiziPal : MainAPI() {
             }
             Log.d("DiziPal", "--> Extractor'a gönderilen Final URL: $iframeUrl")
             
-            // Extractor'ı tetikle
             DizipalPlayer().getUrl(
                 url = iframeUrl,
-                referer = data, // Videonun bulunduğu sayfa
+                referer = data,
                 subtitleCallback = subtitleCallback,
                 callback = callback
             )
@@ -340,7 +316,6 @@ class DiziPal : MainAPI() {
         return true
     }
 
-    // 3. DECRYPT VE YARDIMCI FONKSİYON: Şifreyi çözen business logic
     private fun String.decodeHex(): ByteArray {
         check(length % 2 == 0) { "Hex string çift uzunlukta olmalıdır" }
         return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
