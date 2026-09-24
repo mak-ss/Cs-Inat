@@ -1,15 +1,15 @@
 // ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
-package com.keyiflerolsun
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class DiziPalOriginal : MainAPI() {
+class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipal2221.com"
-    override var name                 = "DiziPalOriginal"
+    override var name                 = "DiziPal"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
