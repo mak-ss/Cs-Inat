@@ -203,7 +203,8 @@ class DiziPalOriginal : MainAPI() {
         val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
 
         if (configToken.isNullOrEmpty()) {
-            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) bulunamadı!")
+            // ! LOG: Embed URL token içinden çıkarılamadı[cite: 5]
+            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) bulunamadı veya Embed URL token içinden çıkarılamadı!")
             return false
         }
 
@@ -259,7 +260,7 @@ class DiziPalOriginal : MainAPI() {
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
-                        name = "DiziPal (Imagestoo)",
+                        name = "Dizipal (Imagestoo)",
                         url = finalM3u8Url,
                         type = ExtractorLinkType.M3U8
                     ) {
@@ -299,7 +300,7 @@ class DiziPalOriginal : MainAPI() {
         callback.invoke(
             newExtractorLink(
                 source = this.name,
-                name = "DiziPal",
+                name = "Dizipal",
                 url = finalM3u8Url,
                 type = ExtractorLinkType.M3U8
             ) {
