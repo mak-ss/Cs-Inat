@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class DiziPal : MainAPI() {
-    override var mainUrl              = "https://dizipal2221.com"
+    override var mainUrl              = "https://dizipal2222.com"
     override var name                 = "DiziPal"
     override val hasMainPage          = true
     override var lang                 = "tr"
