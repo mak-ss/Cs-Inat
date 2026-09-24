@@ -40,7 +40,7 @@ data class SearchItem(
 // Video linklerini çekmek için Extractor sınıfı
 class DizipalPlayer : ExtractorApi() {
     override var name = "DiziPal"
-    override var mainUrl = "https://dizipal2221.com"
+    override var mainUrl = "https://dizipal1432.com"
     override val requiresReferer = true
 
     override suspend fun getUrl(
