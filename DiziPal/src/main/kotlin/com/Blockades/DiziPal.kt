@@ -17,6 +17,38 @@ class DiziPal : MainAPI() {
 
     override var sequentialMainPage = true
 
+    // ─────────────────────────────────────────────────────────────
+    //  CLOUDFLARE BYPASS HEADER'LARI
+    // ─────────────────────────────────────────────────────────────
+    private val defaultHeaders = mapOf(
+        "User-Agent"      to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                             "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                             "Chrome/122.0.0.0 Safari/537.36",
+        "Accept"          to "text/html,application/xhtml+xml,application/xml;" +
+                             "q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding" to "gzip, deflate, br",
+        "DNT"             to "1",
+        "Connection"      to "keep-alive",
+        "Upgrade-Insecure-Requests" to "1",
+        "Sec-Fetch-Dest"  to "document",
+        "Sec-Fetch-Mode"  to "navigate",
+        "Sec-Fetch-Site"  to "none",
+        "Sec-Fetch-User"  to "?1"
+    )
+
+    private val ajaxHeaders = mapOf(
+        "User-Agent"       to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                              "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                              "Chrome/122.0.0.0 Safari/537.36",
+        "Accept"           to "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language"  to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "X-Requested-With" to "XMLHttpRequest",
+        "Sec-Fetch-Dest"   to "empty",
+        "Sec-Fetch-Mode"   to "cors",
+        "Sec-Fetch-Site"   to "same-origin"
+    )
+
     override val mainPage = mainPageOf(
         "${mainUrl}/bolumler"                        to "Son Bölümler",
         "${mainUrl}/diziler"                         to "Yeni Diziler",
@@ -36,7 +68,11 @@ class DiziPal : MainAPI() {
     //  ANA SAYFA
     // ─────────────────────────────────────────────────────────────
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(request.data).document
+        val document = app.get(
+            url = request.data,
+            headers = defaultHeaders,
+            referer = "$mainUrl/"
+        ).document
 
         val home = when {
             // Son Bölümler
@@ -152,11 +188,8 @@ class DiziPal : MainAPI() {
         val searchUrl = "$mainUrl/search?q=$query"
 
         val responseRaw = app.get(
-            searchUrl,
-            headers = mapOf(
-                "Accept"           to "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With" to "XMLHttpRequest"
-            ),
+            url = searchUrl,
+            headers = ajaxHeaders,
             referer = "$mainUrl/"
         )
 
@@ -183,14 +216,19 @@ class DiziPal : MainAPI() {
 
     private fun parseHtmlSearch(html: String): List<SearchResponse> {
         val doc = org.jsoup.Jsoup.parse(html)
-        return doc.select("a.homepage-card, a.search-result-item, li.search-result, " +
-                "a.similar-card, a.trend-card").mapNotNull { el ->
-            val title = el.selectFirst("h3.homepage-card-title, h3.trend-card-title, " +
-                    ".similar-card-title, h3, .title")?.text()?.trim()
-                ?: return@mapNotNull null
+        return doc.select(
+            "a.homepage-card, a.search-result-item, li.search-result, " +
+            "a.similar-card, a.trend-card"
+        ).mapNotNull { el ->
+            val title = el.selectFirst(
+                "h3.homepage-card-title, h3.trend-card-title, " +
+                ".similar-card-title, h3, .title"
+            )?.text()?.trim() ?: return@mapNotNull null
+
             val href = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
             val img  = el.selectFirst("img")
             val poster = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
+
             val year = el.selectFirst("time.meta-year, .similar-card-year, .grid-card-year")
                 ?.text()?.trim()?.toIntOrNull()
 
@@ -222,20 +260,28 @@ class DiziPal : MainAPI() {
             return load(seriesUrl)
         }
 
-        val document = app.get(url).document
+        val document = app.get(
+            url = url,
+            headers = defaultHeaders,
+            referer = "$mainUrl/"
+        ).document
 
-        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+        val poster = fixUrlNull(
+            document.selectFirst("meta[property=og:image]")?.attr("content")
+        )
 
         val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")
             ?.text()?.trim()?.toIntOrNull()
             ?: document.selectFirst("time.meta-year, .watch-mini-hero-year")
                 ?.text()?.trim()?.toIntOrNull()
 
-        val description = document.selectFirst("p.series-description, meta[property=og:description]")
+        val description = document
+            .selectFirst("p.series-description, meta[property=og:description]")
             ?.let { if (it.tagName() == "meta") it.attr("content") else it.text() }
             ?.trim()
 
-        val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a")
+        val tags = document
+            .select("div.info-row:contains(Kategoriler) span.info-value.categories a")
             .map { it.text().trim() }
 
         val duration: Int? = null
@@ -243,12 +289,13 @@ class DiziPal : MainAPI() {
         return when {
             // ANİME
             url.contains("/anime/") -> {
-                val title = document.selectFirst("h1.series-title, h1.watch-mini-hero-title")
+                val title = document
+                    .selectFirst("h1.series-title, h1.watch-mini-hero-title")
                     ?.text()?.trim()
                     ?.removeSuffix(" izle")
                     ?: return null
 
-                val episodes = parseEpisodes(document, html = null)
+                val episodes = parseEpisodes(document)
 
                 newAnimeLoadResponse(title, url, TvType.Anime) {
                     this.posterUrl = poster
@@ -264,7 +311,7 @@ class DiziPal : MainAPI() {
                 val title = document.selectFirst("h1.series-title")?.text()?.trim()
                     ?: return null
 
-                val episodes = parseEpisodes(document, html = null)
+                val episodes = parseEpisodes(document)
 
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                     this.posterUrl = poster
@@ -295,16 +342,10 @@ class DiziPal : MainAPI() {
     }
 
     /**
-     * Bölümleri parse eder. Detay sayfasında iki olası kaynak var:
-     *  1) HTML içindeki .detail-episode-item-wrap (ana dizi sayfası)
-     *  2) window.episodesData JS objesi (watch sayfası)
+     * Dizi detay sayfasındaki bölümleri parse eder.
      */
-    private fun parseEpisodes(
-        document: org.jsoup.nodes.Document,
-        html: String?
-    ): List<Episode> {
-        // 1) HTML fallback
-        val fromHtml = document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
+    private fun parseEpisodes(document: org.jsoup.nodes.Document): List<Episode> {
+        return document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
             val anchor = wrap.selectFirst("a.detail-episode-item") ?: return@mapNotNull null
             val epHref = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
             val epName = anchor.selectFirst("div.detail-episode-title")?.text()?.trim()
@@ -312,6 +353,7 @@ class DiziPal : MainAPI() {
 
             val subtitle = anchor.selectFirst("div.detail-episode-subtitle")
                 ?.text()?.trim() ?: ""
+
             val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
 
             newEpisode(epHref) {
@@ -320,8 +362,6 @@ class DiziPal : MainAPI() {
                 this.season  = match?.groupValues?.getOrNull(1)?.toIntOrNull()
             }
         }
-
-        return fromHtml
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -341,15 +381,17 @@ class DiziPal : MainAPI() {
         // 1. BÖLÜM SAYFASINI GET
         val getResponse = app.get(
             url = data,
-            headers = mapOf(
-                "User-Agent"    to userAgent,
+            headers = defaultHeaders + mapOf(
                 "Cache-Control" to "no-cache",
                 "Pragma"        to "no-cache"
-            )
+            ),
+            referer = "$mainUrl/"
         )
 
         val html     = getResponse.text
         val document = getResponse.document
+
+        Log.d("DZP", "HTML uzunluğu: ${html.length}")
 
         // 2. EMBED URL'İ ÇIKAR
         var embedPath: String? = document
@@ -358,11 +400,12 @@ class DiziPal : MainAPI() {
             ?.substringBefore("&autoplay")
 
         if (embedPath.isNullOrEmpty()) {
+            Log.d("DZP", "iframe data-src yok, episodesData deneniyor...")
             embedPath = extractEmbedFromEpisodesData(html, data)
         }
 
         if (embedPath.isNullOrEmpty()) {
-            Log.e("DZP", "Embed yolu bulunamadı!")
+            Log.e("DZP", "Embed yolu bulunamadı! HTML ilk 500: ${html.take(500)}")
             return false
         }
 
@@ -373,7 +416,7 @@ class DiziPal : MainAPI() {
         val embedResponse = app.get(
             url = embedUrl,
             referer = data,
-            headers = mapOf("User-Agent" to userAgent)
+            headers = defaultHeaders
         )
         val embedSource = embedResponse.text
         Log.d("DZP", "Embed uzunluğu: ${embedSource.length}")
@@ -387,11 +430,7 @@ class DiziPal : MainAPI() {
             val apiResp = app.post(
                 url = apiUrl,
                 referer = embedUrl,
-                headers = mapOf(
-                    "User-Agent"       to userAgent,
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "Accept"           to "*/*"
-                )
+                headers = ajaxHeaders + mapOf("Accept" to "*/*")
             )
 
             val cookieToken = apiResp.cookies["fireplayer_player"]
@@ -440,7 +479,7 @@ class DiziPal : MainAPI() {
 
         val extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
         if (extractedUrl == null) {
-            Log.e("DZP", "m3u8 bulunamadı! İlk 400 karakter: ${embedSource.take(400)}")
+            Log.e("DZP", "m3u8 bulunamadı! İlk 400: ${embedSource.take(400)}")
             return false
         }
 
@@ -477,22 +516,25 @@ class DiziPal : MainAPI() {
             .find(embedSource)
 
         tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
-            Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL).findAll(tracksBlock).forEach { m ->
-                val item    = m.groupValues[1]
-                val fileUrl = Regex("""(?:file|src)\s*:\s*["']([^"']+)["']""")
-                    .find(item)?.groupValues?.getOrNull(1)
-                val label   = Regex("""label\s*:\s*["']([^"']+)["']""")
-                    .find(item)?.groupValues?.getOrNull(1) ?: "Unknown"
+            Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
+                .findAll(tracksBlock).forEach { m ->
+                    val item    = m.groupValues[1]
+                    val fileUrl = Regex("""(?:file|src)\s*:\s*["']([^"']+)["']""")
+                        .find(item)?.groupValues?.getOrNull(1)
+                    val label   = Regex("""label\s*:\s*["']([^"']+)["']""")
+                        .find(item)?.groupValues?.getOrNull(1) ?: "Unknown"
 
-                if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
-                    subtitleCallback.invoke(
-                        newSubtitleFile(
-                            lang = label,
-                            url  = fixUrl(fileUrl)
+                    if (fileUrl != null &&
+                        (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))
+                    ) {
+                        subtitleCallback.invoke(
+                            newSubtitleFile(
+                                lang = label,
+                                url  = fixUrl(fileUrl)
+                            )
                         )
-                    )
+                    }
                 }
-            }
         }
 
         return true
@@ -510,13 +552,19 @@ class DiziPal : MainAPI() {
         val dataMatch = Regex(
             """window\.episodesData\s*=\s*(\{.*?\});""",
             RegexOption.DOT_MATCHES_ALL
-        ).find(html) ?: return null
+        ).find(html) ?: run {
+            Log.d("DZP", "episodesData bloğu bulunamadı")
+            return null
+        }
 
         val jsonStr = dataMatch.groupValues[1]
 
         return try {
             val root = AppUtils.parseJson<Map<String, Map<String, Map<String, Any?>>>>(jsonStr)
-            val epData = root[season]?.get(episode) ?: return null
+            val epData = root[season]?.get(episode) ?: run {
+                Log.d("DZP", "S$season E$episode bulunamadı (episodesData)")
+                return null
+            }
             (epData["iframe_url_encrypted"] as? String)?.replace("\\/", "/")
         } catch (e: Exception) {
             Log.w("DZP", "episodesData parse hatası: ${e.message}")
