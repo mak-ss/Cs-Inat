@@ -26,48 +26,41 @@ import org.json.JSONObject
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.security.spec.KeySpec
-import javax.crypto.Cipher
-import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.PBEKeySpec
-import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
-    override var mainUrl = "https://dizipalt2.com/"
+    override var mainUrl = "https://dizipalt2.com"
     override var name = "Dizipal"
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override val hasMainPage = true
 
-    private val playerPassphrase =
-        "3hPn4uCjTVtfYWcjIcoJQ4cL1WWk1qxXI39egLYOmNv6IblA7eKJz68uU3eLzux1biZLCms0quEjTYniGv5z1JcKbNIsDQFSeIZOBZJz4is6pD7UyWDggWWzTLBQbHcQFpBQdClnuQaMNUHtLHTpzCvZy33p6I7wFBvL4fnXBYH84aUIyWGTRvM2G5cfoNf4705tO2kv"
+    // TXT içerisinden güncellenen CKey parametresi
+    private val appCKey = "MTc5MDI5MTQwMGY1MjllNzg3ZjlhYWZkY2JjYjE0YmVlZWVlOWZmNzExYzc1Zjc1M2M5ZGJiZTQ4ODg0ZDQ3MjRhMmJkM2VlYWQzNjlmOGFjNw=="
+
     private val browserHeaders = mapOf(
-        "Accept" to "text/html,application/xhtml+xml",
-        "Accept-Language" to "tr-TR,tr;q=0.9",
-        "User-Agent" to "Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     )
 
     private suspend fun fetchDocument(url: String): Document = runCatching {
         app.get(url, referer = "$mainUrl/", headers = browserHeaders).document
     }.getOrElse {
-        Thread.sleep(1_200)
+        Thread.sleep(1000)
         app.get(url, referer = "$mainUrl/", headers = browserHeaders).document
     }
 
     private fun Document.catalogLinks(): Pair<List<Element>, List<Element>> {
-        val movieHeading = select("h2").lastOrNull { it.text().contains("Son Eklenen Filmler", true) }
-        val movieScope = movieHeading?.parent()?.parent() ?: this
-        val movies = movieScope.select("a[data-moviess][href*=/film/]")
-            .distinctBy { it.absUrl("href") }
-        val episodes = select("a.mbb-episode[href*=/dizi/]")
-            .distinctBy { it.absUrl("href") }
+        // Yeni HTML yapısına göre link yakalama
+        val movies = select("a[href*=/film/]").distinctBy { it.absUrl("href") }
+        val episodes = select("a[href*=/dizi/]").distinctBy { it.absUrl("href") }
         return movies to episodes
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = fetchDocument(mainUrl)
         val (movieLinks, episodeLinks) = document.catalogLinks()
+
         val movies = movieLinks
             .take(18)
             .mapNotNull { it.toSearchResponse(TvType.Movie) }
@@ -77,8 +70,8 @@ class DiziPal : MainAPI() {
 
         return newHomePageResponse(
             listOf(
+                HomePageList("Günün / Haftanın Trendleri", series, true),
                 HomePageList("Son Eklenen Filmler", movies, true),
-                HomePageList("Güncel Diziler", series, true),
             ).filter { it.list.isNotEmpty() }
         )
     }
@@ -86,6 +79,8 @@ class DiziPal : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val normalized = query.trim().lowercase()
         if (normalized.length < 2) return emptyList()
+
+        // Doğrudan arama yapamıyorsa ana sayfadan eşleştirme veya arama endpointi kullanımı
         val document = fetchDocument(mainUrl)
         val (movieLinks, episodeLinks) = document.catalogLinks()
         return (movieLinks + episodeLinks)
@@ -102,7 +97,7 @@ class DiziPal : MainAPI() {
         if (!url.startsWith(mainUrl)) return null
         val image = selectFirst("img")
         val title = image?.attr("alt")?.trim().orEmpty()
-            .ifBlank { selectFirst("h4, h3, h2")?.text()?.trim().orEmpty() }
+            .ifBlank { selectFirst("h4, h3, h2, span")?.text()?.trim().orEmpty() }
         if (title.isBlank()) return null
         val poster = image?.attr("data-src")?.ifBlank { image.attr("src") }
 
@@ -114,7 +109,7 @@ class DiziPal : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        if (!url.startsWith("$mainUrl/film/") && !url.startsWith("$mainUrl/dizi/")) return null
+        if (!url.contains("/film/") && !url.contains("/dizi/")) return null
         val document = fetchDocument(url)
         val title = document.selectFirst("h1")?.text()?.substringBeforeLast(" izle")
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
@@ -123,7 +118,11 @@ class DiziPal : MainAPI() {
             ?: document.selectFirst("img[alt*=izle]")?.attr("src")
         val plot = document.selectFirst("meta[name=description]")?.attr("content")
         val year = Regex("\\b(19|20)\\d{2}\\b").find(title)?.value?.toIntOrNull()
-        val playerUrl = resolvePlayer(document) ?: return null
+
+        // Video kaynağını içerebilecek player iframe ya da URL'si
+        val playerUrl = document.selectFirst("iframe[src]")?.absUrl("src") 
+            ?: document.selectFirst("[data-rm-k]")?.text()?.trim() 
+            ?: url
 
         return if (url.contains("/film/")) {
             newMovieLoadResponse(title, url, TvType.Movie, playerUrl) {
@@ -132,8 +131,8 @@ class DiziPal : MainAPI() {
                 this.year = year
             }
         } else {
-            val season = Regex("(\\d+)[.-]?\\s*[Ss]ezon").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull()
-            val episode = Regex("(\\d+)[.-]?\\s*[Bb]ölüm").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            val season = Regex("(\\d+)[.-]?\\s*[Ss]ezon").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
+            val episode = Regex("(\\d+)[.-]?\\s*[Bb]ölüm").find(title)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 1
             newTvSeriesLoadResponse(
                 title.replace(Regex("\\s+\\d+[.-]?\\s*[Ss]ezon.*$"), "").trim(),
                 url,
@@ -152,23 +151,6 @@ class DiziPal : MainAPI() {
         }
     }
 
-    private fun resolvePlayer(document: Document): String? {
-        val encrypted = document.selectFirst("[data-rm-k]")?.text()?.trim()
-            ?: return document.selectFirst("iframe[src]")?.absUrl("src")?.ifBlank { null }
-        val payload = JSONObject(encrypted)
-        val salt = payload.getString("salt").hexToBytes()
-        val iv = payload.getString("iv").hexToBytes()
-        val encryptedBytes = Base64.decode(payload.getString("ciphertext"), Base64.DEFAULT)
-        val spec: KeySpec = PBEKeySpec(playerPassphrase.toCharArray(), salt, 999, 256)
-        val key = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512").generateSecret(spec).encoded
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        return String(cipher.doFinal(encryptedBytes), StandardCharsets.UTF_8).trim()
-    }
-
-    private fun String.hexToBytes(): ByteArray =
-        chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -177,16 +159,37 @@ class DiziPal : MainAPI() {
     ): Boolean {
         if (loadExtractor(data, mainUrl, subtitleCallback, callback)) return true
 
-        val body = app.get(
+        val response = app.get(
             data,
-            referer = mainUrl,
+            referer = "$mainUrl/",
             headers = browserHeaders + ("Origin" to mainUrl)
-        ).text
-            .replace("\\/", "/")
-            .replace("\\u0026", "&")
+        )
+        val body = response.text.replace("\\/", "/").replace("\\u0026", "&")
 
+        // 1. Doğrudan m3u8 veya mp4 bağlantılarını tara
+        val streams = Regex("https?://[^\\s\\\"'<>]+?\\.(?:m3u8|mp4)(?:\\?[^\\s\\\"'<>]*)?", RegexOption.IGNORE_CASE)
+            .findAll(body)
+            .map { it.value }
+            .distinct()
+            .toList()
+
+        var found = false
+        streams.forEachIndexed { index, stream ->
+            callback(
+                newExtractorLink(name, "$name Kalite ${index + 1}", stream) {
+                    referer = data
+                    type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                }
+            )
+            found = true
+        }
+
+        if (found) return true
+
+        // 2. Player Token veya Source2 PHP isteği kontrolü
         val playlistToken = Regex("window\\.openPlayer\\(['\"]([^'\"]+)")
             .find(body)?.groupValues?.getOrNull(1)
+
         if (!playlistToken.isNullOrBlank()) {
             val uri = URI(data)
             val playerOrigin = "${uri.scheme}://${uri.authority}"
@@ -196,44 +199,30 @@ class DiziPal : MainAPI() {
                 referer = data,
                 headers = browserHeaders + ("Origin" to playerOrigin)
             ).text
-            val playlist = JSONObject(sourcePayload).optJSONArray("playlist")
-            var emitted = false
-            if (playlist != null) {
-                for (itemIndex in 0 until playlist.length()) {
-                    val sources = playlist.optJSONObject(itemIndex)?.optJSONArray("sources") ?: continue
-                    for (sourceIndex in 0 until sources.length()) {
-                        val source = sources.optJSONObject(sourceIndex) ?: continue
-                        val stream = source.optString("file")
-                            .replace("/m.php?", "/master.m3u8?")
-                        if (stream.isBlank()) continue
-                        val streamName = source.optString("title").ifBlank { "Yayın ${sourceIndex + 1}" }
-                        callback(
-                            newExtractorLink(name, "$name - $streamName", stream) {
-                                referer = data
-                                type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
+            runCatching {
+                val playlist = JSONObject(sourcePayload).optJSONArray("playlist")
+                if (playlist != null) {
+                    for (i in 0 until playlist.length()) {
+                        val sources = playlist.optJSONObject(i)?.optJSONArray("sources") ?: continue
+                        for (j in 0 until sources.length()) {
+                            val source = sources.optJSONObject(j) ?: continue
+                            val stream = source.optString("file").replace("/m.php?", "/master.m3u8?")
+                            if (stream.isNotBlank()) {
+                                callback(
+                                    newExtractorLink(name, "$name - Otomatik HLS", stream) {
+                                        referer = data
+                                        type = ExtractorLinkType.M3U8
+                                    }
+                                )
+                                found = true
                             }
-                        )
-                        emitted = true
+                        }
                     }
                 }
             }
-            if (emitted) return true
         }
 
-        val streams = Regex("https?://[^\\s\\\"'<>]+?\\.(?:m3u8|mp4)(?:\\?[^\\s\\\"'<>]*)?", RegexOption.IGNORE_CASE)
-            .findAll(body)
-            .map { it.value }
-            .distinct()
-            .toList()
-
-        streams.forEachIndexed { index, stream ->
-            callback(
-                newExtractorLink(name, "$name ${index + 1}", stream) {
-                    referer = data
-                    type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                }
-            )
-        }
-        return streams.isNotEmpty()
+        return found
     }
 }
