@@ -2,11 +2,36 @@
 
 package com.Blockades
 
-import android.util.Base64
 import android.util.Log
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+
+// --- JSON Data Modelleri ---
+data class DizipalSearchData(
+    @JsonProperty("success") val success: Boolean? = null,
+    @JsonProperty("results") val results: List<DizipalSearchResult>? = null
+)
+
+data class DizipalSearchResult(
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("poster") val poster: String? = null,
+    @JsonProperty("type") val type: String? = null,
+    @JsonProperty("year") val year: Int? = null
+)
+
+data class DizipalPlayerConfigData(
+    @JsonProperty("success") val success: Boolean? = null,
+    @JsonProperty("config") val config: DizipalPlayerConfig? = null
+)
+
+data class DizipalPlayerConfig(
+    @JsonProperty("v") val videoUrl: String? = null,
+    @JsonProperty("t") val type: String? = null,
+    @JsonProperty("p") val poster: String? = null
+)
 
 class DiziPalOriginal : MainAPI() {
     override var mainUrl              = "https://dizipal2134.com"
@@ -203,29 +228,38 @@ class DiziPalOriginal : MainAPI() {
         val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
 
         if (configToken.isNullOrEmpty()) {
-            // ! LOG: Embed URL token içinden çıkarılamadı[cite: 5]
-            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) bulunamadı veya Embed URL token içinden çıkarılamadı!")
+            Log.e("DZP", "Sayfadan video config token'ı (data-cfg) bulunamadı!")
             return false
         }
 
-        val decodedToken = try {
-            val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
-            String(Base64.decode(paddedToken, Base64.DEFAULT))
+        // main.js içindeki ajax-player-config çağrısı
+        val playerConfigRes = try {
+            val res = app.post(
+                url = "$mainUrl/ajax-player-config",
+                data = mapOf("cfg" to configToken),
+                headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Content-Type" to "application/x-www-form-urlencoded"
+                ),
+                referer = data
+            )
+            AppUtils.parseJson<DizipalPlayerConfigData>(res.text)
         } catch (e: Exception) {
-            Log.e("DZP", "Token decode hatası: ${e.message}")
-            return false
+            Log.e("DZP", "Player Config AJAX hatası: ${e.message}")
+            null
         }
 
-        val embedUrlRaw = Regex(""""v"\s*:\s*"([^"]+)"""").find(decodedToken)?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+        val embedUrlRaw = playerConfigRes?.config?.videoUrl
         if (embedUrlRaw.isNullOrEmpty()) {
-            Log.e("DZP", "Embed URL token içinden çıkarılamadı!")
+            Log.e("DZP", "Embed URL token/config içinden çıkarılamadı!")
             return false
         }
 
         val embedUrl = fixUrl(embedUrlRaw)
         Log.d("DZP", "Çözülen Embed URL » $embedUrl")
 
-        // Imagestoo sunucusu özel handler
+        // 1. Imagestoo Sunucu Desteği
         if (embedUrl.contains("imagestoo")) {
             val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
             val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
@@ -276,14 +310,30 @@ class DiziPalOriginal : MainAPI() {
             }
         }
 
-        // Standart M3U8 Extractor Akışı
+        // 2. Doğrudan M3U8 veya PlayerJS / Standard Embed Taraması
+        if (embedUrl.endsWith(".m3u8") || embedUrl.endsWith(".mp4")) {
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name = "Dizipal Direct",
+                    url = embedUrl,
+                    type = if (embedUrl.endsWith(".mp4")) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
+                ) {
+                    this.referer = data
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+            return true
+        }
+
         val embedSource = app.get(
             url = embedUrl,
             referer = data,
             headers = mapOf("User-Agent" to userAgent)
         ).text
 
-        val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
+        val m3u8Match = Regex("""file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
+            ?: Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
             ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
 
         val extractedUrl = m3u8Match?.groupValues?.getOrNull(1) ?: return false
