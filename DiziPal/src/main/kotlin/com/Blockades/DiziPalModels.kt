@@ -1,21 +1,20 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
-
 package com.Blockades
 
 import com.fasterxml.jackson.annotation.JsonProperty
 
 data class DizipalSearchData(
-    @JsonProperty("success") val success: Boolean?,
-    @JsonProperty("results") val results: List<DizipalSearchResult>?
+    @JsonProperty("success") val success: Boolean? = null,
+    @JsonProperty("results") val results: List<DizipalSearchResult>? = null
 )
 
 data class DizipalSearchResult(
-    @JsonProperty("id") val id: Int?,
-    @JsonProperty("title") val title: String?,
-    @JsonProperty("year") val year: Int?,
-    @JsonProperty("type") val type: String?,
-    @JsonProperty("poster") val poster: String?,
-    @JsonProperty("url") val url: String?,
-    @JsonProperty("rating") val rating: String?
+    @JsonProperty("id") val id: Int? = null,
+    @JsonProperty("title") val title: String? = null,
+    @JsonProperty("year") val year: Int? = null,
+    @JsonProperty("type") val type: String? = null,
+    @JsonProperty("poster") val poster: String? = null,
+    @JsonProperty("url") val url: String? = null,
+    @JsonProperty("rating") val rating: String? = null
 )
