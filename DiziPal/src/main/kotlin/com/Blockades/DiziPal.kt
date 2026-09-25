@@ -5,6 +5,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -58,14 +60,24 @@ class DiziPal : MainAPI() {
         if (href.endsWith("/diziler") || href.endsWith("/filmler")) return null
 
         val title = element.attr("title").ifBlank {
-            element.selectFirst(".title, h2, h3, h4, span.title, div.name")?.text()?.trim()
+            element.selectFirst(".title, h2, h3, h4, span.title, div.name, .film-title, .dizi-title")?.text()?.trim()
                 ?: element.text().trim()
         }
         if (title.isBlank() || title.equals("Diziler", ignoreCase = true) || title.equals("Filmler", ignoreCase = true)) return null
 
-        val imgEl = element.selectFirst("img")
+        // Önce element içinde img ara, yoksa parent ve kardeş elementlere bak
+        var imgEl = element.selectFirst("img.lazy, img[data-src], img[data-lazy-src], .poster img, .cover img, .afis img, img")
+        if (imgEl == null) {
+            imgEl = element.parent()?.selectFirst("img")
+        }
+        if (imgEl == null) {
+            imgEl = element.parent()?.parent()?.selectFirst("img")
+        }
+
         val poster = fixUrlNull(
             imgEl?.attr("data-src")?.ifBlank { null }
+                ?: imgEl?.attr("data-lazy-src")?.ifBlank { null }
+                ?: imgEl?.attr("data-original")?.ifBlank { null }
                 ?: imgEl?.attr("src")?.ifBlank { null }
         )
 
@@ -129,24 +141,28 @@ class DiziPal : MainAPI() {
             if (it.tagName() == "meta") it.attr("content") else it.text().trim()
         }?.substringBefore(" izle")?.trim() ?: return null
 
+        // Poster için daha kapsamlı selector'lar
         val poster = fixUrlNull(
             doc.selectFirst("meta[property='og:image']")?.attr("content")
-                ?: doc.selectFirst("div.cover img, div.poster img")?.attr("src")
+                ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
+                ?: doc.selectFirst("div.cover img, div.poster img, .afis img, .film-poster img, img.poster, .poster-image img, .detail-poster img")?.let {
+                    it.attr("data-src").ifBlank { it.attr("src") }
+                }
         )
 
-        val description = doc.selectFirst("div.summary, div.overview, p.description, meta[property='og:description']")?.let {
+        val description = doc.selectFirst("div.summary, div.overview, p.description, meta[property='og:description'], div.plot, div.aciklama")?.let {
             if (it.tagName() == "meta") it.attr("content") else it.text().trim()
         }
 
-        val year = doc.selectFirst("span.year, div.year, a[href*='yil/']")?.text()?.filter { it.isDigit() }?.take(4)?.toIntOrNull()
-        val score = doc.selectFirst("span.imdb-rating, div.rating, span.score")?.text()?.trim()
+        val year = doc.selectFirst("span.year, div.year, a[href*='yil/'], span[itemprop='datePublished']")?.text()?.filter { it.isDigit() }?.take(4)?.toIntOrNull()
+        val score = doc.selectFirst("span.imdb-rating, div.rating, span.score, span[itemprop='ratingValue']")?.text()?.trim()
 
-        val tags = doc.select("a[href*='/tur/'], a[href*='/kategori/']").map { it.text().trim() }.filter { it.isNotBlank() }
+        val tags = doc.select("a[href*='/tur/'], a[href*='/kategori/'], a[href*='/genre/']").map { it.text().trim() }.filter { it.isNotBlank() }
 
         val isSeries = url.contains("/dizi/")
 
         if (isSeries) {
-            val episodes = doc.select("a[href*='/bolum/']").mapNotNull { epEl ->
+            val episodes = doc.select("a[href*='/bolum/'], a[href*='/episode/']").mapNotNull { epEl ->
                 val epHref = fixUrlNull(epEl.attr("href")) ?: return@mapNotNull null
                 val epText = epEl.text().trim()
 
@@ -192,40 +208,64 @@ class DiziPal : MainAPI() {
 
         val candidateUrls = mutableListOf<String>()
 
-        // Try base64 encodedContent in script
+        // Script içindeki base64 encodedContent
         for (s in doc.select("script")) {
             val text = s.data()
             val encodedMatch = Regex("const\\s+encodedContent\\s*=\\s*'([A-Za-z0-9+/=]+)'").find(text)
             if (encodedMatch != null) {
                 val b64 = encodedMatch.groupValues[1]
-                val decoded = String(base64DecodeArray(b64), StandardCharsets.UTF_8)
-                val iframeSrc = Regex("src=\"([^\"]+)\"").find(decoded)?.groupValues?.get(1)
-                if (iframeSrc != null) {
-                    candidateUrls.add(fixUrl(iframeSrc))
+                try {
+                    val decoded = String(base64DecodeArray(b64), StandardCharsets.UTF_8)
+                    val iframeSrc = Regex("src=\"([^\"]+)\"").find(decoded)?.groupValues?.get(1)
+                    if (iframeSrc != null) {
+                        candidateUrls.add(fixUrl(iframeSrc))
+                    }
+                } catch (_: Exception) {
                 }
             }
         }
 
-        // Direct iframes fallback
+        // Doğrudan iframe src
         for (iframe in doc.select("iframe[src]")) {
             val src = fixUrlNull(iframe.attr("src")) ?: continue
-            candidateUrls.add(src)
+            if (src.isNotBlank() && !src.startsWith("about:")) {
+                candidateUrls.add(src)
+            }
         }
 
+        // data-src iframe
+        for (iframe in doc.select("iframe[data-src]")) {
+            val src = fixUrlNull(iframe.attr("data-src")) ?: continue
+            if (src.isNotBlank() && !src.startsWith("about:")) {
+                candidateUrls.add(src)
+            }
+        }
+
+        // data-video veya benzeri attribute'lar
+        for (el in doc.select("[data-video], [data-iframe], [data-url]")) {
+            val src = el.attr("data-video").ifBlank { el.attr("data-iframe") }.ifBlank { el.attr("data-url") }
+            if (src.isNotBlank()) {
+                val fixed = fixUrlNull(src)
+                if (fixed != null) candidateUrls.add(fixed)
+            }
+        }
+
+        if (candidateUrls.isEmpty()) return false
+
         var anyFound = false
+        val mutex = Mutex()
 
         coroutineScope {
             candidateUrls.distinct().forEach { candidate ->
                 launch {
                     try {
-                        if (candidate.contains("videoplay.vip")) {
-                            if (resolveVideoPlay(candidate, data, subtitleCallback, callback)) {
-                                anyFound = true
-                            }
+                        val found = if (candidate.contains("videoplay.vip")) {
+                            resolveVideoPlay(candidate, data, subtitleCallback, callback)
                         } else {
-                            if (loadExtractor(candidate, "${mainUrl}/", subtitleCallback, callback)) {
-                                anyFound = true
-                            }
+                            loadExtractor(candidate, "${mainUrl}/", subtitleCallback, callback)
+                        }
+                        if (found) {
+                            mutex.withLock { anyFound = true }
                         }
                     } catch (_: Exception) {
                     }
@@ -248,7 +288,7 @@ class DiziPal : MainAPI() {
 
             val fullM3u = if (m3uPath.startsWith("http")) m3uPath else "https://videoplay.vip${m3uPath}"
 
-            // parse subtitles if available
+            // Altyazıları parse et
             val tracksJson = Regex("const\\s+tracksData\\s*=\\s*(\\{.*?\\});").find(resp)?.groupValues?.get(1)
             if (tracksJson != null) {
                 val tracks = AppUtils.tryParseJson<VideoPlayTracks>(tracksJson)
