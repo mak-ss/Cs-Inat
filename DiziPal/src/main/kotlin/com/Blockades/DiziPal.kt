@@ -1,10 +1,10 @@
 package com.Blockades
 
-import com.cloudstream.tr.core.concurrency.BoundedParallelResolver
-import com.cloudstream.tr.core.model.ProviderModels
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
@@ -114,8 +114,7 @@ class DiziPal : MainAPI() {
             }
         }?.distinctBy { it.url } ?: emptyList()
 
-        val deduped = ProviderModels.dedupSearchResults(items)
-        return newSearchResponseList(deduped, hasNext = false)
+        return newSearchResponseList(items, hasNext = false)
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query, 1).items
@@ -214,26 +213,27 @@ class DiziPal : MainAPI() {
         }
 
         var anyFound = false
-        val count = BoundedParallelResolver.resolveProgressive(
-            candidates = candidateUrls.distinct(),
-            resolver = { candidate, emitLink ->
-                if (candidate.contains("videoplay.vip")) {
-                    if (resolveVideoPlay(candidate, data, subtitleCallback, emitLink)) {
-                        anyFound = true
-                    }
-                } else {
-                    if (loadExtractor(candidate, "${mainUrl}/", subtitleCallback, emitLink)) {
-                        anyFound = true
+
+        coroutineScope {
+            candidateUrls.distinct().forEach { candidate ->
+                launch {
+                    try {
+                        if (candidate.contains("videoplay.vip")) {
+                            if (resolveVideoPlay(candidate, data, subtitleCallback, callback)) {
+                                anyFound = true
+                            }
+                        } else {
+                            if (loadExtractor(candidate, "${mainUrl}/", subtitleCallback, callback)) {
+                                anyFound = true
+                            }
+                        }
+                    } catch (_: Exception) {
                     }
                 }
-            },
-            onLinkFound = { link ->
-                callback(link)
-                anyFound = true
             }
-        )
+        }
 
-        return anyFound || count > 0
+        return anyFound
     }
 
     private suspend fun resolveVideoPlay(
@@ -254,7 +254,8 @@ class DiziPal : MainAPI() {
                 val tracks = AppUtils.tryParseJson<VideoPlayTracks>(tracksJson)
                 tracks?.subtitles?.forEach { sub ->
                     val subUrl = sub.url ?: return@forEach
-                    val subFull = if (subUrl.startsWith("http")) subUrl else "https://videoplay.vip/play.m3u8?id=${sub.id}&p=${URLEncoder.encode(subUrl, "UTF-8")}"
+                    val subFull = if (subUrl.startsWith("http")) subUrl
+                    else "https://videoplay.vip/play.m3u8?id=${sub.id}&p=${URLEncoder.encode(subUrl, "UTF-8")}"
                     subtitleCallback.invoke(
                         SubtitleFile(
                             lang = sub.name ?: "Türkçe",
