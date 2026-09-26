@@ -4,7 +4,7 @@ import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
-class Startv : MainAPI() {
+class StarTv : MainAPI() {
     override var mainUrl = "https://www.startv.com.tr"
     override var name = "Star TV"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
@@ -78,7 +78,9 @@ class Startv : MainAPI() {
     // 3. DETAY SAYFASI VE BÖLÜMLER
     override suspend fun load(url: String): LoadResponse {
         if (url.contains("canli-yayin")) {
-            return newLiveStreamLoadResponse("Star TV Canlı", url, TvType.Live, url)
+            return newLiveStreamLoadResponse("Star TV Canlı", url, TvType.Live, url) {
+                this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
+            }
         }
 
         val doc = Jsoup.connect(url).get()
@@ -109,7 +111,7 @@ class Startv : MainAPI() {
         }
     }
 
-    // 4. VİDEO LİNK YÜKLEME (GÜNCELLENMİŞ SİGNATURA)
+    // 4. VİDEO LİNK YÜKLEME
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -124,7 +126,7 @@ class Startv : MainAPI() {
                     source = this.name,
                     name = "Star TV Canlı HD",
                     url = liveM3u8,
-                    isM3u8 = true
+                    type = ExtractorLinkType.M3U8
                 ) {
                     this.referer = mainUrl
                     this.quality = Qualities.Unknown.value
@@ -143,7 +145,7 @@ class Startv : MainAPI() {
                     source = this.name,
                     name = "Star TV Bölüm Stream",
                     url = m3u8Url,
-                    isM3u8 = true
+                    type = ExtractorLinkType.M3U8
                 ) {
                     this.referer = mainUrl
                     this.quality = Qualities.P1080.value
