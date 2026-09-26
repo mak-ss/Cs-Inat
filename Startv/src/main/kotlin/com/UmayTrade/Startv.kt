@@ -12,7 +12,7 @@ class StarTv : MainAPI() {
     override var lang = "tr"
     override val hasMainPage = true
 
-    // 1. ANA SAYFA
+    // 1. ANA SAYFA: Canlı Yayın, Diziler ve Programlar
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val homeCategories = mutableListOf<HomePageList>()
 
@@ -77,10 +77,19 @@ class StarTv : MainAPI() {
 
     // 3. DETAY SAYFASI
     override suspend fun load(url: String): LoadResponse {
+        // Canlı Yayın seçildiğinde
         if (url.contains("canli-yayin")) {
-            return newLiveStreamLoadResponse("Star TV Canlı", url, TvType.Live, url)
+            return newLiveStreamLoadResponse(
+                name = "Star TV Canlı",
+                url = url,
+                type = TvType.Live,
+                dataUrl = url
+            ) {
+                this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
+            }
         }
 
+        // Dizi veya Program seçildiğinde
         val doc = Jsoup.connect(url).get()
         val title = doc.select("h1.detail-title").text().ifEmpty { "Star TV Dizi" }
         val description = doc.select("div.detail-description").text()
@@ -116,7 +125,7 @@ class StarTv : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Canlı Yayın
+        // Canlı Yayın Akışı
         if (data.contains("canli-yayin")) {
             val liveM3u8 = "https://canli.startv.com.tr/startv/startv.m3u8"
             callback(
@@ -133,7 +142,7 @@ class StarTv : MainAPI() {
             return true
         }
 
-        // Dizi / Program Bölümü
+        // Dizi / Program Bölümü Akışı
         val doc = Jsoup.connect(data).get()
         val m3u8Url = doc.select("iframe.player-frame").attr("src")
 
