@@ -30,22 +30,26 @@ class StarTv : MainAPI() {
         }
         homeCategories.add(HomePageList("Canlı TV", listOf(liveItem)))
 
-        // B) Diziler Sayfası
+        // B) Diziler Sayfası (Güncellenmiş Seçiciler)
         runCatching {
             val dizilerDoc = Jsoup.connect("$mainUrl/dizi")
                 .userAgent(userAgent)
                 .ignoreContentType(true)
                 .get()
 
-            val dizilerList = dizilerDoc.select("div.card-series").mapNotNull { element ->
-                val title = element.select("h3").text().ifEmpty { return@mapNotNull null }
+            val dizilerList = dizilerDoc.select("div.poster-card").mapNotNull { element ->
+                val title = element.select("img").attr("alt").ifEmpty { 
+                    element.select("img").attr("title") 
+                }.ifEmpty { return@mapNotNull null }
+
                 val href = element.select("a").attr("href")
-                val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
+                val poster = element.select("img").attr("src")
                 
                 newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
                     this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
             }
+
             if (dizilerList.isNotEmpty()) {
                 homeCategories.add(HomePageList("Diziler", dizilerList))
             }
@@ -58,15 +62,19 @@ class StarTv : MainAPI() {
                 .ignoreContentType(true)
                 .get()
 
-            val programlarList = programlarDoc.select("div.card-series").mapNotNull { element ->
-                val title = element.select("h3").text().ifEmpty { return@mapNotNull null }
+            val programlarList = programlarDoc.select("div.poster-card, div.card-series").mapNotNull { element ->
+                val title = element.select("img").attr("alt").ifEmpty { 
+                    element.select("h3").text() 
+                }.ifEmpty { return@mapNotNull null }
+
                 val href = element.select("a").attr("href")
-                val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
+                val poster = element.select("img").attr("src").ifEmpty { element.select("img").attr("data-src") }
                 
                 newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
                     this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
             }
+
             if (programlarList.isNotEmpty()) {
                 homeCategories.add(HomePageList("Programlar", programlarList))
             }
@@ -83,8 +91,11 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        return doc.select("div.search-result-item").mapNotNull { element ->
-            val title = element.select(".title").text().ifEmpty { return@mapNotNull null }
+        return doc.select("div.poster-card, div.search-result-item").mapNotNull { element ->
+            val title = element.select("img").attr("alt").ifEmpty { 
+                element.select(".title").text() 
+            }.ifEmpty { return@mapNotNull null }
+
             val href = element.select("a").attr("href")
             val poster = element.select("img").attr("src")
 
@@ -111,9 +122,9 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        val title = doc.select("h1.detail-title").text().ifEmpty { "Star TV" }
-        val description = doc.select("div.detail-description").text()
-        val poster = doc.select("div.detail-banner img").attr("src")
+        val title = doc.select("h1.detail-title, h1").text().ifEmpty { "Star TV" }
+        val description = doc.select("div.detail-description, div.description").text()
+        val poster = doc.select("div.detail-banner img, img.poster").attr("src")
 
         val episodesUrl = if (url.endsWith("/bolumler")) url else "$url/bolumler"
         val episodes = runCatching {
@@ -122,8 +133,8 @@ class StarTv : MainAPI() {
                 .ignoreContentType(true)
                 .get()
 
-            episodesDoc.select("div.episode-item").mapIndexed { index, element ->
-                val epTitle = element.select(".ep-title").text().ifEmpty { "${index + 1}. Bölüm" }
+            episodesDoc.select("div.episode-item, div.poster-card").mapIndexed { index, element ->
+                val epTitle = element.select(".ep-title, img").attr("alt").ifEmpty { "${index + 1}. Bölüm" }
                 val epHref = element.select("a").attr("href")
                 val epPoster = element.select("img").attr("src")
 
@@ -176,7 +187,7 @@ class StarTv : MainAPI() {
             var streamUrl = ""
 
             // 1. İframe kontrolü
-            val iframeSrc = doc.select("iframe.player-frame").attr("src")
+            val iframeSrc = doc.select("iframe.player-frame, iframe").attr("src")
             if (iframeSrc.isNotBlank()) {
                 val iframeDoc = Jsoup.connect(fixUrl(iframeSrc))
                     .userAgent(userAgent)
