@@ -242,10 +242,10 @@ class DiziPalOriginal : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data
 
-        // 1) ANA SAYFA: Next.js RSC'den initial verileri çek
+        // 1) ANA SAYFA: Next.js RSC'den initial verileri çek (hızlı yol)
         if (url.trimEnd('/') == mainUrl.trimEnd('/')) {
             try {
-                val response = app.get(url)
+                val response = app.get(url, timeout = 15L)
                 val json = parseNextData(response.text)
                 val items = extractItemsFromNext(json)
                 val home = items.mapNotNull { obj -> nextItemToSearchResponse(obj) }
@@ -255,45 +255,50 @@ class DiziPalOriginal : MainAPI() {
             } catch (e: Exception) {
                 Log.w("DZP", "Ana sayfa RSC parse başarısız: ${e.message}")
             }
-        }
-
-        // 2) LİSTELEME SAYFALARI: API endpoint'ini dene
-        val apiResult = tryApiListing(url, page)
-        if (apiResult.isNotEmpty()) {
-            return newHomePageResponse(request.name, apiResult, hasNext = apiResult.size >= 20)
+        } else {
+            // 2) LİSTELEME SAYFALARI: API endpoint'ini dene (kısa timeout)
+            val apiResult = tryApiListing(url, page)
+            if (apiResult.isNotEmpty()) {
+                return newHomePageResponse(request.name, apiResult, hasNext = apiResult.size >= 20)
+            }
         }
 
         // 3) HTML/DOM fallback
-        val response = app.get(url)
-        val document = response.document
+        try {
+            val response = app.get(url, timeout = 15L)
+            val document = response.document
 
-        val home = document.select(
-            "a[href*='/filmler/'], a[href*='/diziler/'], " +
-            "a[href*='/movies/'], a[href*='/series/']"
-        ).mapNotNull { el ->
-            val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            if (href.contains("/genre/")) return@mapNotNull null
+            val home = document.select(
+                "a[href*='/filmler/'], a[href*='/diziler/'], " +
+                "a[href*='/movies/'], a[href*='/series/']"
+            ).mapNotNull { el ->
+                val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                if (href.contains("/genre/")) return@mapNotNull null
 
-            val title = el.selectFirst("h3, h4, .card-title, [class*=title]")?.text()?.trim()
-                ?: el.attr("title").takeIf { it.isNotBlank() }
-                ?: el.selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
+                val title = el.selectFirst("h3, h4, .card-title, [class*=title]")?.text()?.trim()
+                    ?: el.attr("title").takeIf { it.isNotBlank() }
+                    ?: el.selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
 
-            val poster = el.selectFirst("img")?.let {
-                it.attr("data-src").ifEmpty {
-                    it.attr("src").ifEmpty { it.attr("data-original") }
+                val poster = el.selectFirst("img")?.let {
+                    it.attr("data-src").ifEmpty {
+                        it.attr("src").ifEmpty { it.attr("data-original") }
+                    }
+                }
+
+                val isMovie = href.contains("/filmler/") || href.contains("/movies/")
+                if (isMovie) newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+                    this.posterUrl = fixUrlNull(poster)
+                } else newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                    this.posterUrl = fixUrlNull(poster)
                 }
             }
 
-            val isMovie = href.contains("/filmler/") || href.contains("/movies/")
-            if (isMovie) newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
-                this.posterUrl = fixUrlNull(poster)
-            } else newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
-                this.posterUrl = fixUrlNull(poster)
-            }
+            return newHomePageResponse(request.name, home.distinctBy { it.url }, hasNext = false)
+        } catch (e: Exception) {
+            Log.e("DZP", "DOM fallback başarısız: ${e.message}")
+            return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
-
-        return newHomePageResponse(request.name, home.distinctBy { it.url }, hasNext = false)
     }
 
     private suspend fun tryApiListing(url: String, page: Int): List<SearchResponse> {
@@ -303,25 +308,15 @@ class DiziPalOriginal : MainAPI() {
         val genreMatch = Regex("""/genre/([^/?#]+)""").find(url)
         val genre = genreMatch?.groupValues?.getOrNull(1)
 
+        // Sadece en olası 2 endpoint
         val candidates = mutableListOf<String>()
-
         if (genre != null) {
-            candidates.addAll(listOf(
-                "$mainUrl/api/$type?page=$page&genre=$genre",
-                "$mainUrl/api/content?type=$type&genre=$genre&page=$page",
-                "$mainUrl/api/discover?type=$type&genre=$genre&page=$page",
-                "$mainUrl/api/load-more?type=$type&genre=$genre&page=$page",
-                "$mainUrl/api/genre/$genre?type=$type&page=$page",
-                "$mainUrl/api/$type?genre_slug=$genre&page=$page",
-            ))
+            candidates.add("$mainUrl/api/$type?page=$page&genre=$genre")
+            candidates.add("$mainUrl/api/discover?type=$type&genre=$genre&page=$page")
+        } else {
+            candidates.add("$mainUrl/api/$type?page=$page")
+            candidates.add("$mainUrl/api/discover?type=$type&page=$page")
         }
-
-        candidates.addAll(listOf(
-            "$mainUrl/api/$type?page=$page",
-            "$mainUrl/api/content?type=$type&page=$page",
-            "$mainUrl/api/discover?type=$type&page=$page",
-            "$mainUrl/api/load-more?type=$type&page=$page",
-        ))
 
         for (endpoint in candidates) {
             try {
@@ -331,7 +326,8 @@ class DiziPalOriginal : MainAPI() {
                         "Accept" to "application/json",
                         "X-Requested-With" to "XMLHttpRequest"
                     ),
-                    referer = url
+                    referer = url,
+                    timeout = 10L
                 )
 
                 val text = resp.text.trim()
@@ -379,7 +375,8 @@ class DiziPalOriginal : MainAPI() {
                     "Accept" to "application/json, text/javascript, */*; q=0.01",
                     "X-Requested-With" to "XMLHttpRequest"
                 ),
-                referer = "$mainUrl/"
+                referer = "$mainUrl/",
+                timeout = 10L
             )
 
             val body = responseRaw.text.trim()
@@ -411,12 +408,11 @@ class DiziPalOriginal : MainAPI() {
 
         val searchUrls = listOf(
             "$mainUrl/arama?q=$query",
-            "$mainUrl/search?q=$query",
-            "$mainUrl/discover?q=$query"
+            "$mainUrl/search?q=$query"
         )
         for (su in searchUrls) {
             try {
-                val resp = app.get(su)
+                val resp = app.get(su, timeout = 10L)
                 val json = parseNextData(resp.text)
                 val items = extractItemsFromNext(json)
                 val list = items.mapNotNull { nextItemToSearchResponse(it) }
@@ -462,7 +458,7 @@ class DiziPalOriginal : MainAPI() {
             return load(seriesUrl)
         }
 
-        val response = app.get(url)
+        val response = app.get(url, timeout = 15L)
         val html = response.text
         val document = response.document
         val json = parseNextData(html)
@@ -607,7 +603,8 @@ class DiziPalOriginal : MainAPI() {
                 "User-Agent"    to userAgent,
                 "Cache-Control" to "no-cache",
                 "Pragma"        to "no-cache"
-            )
+            ),
+            timeout = 15L
         )
 
         val html = getResponse.text
@@ -713,7 +710,8 @@ class DiziPalOriginal : MainAPI() {
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
                     "Accept" to "*/*"
-                )
+                ),
+                timeout = 15L
             )
 
             var sessionCookie = ""
@@ -772,7 +770,8 @@ class DiziPalOriginal : MainAPI() {
         val embedSource = app.get(
             url = finalEmbedUrl,
             referer = data,
-            headers = mapOf("User-Agent" to userAgent)
+            headers = mapOf("User-Agent" to userAgent),
+            timeout = 15L
         ).text
 
         val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""")
