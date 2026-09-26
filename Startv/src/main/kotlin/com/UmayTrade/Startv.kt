@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.jsoup.nodes.Element
 
 @Suppress("unused")
 class StarTv : MainAPI() {
@@ -16,115 +17,203 @@ class StarTv : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries)
 
     private val posterBaseUrl = "https://media.startv.com.tr"
+    private val mapper = ObjectMapper()
 
     override val mainPage = mainPageOf(
         "$mainUrl/dizi" to "Diziler",
         "$mainUrl/program" to "Programlar"
     )
 
-    // __NEXT_DATA__ JSON'unu çeken yardımcı fonksiyon
     private fun getNextData(document: org.jsoup.nodes.Document): JsonNode? {
-        val nextDataScript = document.selectFirst("script#__NEXT_DATA__") ?: return null
+        val script = document.selectFirst("script#__NEXT_DATA__") ?: return null
         return try {
-            ObjectMapper().readTree(nextDataScript.data())
+            mapper.readTree(script.data())
         } catch (e: Exception) {
-            e.printStackTrace()
-            null
+            e.printStackTrace(); null
         }
     }
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
+    /** __NEXT_DATA__ içinde verilen isimdeki ilk array'i bulur (recursive). */
+    private fun findArrayByName(node: JsonNode?, name: String): JsonNode? {
+        if (node == null || node.isMissingNode) return null
+        if (node.isObject) {
+            val field = node.get(name)
+            if (field != null && field.isArray) return field
+            node.fields().forEach { (_, v) ->
+                findArrayByName(v, name)?.let { return it }
+            }
+        } else if (node.isArray) {
+            for (child in node) {
+                findArrayByName(child, name)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    /** Bir item'dan başlık, url, poster çıkarır. Farklı key isimlerini dener. */
+    private fun parseItem(item: JsonNode): Triple<String, String, String?>? {
+        val title = listOf("name", "title", "seriesName")
+            .firstNotNullOfOrNull { item.path(it).asText().takeIf { s -> s.isNotBlank() } }
+            ?: return null
+
+        val href = listOf("url", "slug", "path", "link")
+            .firstNotNullOfOrNull { item.path(it).asText().takeIf { s -> s.isNotBlank() } }
+            ?: return null
+
+        val posterPath = listOf("poster", "image", "thumbnail")
+            .firstNotNullOfOrNull { key ->
+                val n = item.path(key)
+                when {
+                    n.isTextual -> n.asText()
+                    n.isObject -> n.path("fullPath").asText()
+                        .ifBlank { n.path("url").asText() }
+                        .ifBlank { n.path("path").asText() }
+                    else -> null
+                }?.takeIf { it.isNotBlank() }
+            }
+
+        val fullHref = if (href.startsWith("http")) href else "$mainUrl$href"
+        val poster = posterPath?.let {
+            if (it.startsWith("http")) it else "$posterBaseUrl$it"
+        }
+        return Triple(title, fullHref, poster)
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
-        val nextData = getNextData(document) ?: return newHomePageResponse(request.name, emptyList())
 
-        // JSON içindeki dizi/program listesini bul
-        val items = nextData.path("props").path("pageProps").path("data").path("items")
-        val shows = items.mapNotNull { item ->
-            val title = item.path("name").asText()
-            val href = item.path("url").asText()
-            val posterPath = item.path("poster").path("fullPath").asText()
-            val poster = if (posterPath.isNotEmpty()) "$posterBaseUrl$posterPath" else null
+        // 1) Önce __NEXT_DATA__ içinde dizi/program array'i ara
+        val nextData = getNextData(document)
+        val candidates = listOf("items", "contents", "series", "programs", "list", "data")
+        var items: JsonNode? = null
+        for (c in candidates) {
+            items = findArrayByName(nextData, c)
+            if (items != null && items.size() > 0) break
+        }
 
-            if (title.isEmpty() || href.isEmpty()) return@mapNotNull null
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = poster
+        val shows = mutableListOf<SearchResponse>()
+        if (items != null && items.isArray) {
+            for (item in items) {
+                val parsed = parseItem(item) ?: continue
+                val (title, href, poster) = parsed
+                shows.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                    this.posterUrl = poster
+                })
             }
         }
 
-        return newHomePageResponse(request.name, shows)
+        // 2) Fallback: HTML'den linkleri topla
+        if (shows.isEmpty()) {
+            val selector = "a[href*=/dizi/], a[href*=/program/], a[href*=/video/]"
+            document.select(selector).forEach { a ->
+                val href = a.attr("href").let {
+                    if (it.startsWith("http")) it else "$mainUrl$it"
+                }
+                if (href.endsWith("/dizi") || href.endsWith("/program")) return@forEach
+                val title = a.selectFirst("h2, h3, h4, [class*=title], [class*=Title]")
+                    ?.text()?.trim()
+                    ?: a.attr("title").takeIf { it.isNotBlank() }
+                    ?: return@forEach
+                val poster = a.selectFirst("img")?.let { img ->
+                    (img.attr("src").takeIf { it.isNotBlank() }
+                        ?: img.attr("data-src").takeIf { it.isNotBlank() }
+                        ?: img.attr("data-lazy-src").takeIf { it.isNotBlank() })
+                }?.let { if (it.startsWith("http")) it else "$mainUrl$it" }
+
+                shows.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                    this.posterUrl = poster
+                })
+            }
+        }
+
+        return newHomePageResponse(request.name, shows.distinctBy { it.url })
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Arama fonksiyonu için site içi arama sayfasının da benzer bir yapıda olduğunu varsayıyoruz.
-        // Gerekirse bu kısım da __NEXT_DATA__ kullanacak şekilde güncellenebilir.
-        val url = "$mainUrl/ara?q=$query"
-        val document = app.get(url).document
-        val nextData = getNextData(document) ?: return emptyList()
-        
-        // Arama sonuçları sayfasındaki JSON yapısı farklı olabilir, kontrol edilmeli.
-        // Örnek olarak "items" yolunu kullanıyoruz.
-        val items = nextData.path("props").path("pageProps").path("data").path("items")
-        return items.mapNotNull { item ->
-            val title = item.path("name").asText()
-            val href = item.path("url").asText()
-            val posterPath = item.path("poster").path("fullPath").asText()
-            val poster = if (posterPath.isNotEmpty()) "$posterBaseUrl$posterPath" else null
+        val url = "$mainUrl/arama?q=$query"
+        val doc = app.get(url).document
+        val out = mutableListOf<SearchResponse>()
 
-            if (title.isEmpty() || href.isEmpty()) return@mapNotNull null
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = poster
+        val nextData = getNextData(doc)
+        val items = findArrayByName(nextData, "items")
+            ?: findArrayByName(nextData, "results")
+        if (items != null) {
+            for (item in items) {
+                val p = parseItem(item) ?: continue
+                out.add(newTvSeriesSearchResponse(p.first, p.second, TvType.TvSeries) {
+                    this.posterUrl = p.third
+                })
             }
         }
+        if (out.isEmpty()) {
+            doc.select("a[href*=/dizi/], a[href*=/program/]").forEach { a ->
+                val href = a.attr("href").let {
+                    if (it.startsWith("http")) it else "$mainUrl$it"
+                }
+                val title = a.text().trim().takeIf { it.isNotBlank() } ?: return@forEach
+                out.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries))
+            }
+        }
+        return out.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-        val nextData = getNextData(document) ?: return null
+        val nextData = getNextData(document)
 
-        // Dizi detay sayfasındaki JSON yapısı
-        val seriesData = nextData.path("props").path("pageProps").path("data")
-        
-        val title = seriesData.path("name").asText()
-        val description = seriesData.path("summary").asText() // HTML içerebilir, temizlenmeli
-        val posterPath = seriesData.path("poster").path("fullPath").asText()
-        val poster = if (posterPath.isNotEmpty()) "$posterBaseUrl$posterPath" else null
+        val seriesData = nextData?.path("props")?.path("pageProps")?.path("data")
+
+        val title = seriesData?.path("name")?.asText()?.takeIf { it.isNotBlank() }
+            ?: document.selectFirst("h1")?.text()?.trim()
+            ?: return null
+
+        val description = seriesData?.path("summary")?.asText()
+            ?: document.selectFirst("meta[name=description]")?.attr("content")
+
+        val posterPath = seriesData?.path("poster")?.path("fullPath")?.asText()?.takeIf { it.isNotBlank() }
+        val poster = posterPath?.let { if (it.startsWith("http")) it else "$posterBaseUrl$it" }
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
 
         val episodes = mutableListOf<Episode>()
-        // Bölüm listesi JSON içinde "sections" veya benzeri bir alanda olabilir.
-        // Bu kısım, dizi sayfasının gerçek JSON yapısına göre uyarlanmalıdır.
-        // Örnek olarak, "sections" altındaki "items"ları tarıyoruz.
-        val sections = seriesData.path("sections")
-        if (sections.isArray) {
+
+        // __NEXT_DATA__ içinden bölümleri topla
+        val sections = seriesData?.path("sections")
+        if (sections != null && sections.isArray) {
             for (section in sections) {
                 val items = section.path("items")
-                if (items.isArray) {
-                    for (item in items) {
-                        if (item.path("resourceType").asText() == "Episode") {
-                            // Bölüm detaylarına ulaşmak için ekstra bir istek gerekebilir.
-                            // Şimdilik sadece ID'yi alıp bir placeholder oluşturuyoruz.
-                            val episodeId = item.path("_id").asText()
-                            val episodeTitle = "Bölüm" // JSON'dan başlık çekilebilir
-                            episodes.add(
-                                newEpisode("$mainUrl/video/$episodeId") { // Varsayımsal bir URL
-                                    name = episodeTitle
-                                    posterUrl = poster
-                                }
-                            )
-                        }
+                if (!items.isArray) continue
+                for (item in items) {
+                    val type = item.path("resourceType").asText()
+                    if (type.equals("Episode", true) || type.equals("Video", true)) {
+                        val id = item.path("_id").asText().takeIf { it.isNotBlank() } ?: continue
+                        val epTitle = item.path("name").asText().takeIf { it.isNotBlank() } ?: "Bölüm"
+                        val epUrl = item.path("url").asText().takeIf { it.isNotBlank() }
+                            ?: "$mainUrl/video/$id"
+                        val epPosterPath = item.path("poster").path("fullPath").asText()
+                        val epPoster = if (epPosterPath.isNotBlank()) "$posterBaseUrl$epPosterPath" else poster
+                        episodes.add(newEpisode(epUrl) {
+                            this.name = epTitle
+                            this.posterUrl = epPoster
+                        })
                     }
                 }
             }
         }
-        
-        // Eğer bölümler yukarıdaki gibi bulunamazsa, alternatif bir yol denenebilir.
-        // Örneğin, doğrudan bir "episodes" dizisi olup olmadığına bakılabilir.
+
+        // Fallback: HTML'den bölüm linkleri
+        if (episodes.isEmpty()) {
+            document.select("a[href*=/video/], a[href*=/bolum], a[href*=/izle]").forEach { a ->
+                val href = a.attr("href").let {
+                    if (it.startsWith("http")) it else "$mainUrl$it"
+                }
+                val name = a.text().trim().takeIf { it.isNotBlank() } ?: return@forEach
+                episodes.add(newEpisode(href) { this.name = name; this.posterUrl = poster })
+            }
+        }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            plot = description
-            posterUrl = poster
+            this.plot = description
+            this.posterUrl = poster
         }
     }
 
@@ -134,32 +223,58 @@ class StarTv : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Video linklerini çekmek için de benzer şekilde __NEXT_DATA__ veya bir API kullanılması gerekebilir.
-        // Bu kısım, video sayfasının yapısına göre tamamen yeniden yazılmalıdır.
-        // Şimdilik mevcut yapıyı koruyoruz, ancak çalışmayabilir.
         val document = app.get(data).document
-        val videoUrl = document.select("video source").attr("src")
         val referer = mainUrl
+        var found = false
 
-        if (videoUrl.contains(".m3u8")) {
-            M3u8Helper.generateM3u8(
-                name,
-                videoUrl,
-                data,
-                headers = mapOf("Referer" to referer)
-            ).forEach { callback(it) }
-        } else {
-            callback(
-                newExtractorLink(
-                    source = name,
-                    name = name,
-                    url = videoUrl
-                ) {
+        // 1) __NEXT_DATA__ içinden m3u8 / video url ara
+        val nd = getNextData(document)
+        val urls = mutableSetOf<String>()
+
+        fun walk(node: JsonNode?) {
+            if (node == null) return
+            when {
+                node.isTextual -> {
+                    val t = node.asText()
+                    if (t.contains(".m3u8") || t.contains(".mp4")) urls.add(t)
+                }
+                node.isObject -> node.fields().forEach { (_, v) -> walk(v) }
+                node.isArray -> node.forEach { walk(it) }
+            }
+        }
+        walk(nd)
+
+        // 2) HTML fallback
+        document.select("video source, source[src], video[src], iframe[src]").forEach { el ->
+            val src = el.attr("src").takeIf { it.isNotBlank() }
+                ?: el.attr("data-src").takeIf { it.isNotBlank() }
+            if (src != null) urls.add(src)
+        }
+
+        // 3) <script> içindeki m3u8 geçen yerleri tara
+        val regex = Regex("""https?://[^\s"'\\]+\.(m3u8|mp4)[^\s"'\\]*""")
+        document.select("script").forEach { s ->
+            regex.findAll(s.data()).forEach { urls.add(it.value) }
+        }
+
+        for (u in urls) {
+            val full = if (u.startsWith("http")) u else "$mainUrl$u"
+            if (full.contains(".m3u8")) {
+                M3u8Helper.generateM3u8(
+                    name,
+                    full,
+                    referer = data,
+                    headers = mapOf("Referer" to referer)
+                ).forEach { callback(it); found = true }
+            } else if (full.contains(".mp4")) {
+                callback(newExtractorLink(name, name, full) {
                     this.referer = referer
                     this.headers = mapOf("Referer" to referer)
-                }
-            )
+                })
+                found = true
+            }
         }
-        return true
+
+        return found
     }
 }
