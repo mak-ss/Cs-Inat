@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
 @Suppress("unused")
-class StarTV : MainAPI() {
+class StarTv : MainAPI() {
     override var mainUrl = "https://www.startv.com.tr"
     override var name = "Star TV"
     override val hasMainPage = true
@@ -32,7 +32,7 @@ class StarTV : MainAPI() {
             val poster = if (image.startsWith("/")) "$posterBaseUrl${image.removePrefix("/")}" else image
 
             if (title.isEmpty() || href.isEmpty()) return@mapNotNull null
-            newAnimeSearchResponse(title, href) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = poster
             }
         }
@@ -49,7 +49,7 @@ class StarTV : MainAPI() {
             val image = it.select("img").attr("data-src")
             val poster = if (image.startsWith("/")) "$posterBaseUrl${image.removePrefix("/")}" else image
 
-            newAnimeSearchResponse(title, href) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = poster
             }
         }
@@ -66,13 +66,11 @@ class StarTV : MainAPI() {
             val epTitle = ep.select("h4").text().trim()
             val epUrl = ep.select("a").attr("href")
             val epImage = ep.select("img").attr("data-src")
-            val releaseText = ep.select("span.date").text().trim()
 
             episodes.add(
                 newEpisode(epUrl) {
                     name = epTitle
                     posterUrl = if (epImage.startsWith("/")) "$posterBaseUrl${epImage.removePrefix("/")}" else epImage
-                    // If you need a date, use: this.date = releaseText
                 }
             )
         }
