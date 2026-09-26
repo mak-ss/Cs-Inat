@@ -77,12 +77,11 @@ class StarTv : MainAPI() {
 
     // 3. DETAY SAYFASI
     override suspend fun load(url: String): LoadResponse {
-        // Canlı Yayın seçildiğinde
+        // Canlı Yayın seçildiğinde (Parametre sırası tam olarak düzeltildi)
         if (url.contains("canli-yayin")) {
             return newLiveStreamLoadResponse(
                 name = "Star TV Canlı",
                 url = url,
-                type = TvType.Live,
                 dataUrl = url
             ) {
                 this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
