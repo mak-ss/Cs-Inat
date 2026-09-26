@@ -788,8 +788,8 @@ class DiziPalOriginal : MainAPI() {
             return false
         }
 
-        val finalM3u8Url = if (extractedUrl.contains(".html") && !extractedUrl.contains(".m3u8")) {
+        val finalM3u8Url: String? = if (extractedUrl.contains(".html") && !extractedUrl.contains(".m3u8")) {
             val idRegex = Regex("""embed-([^.]+)\.html""")
             val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
             if (idMatch != null) {
-                "https://s2.superadjacentsoddenly.xyz/hls2/01/
+                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${id
