@@ -24,21 +24,48 @@ class DiziPalOriginal : MainAPI() {
     private val mapper: ObjectMapper = jacksonObjectMapper()
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/"                       to "Ana Sayfa",
-        "${mainUrl}/filmler"                to "Filmler",
-        "${mainUrl}/diziler"                to "Diziler",
-        "${mainUrl}/trending"               to "Trend",
-        "${mainUrl}/popular/weekly"         to "Haftanın Popülerleri",
-        "${mainUrl}/upcoming"               to "Vizyona Girecekler",
-        "${mainUrl}/collections"            to "Koleksiyonlar",
-        "${mainUrl}/genre/action"           to "Aksiyon",
-        "${mainUrl}/genre/comedy"           to "Komedi",
-        "${mainUrl}/genre/drama"            to "Drama",
-        "${mainUrl}/genre/scifi"            to "Bilim Kurgu",
-        "${mainUrl}/genre/thriller"         to "Gerilim",
-        "${mainUrl}/genre/horror"           to "Korku",
-        "${mainUrl}/genre/animation"        to "Animasyon",
-        "${mainUrl}/genre/documentary"      to "Belgesel",
+        "${mainUrl}/"                                   to "Ana Sayfa",
+        "${mainUrl}/filmler"                            to "Filmler",
+        "${mainUrl}/diziler"                            to "Diziler",
+        "${mainUrl}/trending"                           to "Trend",
+        "${mainUrl}/popular/weekly"                     to "Haftanın Popülerleri",
+        "${mainUrl}/upcoming"                           to "Vizyona Girecekler",
+        "${mainUrl}/collections"                        to "Koleksiyonlar",
+
+        // --- FİLM TÜRLERİ ---
+        "${mainUrl}/filmler/genre/aksiyon"              to "Film: Aksiyon",
+        "${mainUrl}/filmler/genre/bilim-kurgu"          to "Film: Bilim Kurgu",
+        "${mainUrl}/filmler/genre/gerilim"              to "Film: Gerilim",
+        "${mainUrl}/filmler/genre/suc"                  to "Film: Suç",
+        "${mainUrl}/filmler/genre/korku"                to "Film: Korku",
+        "${mainUrl}/filmler/genre/gizem"                to "Film: Gizem",
+        "${mainUrl}/filmler/genre/animasyon"            to "Film: Animasyon",
+        "${mainUrl}/filmler/genre/komedi"               to "Film: Komedi",
+        "${mainUrl}/filmler/genre/dram"                 to "Film: Dram",
+        "${mainUrl}/filmler/genre/romantik"             to "Film: Romantik",
+        "${mainUrl}/filmler/genre/macera"               to "Film: Macera",
+        "${mainUrl}/filmler/genre/fantastik"            to "Film: Fantastik",
+        "${mainUrl}/filmler/genre/belgesel"             to "Film: Belgesel",
+        "${mainUrl}/filmler/genre/aile"                 to "Film: Aile",
+        "${mainUrl}/filmler/genre/tarih"                to "Film: Tarih",
+        "${mainUrl}/filmler/genre/savas"                to "Film: Savaş",
+        "${mainUrl}/filmler/genre/western"              to "Film: Western",
+        "${mainUrl}/filmler/genre/muzik"                to "Film: Müzik",
+
+        // --- DİZİ TÜRLERİ ---
+        "${mainUrl}/diziler/genre/suc"                  to "Dizi: Suç",
+        "${mainUrl}/diziler/genre/gizem"                to "Dizi: Gizem",
+        "${mainUrl}/diziler/genre/animasyon"            to "Dizi: Animasyon",
+        "${mainUrl}/diziler/genre/aile"                 to "Dizi: Aile",
+        "${mainUrl}/diziler/genre/komedi"               to "Dizi: Komedi",
+        "${mainUrl}/diziler/genre/dram"                 to "Dizi: Dram",
+        "${mainUrl}/diziler/genre/romantik"             to "Dizi: Romantik",
+        "${mainUrl}/diziler/genre/aksiyon"              to "Dizi: Aksiyon",
+        "${mainUrl}/diziler/genre/bilim-kurgu"          to "Dizi: Bilim Kurgu",
+        "${mainUrl}/diziler/genre/gerilim"              to "Dizi: Gerilim",
+        "${mainUrl}/diziler/genre/korku"                to "Dizi: Korku",
+        "${mainUrl}/diziler/genre/fantastik"            to "Dizi: Fantastik",
+        "${mainUrl}/diziler/genre/belgesel"             to "Dizi: Belgesel",
     )
 
     // =========================================================================
@@ -144,26 +171,63 @@ class DiziPalOriginal : MainAPI() {
     }
 
     /**
+     * Poster URL'ini inşa eder.
+     * - Zaten tam URL ise (http ile başlıyor) olduğu gibi döner
+     * - /storage/... ile başlıyorsa mainUrl eklenir
+     * - Sadece hash ise tür ve boyuta göre tam URL üretir
+     */
+    private fun buildPosterUrl(raw: String?, isMovie: Boolean): String? {
+        if (raw.isNullOrBlank()) return null
+        if (raw.startsWith("http")) return raw
+        if (raw.startsWith("/storage/")) return mainUrl + raw
+        if (raw.startsWith("storage/")) return "$mainUrl/$raw"
+
+        // Sadece hash — varsayılan w500
+        val type = if (isMovie) "movies" else "series"
+        return "$mainUrl/storage/$type/poster/w500/$raw.webp"
+    }
+
+    /**
      * Bir JSON objesini (RSC veya API'den) SearchResponse'a çevirir.
+     * Poster için birden fazla alan adı dener.
      */
     private fun nextItemToSearchResponse(obj: JSONObject): SearchResponse? {
         val title = obj.optString("title").takeIf { it.isNotBlank() } ?: return null
         val url = obj.optString("url").takeIf { it.isNotBlank() } ?: return null
-        val poster = obj.optString("poster_url").takeIf { it.isNotBlank() }
-            ?: obj.optString("poster").takeIf { it.isNotBlank() }
+
         val type = obj.optString("_contentType").ifBlank { obj.optString("type") }
+        val isMovie = type == "movie" ||
+            url.contains("/filmler/") || url.contains("/movies/")
+
+        // Poster için olası tüm alan adları
+        val poster = listOf(
+            "poster_url", "poster", "poster_path", "image", "image_url",
+            "cover", "cover_url", "thumbnail", "thumb"
+        ).firstNotNullOfOrNull { key ->
+            obj.optString(key).takeIf { it.isNotBlank() }
+        }
+
+        // Backdrop (poster yoksa fallback)
+        val backdrop = listOf("backdrop_url", "backdrop", "backdrop_path")
+            .firstNotNullOfOrNull { key ->
+                obj.optString(key).takeIf { it.isNotBlank() }
+            }
+
+        val finalPoster = buildPosterUrl(poster ?: backdrop, isMovie)
+
         val year = obj.optInt("release_year").takeIf { it > 0 }
             ?: obj.optInt("year").takeIf { it > 0 }
+            ?: obj.optInt("first_air_date_year").takeIf { it > 0 }
 
         val href = fixUrl(url)
-        return if (type == "movie" || url.contains("/filmler/") || url.contains("/movies/")) {
+        return if (isMovie) {
             newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = fixUrlNull(poster)
+                this.posterUrl = fixUrlNull(finalPoster)
                 this.year = year
             }
         } else {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = fixUrlNull(poster)
+                this.posterUrl = fixUrlNull(finalPoster)
                 this.year = year
             }
         }
@@ -197,45 +261,72 @@ class DiziPalOriginal : MainAPI() {
             return newHomePageResponse(request.name, apiResult, hasNext = apiResult.size >= 20)
         }
 
-        // 3) HTML/DOM fallback
+        // 3) HTML/DOM fallback — genre sayfaları için de çalışır
         val response = app.get(url)
         val document = response.document
-        val home = document.select("a[href*='/filmler/'], a[href*='/diziler/'], a[href*='/movies/'], a[href*='/series/']")
-            .mapNotNull { el ->
-                val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val title = el.selectFirst("h3, .card-title, [class*=title]")?.text()?.trim()
-                    ?: el.attr("title").takeIf { it.isNotBlank() }
-                    ?: return@mapNotNull null
-                val poster = el.selectFirst("img")?.let {
-                    it.attr("data-src").ifEmpty { it.attr("src") }
-                }
-                val isMovie = href.contains("/filmler/") || href.contains("/movies/")
-                if (isMovie) newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
-                    this.posterUrl = fixUrlNull(poster)
-                } else newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
-                    this.posterUrl = fixUrlNull(poster)
+
+        val home = document.select(
+            "a[href*='/filmler/'], a[href*='/diziler/'], " +
+            "a[href*='/movies/'], a[href*='/series/']"
+        ).mapNotNull { el ->
+            val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            // Kendi kendine link veren (kategori linki) olanları atla
+            if (href.contains("/genre/")) return@mapNotNull null
+
+            val title = el.selectFirst("h3, h4, .card-title, [class*=title]")?.text()?.trim()
+                ?: el.attr("title").takeIf { it.isNotBlank() }
+                ?: el.selectFirst("img")?.attr("alt")?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+
+            val poster = el.selectFirst("img")?.let {
+                it.attr("data-src").ifEmpty {
+                    it.attr("src").ifEmpty { it.attr("data-original") }
                 }
             }
+
+            val isMovie = href.contains("/filmler/") || href.contains("/movies/")
+            if (isMovie) newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+                this.posterUrl = fixUrlNull(poster)
+            } else newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+        }
 
         return newHomePageResponse(request.name, home.distinctBy { it.url }, hasNext = false)
     }
 
     /**
-     * /movies, /series gibi liste sayfaları için Next.js API endpoint'ini dener.
+     * /filmler, /diziler ve /filmler/genre/xxx, /diziler/genre/xxx gibi liste
+     * sayfaları için Next.js API endpoint'ini dener.
      */
     private suspend fun tryApiListing(url: String, page: Int): List<SearchResponse> {
-        val isMovie = url.contains("/filmler") || url.contains("/movies")
+        val isMovie = url.contains("/filmler")
         val type = if (isMovie) "movie" else "series"
-        val slug = url.substringAfter(mainUrl).trim('/').substringAfterLast('/')
 
-        val candidates = listOf(
+        // URL'den genre slug'ını çıkar (varsa)
+        val genreMatch = Regex("""/genre/([^/?#]+)""").find(url)
+        val genre = genreMatch?.groupValues?.getOrNull(1)
+
+        // Genre'ye özel endpoint'ler + genel endpoint'ler
+        val candidates = mutableListOf<String>()
+
+        if (genre != null) {
+            candidates.addAll(listOf(
+                "$mainUrl/api/$type?page=$page&genre=$genre",
+                "$mainUrl/api/content?type=$type&genre=$genre&page=$page",
+                "$mainUrl/api/discover?type=$type&genre=$genre&page=$page",
+                "$mainUrl/api/load-more?type=$type&genre=$genre&page=$page",
+                "$mainUrl/api/genre/$genre?type=$type&page=$page",
+                "$mainUrl/api/$type?genre_slug=$genre&page=$page",
+            ))
+        }
+
+        candidates.addAll(listOf(
             "$mainUrl/api/$type?page=$page",
             "$mainUrl/api/content?type=$type&page=$page",
             "$mainUrl/api/discover?type=$type&page=$page",
             "$mainUrl/api/load-more?type=$type&page=$page",
-            "$mainUrl/api/$type?page=$page&slug=$slug",
-            "$mainUrl/api/discover?type=$type&page=$page&genre=$slug"
-        )
+        ))
 
         for (endpoint in candidates) {
             try {
@@ -269,7 +360,10 @@ class DiziPalOriginal : MainAPI() {
                     list.add(item)
                 }
 
-                if (list.isNotEmpty()) return list
+                if (list.isNotEmpty()) {
+                    Log.d("DZP", "API başarılı: $endpoint (${list.size} içerik)")
+                    return list
+                }
             } catch (e: Exception) {
                 Log.d("DZP", "API denemesi başarısız ($endpoint): ${e.message}")
             }
@@ -340,7 +434,8 @@ class DiziPalOriginal : MainAPI() {
                 val domList = doc.select("a[href*='/filmler/'], a[href*='/diziler/'], a[href*='/movies/'], a[href*='/series/']")
                     .mapNotNull { el ->
                         val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                        val title = el.selectFirst("h3, .card-title, [class*=title]")?.text()?.trim()
+                        if (href.contains("/genre/")) return@mapNotNull null
+                        val title = el.selectFirst("h3, h4, .card-title, [class*=title]")?.text()?.trim()
                             ?: return@mapNotNull null
                         val poster = el.selectFirst("img")?.let {
                             it.attr("data-src").ifEmpty { it.attr("src") }
@@ -381,10 +476,6 @@ class DiziPalOriginal : MainAPI() {
         val document = response.document
         val json = parseNextData(html)
 
-        val poster = fixUrlNull(
-            document.selectFirst("meta[property=og:image]")?.attr("content")
-        )
-
         val isSeries = url.contains("/diziler/") || url.contains("/series/")
 
         // RSC içindeki eşleşen objeyi bul
@@ -393,6 +484,12 @@ class DiziPalOriginal : MainAPI() {
             val u = obj.optString("url")
             u.isNotBlank() && (url.endsWith(u) || url.contains(u.removePrefix("/")))
         }
+
+        // Poster — matched objeden veya meta tag'den
+        val posterRaw = matched?.optString("poster_url")?.takeIf { it.isNotBlank() }
+            ?: matched?.optString("poster")?.takeIf { it.isNotBlank() }
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
+        val poster = buildPosterUrl(posterRaw, !isSeries)
 
         val title = matched?.optString("title")?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("h1")?.text()?.trim()
@@ -683,115 +780,3 @@ class DiziPalOriginal : MainAPI() {
                     source = this.name,
                     name = "Dizipal (M3U8)",
                     url = finalEmbedUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    referer = data
-                    quality = Qualities.Unknown.value
-                }
-            )
-            return true
-        }
-
-        // =====================================================================
-        // 4) EMBED SAYFASINI ÇEK VE M3U8 ÇIKAR
-        // =====================================================================
-        val embedSource = app.get(
-            url = finalEmbedUrl,
-            referer = data,
-            headers = mapOf("User-Agent" to userAgent)
-        ).text
-
-        val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""")
-            .find(embedSource)
-            ?: Regex("""file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
-            ?: Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(embedSource)
-            ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
-
-        val extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
-
-        if (extractedUrl == null) {
-            Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı! Embed: $finalEmbedUrl")
-            return false
-        }
-
-        val finalM3u8Url = if (extractedUrl.contains(".html") && !extractedUrl.contains(".m3u8")) {
-            val idRegex = Regex("""embed-([^.]+)\.html""")
-            val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
-            if (idMatch != null) {
-                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
-            } else {
-                Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
-                null
-            }
-        } else {
-            extractedUrl
-        }
-
-        if (finalM3u8Url.isNullOrEmpty()) return false
-
-        Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
-
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = "Dizipal (Ana Sunucu)",
-                url = finalM3u8Url,
-                type = ExtractorLinkType.M3U8
-            ) {
-                referer = finalEmbedUrl
-                quality = Qualities.Unknown.value
-            }
-        )
-
-        // =====================================================================
-        // 5) ALTYAZILAR
-        // =====================================================================
-        val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
-            .find(embedSource)
-        tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
-            val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
-            trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
-                val itemStr = itemMatch.groupValues[1]
-                val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
-                val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
-                val fileUrl = fileMatch?.groupValues?.getOrNull(1)
-                val label = labelMatch?.groupValues?.getOrNull(1) ?: "Unknown"
-                if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
-                    subtitleCallback.invoke(SubtitleFile(lang = label, url = fixUrl(fileUrl)))
-                }
-            }
-        }
-
-        return true
-    }
-
-    /**
-     * JSON ağacında verilen key isimlerinden birini bulup predicate'e uyan ilk
-     * String değeri döndürür.
-     */
-    private fun findStringInJson(
-        obj: Any?,
-        keys: List<String>,
-        predicate: (String) -> Boolean
-    ): String? {
-        when (obj) {
-            is JSONObject -> {
-                val iter = obj.keys()
-                while (iter.hasNext()) {
-                    val k = iter.next()
-                    val v = obj.opt(k)
-                    if (k in keys && v is String && predicate(v)) return v
-                    val nested = findStringInJson(v, keys, predicate)
-                    if (nested != null) return nested
-                }
-            }
-            is JSONArray -> {
-                for (i in 0 until obj.length()) {
-                    val nested = findStringInJson(obj.opt(i), keys, predicate)
-                    if (nested != null) return nested
-                }
-            }
-        }
-        return null
-    }
-}
