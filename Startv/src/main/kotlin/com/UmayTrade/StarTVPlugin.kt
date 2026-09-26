@@ -7,6 +7,6 @@ import android.content.Context
 @CloudstreamPlugin
 class StarTvPlugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(StarTv())
+        registerMainAPI(StarTV())
     }
 }
