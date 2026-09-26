@@ -1,7 +1,7 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 // ! TX (dizipal3081.live) yapısına göre güncellenmiştir.
 
-package com.UmayTrade
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
