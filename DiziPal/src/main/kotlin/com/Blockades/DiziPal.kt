@@ -6,9 +6,10 @@ package com.Blockades
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
-import org.json.JSONObject
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.json.JSONArray
+import org.json.JSONObject
 
 class DiziPalOriginal : MainAPI() {
     override var mainUrl              = "https://dizipal3081.live"
@@ -19,6 +20,8 @@ class DiziPalOriginal : MainAPI() {
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
     override var sequentialMainPage = true
+
+    private val mapper: ObjectMapper = jacksonObjectMapper()
 
     override val mainPage = mainPageOf(
         "${mainUrl}/"                       to "Ana Sayfa",
@@ -38,20 +41,21 @@ class DiziPalOriginal : MainAPI() {
         "${mainUrl}/genre/documentary"      to "Belgesel",
     )
 
-    // -------------------------------------------------------------------------
-    // NEXT.JS DATA PARSER
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // NEXT.JS / RSC DATA PARSER
+    // =========================================================================
 
     /**
-     * Next.js sayfalarındaki `self.__next_f.push([1,"..."])` script'lerini birleştirip
-     * içindeki JSON verisini döndürür.
+     * Next.js sayfalarındaki `self.__next_f.push([1,"..."])` script chunk'larını
+     * birleştirip JSON döndürür. Ayrıca standalone RSC payload formatını
+     * (`0:{...}`, `3:[...]` gibi satırlar) da parse eder.
      */
     private fun parseNextData(html: String): JSONObject? {
+        // 1) Script chunk'larını birleştir
         val regex = Regex("""self\.__next_f\.push\(\[1,"(.*?)"\]\)""", RegexOption.DOT_MATCHES_ALL)
         val sb = StringBuilder()
         regex.findAll(html).forEach { match ->
             var chunk = match.groupValues[1]
-            // JSON string escape'lerini geri çöz
             chunk = chunk
                 .replace("\\\"", "\"")
                 .replace("\\\\", "\\")
@@ -59,16 +63,36 @@ class DiziPalOriginal : MainAPI() {
                 .replace("\\/", "/")
             sb.append(chunk)
         }
-        val full = sb.toString()
-        if (full.isBlank()) return null
 
-        // İlk `{` ile son `}` arasını al
-        val start = full.indexOf('{')
-        val end = full.lastIndexOf('}')
-        if (start == -1 || end == -1 || end <= start) return null
+        // 2) Script yoksa sayfa doğrudan RSC payload olabilir
+        val raw = if (sb.isBlank()) html else sb.toString()
 
+        // 3) RSC formatı: "0:{...}" veya "3:[...]" satırları
+        val lineRegex = Regex("""(?m)^(\d+):(\{.*|\[.*)$""")
+        val matches = lineRegex.findAll(raw).toList()
+
+        if (matches.isNotEmpty()) {
+            val joined = JSONObject()
+            matches.forEach { m ->
+                val id = m.groupValues[1]
+                val jsonStr = m.groupValues[2].trimEnd(',')
+                try {
+                    if (jsonStr.startsWith("{")) {
+                        joined.put(id, JSONObject(jsonStr))
+                    } else {
+                        joined.put(id, JSONArray(jsonStr))
+                    }
+                } catch (_: Exception) {}
+            }
+            if (joined.length() > 0) return joined
+        }
+
+        // 4) Fallback: ilk { ile son } arası
+        val start = raw.indexOf('{')
+        val end = raw.lastIndexOf('}')
+        if (start == -1 || end <= start) return null
         return try {
-            JSONObject(full.substring(start, end + 1))
+            JSONObject(raw.substring(start, end + 1))
         } catch (e: Exception) {
             Log.e("DZP", "Next data parse hatası: ${e.message}")
             null
@@ -76,108 +100,190 @@ class DiziPalOriginal : MainAPI() {
     }
 
     /**
-     * JSON içindeki initialHeroItems / initialPopularItems / initialTrending /
-     * initialNewReleases / initialLastEpisodes / initialComingSoon alanlarından
-     * içerik çıkarır.
+     * RSC JSON ağacındaki tüm initial* alanlarını (initialHeroItems, initialTrending vb.)
+     * recursive olarak bulup içerik objelerini döndürür.
      */
     private fun extractItemsFromNext(json: JSONObject?): List<JSONObject> {
         if (json == null) return emptyList()
         val items = mutableListOf<JSONObject>()
+        val seen = mutableSetOf<String>()
 
-        // "initialLayout" veya doğrudan component props'ları içinde arayalım
-        fun deepFind(obj: JSONObject) {
-            val keys = obj.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                val value = obj.opt(key)
-                when {
-                    key.startsWith("initial") && value is JSONArray -> {
-                        for (i in 0 until value.length()) {
-                            value.optJSONObject(i)?.let { items.add(it) }
+        fun deepFind(obj: Any?) {
+            when (obj) {
+                is JSONObject -> {
+                    val keys = obj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val value = obj.opt(key)
+                        if (key.startsWith("initial") && value is JSONArray) {
+                            for (i in 0 until value.length()) {
+                                value.optJSONObject(i)?.let { items.add(it) }
+                            }
+                        } else {
+                            deepFind(value)
                         }
                     }
-                    value is JSONObject -> deepFind(value)
-                    value is JSONArray -> {
-                        for (i in 0 until value.length()) {
-                            value.optJSONObject(i)?.let { deepFind(it) }
-                        }
+                }
+                is JSONArray -> {
+                    for (i in 0 until obj.length()) {
+                        deepFind(obj.opt(i))
                     }
                 }
             }
         }
         deepFind(json)
-        return items
+
+        // Deduplicate by url
+        return items.filter {
+            val u = it.optString("url")
+            if (u.isBlank()) return@filter false
+            if (u in seen) return@filter false
+            seen.add(u)
+            true
+        }
     }
 
-    // -------------------------------------------------------------------------
+    /**
+     * Bir JSON objesini (RSC veya API'den) SearchResponse'a çevirir.
+     */
+    private fun nextItemToSearchResponse(obj: JSONObject): SearchResponse? {
+        val title = obj.optString("title").takeIf { it.isNotBlank() } ?: return null
+        val url = obj.optString("url").takeIf { it.isNotBlank() } ?: return null
+        val poster = obj.optString("poster_url").takeIf { it.isNotBlank() }
+            ?: obj.optString("poster").takeIf { it.isNotBlank() }
+        val type = obj.optString("_contentType").ifBlank { obj.optString("type") }
+        val year = obj.optInt("release_year").takeIf { it > 0 }
+            ?: obj.optInt("year").takeIf { it > 0 }
+
+        val href = fixUrl(url)
+        return if (type == "movie" || url.contains("/filmler/") || url.contains("/movies/")) {
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = fixUrlNull(poster)
+                this.year = year
+            }
+        } else {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = fixUrlNull(poster)
+                this.year = year
+            }
+        }
+    }
+
+    // =========================================================================
     // MAIN PAGE
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val response = app.get(request.data)
-        val html = response.text
-        val json = parseNextData(html)
+        val url = request.data
 
-        // 1) Next.js JSON'dan çekmeyi dene
-        val jsonItems = extractItemsFromNext(json)
-        val home = mutableListOf<SearchResponse>()
-
-        jsonItems.forEach { obj ->
-            val title = obj.optString("title").takeIf { it.isNotBlank() } ?: return@forEach
-            val url = obj.optString("url").takeIf { it.isNotBlank() } ?: return@forEach
-            val poster = obj.optString("poster_url").takeIf { it.isNotBlank() }
-            val type = obj.optString("_contentType").ifBlank { obj.optString("type") }
-            val year = obj.optInt("release_year").takeIf { it > 0 }
-
-            val href = fixUrl(url)
-            if (type == "movie") {
-                home.add(newMovieSearchResponse(title, href, TvType.Movie) {
-                    this.posterUrl = fixUrlNull(poster)
-                    this.year = year
-                })
-            } else {
-                home.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                    this.posterUrl = fixUrlNull(poster)
-                    this.year = year
-                })
+        // 1) ANA SAYFA: Next.js RSC'den initial verileri çek
+        if (url.trimEnd('/') == mainUrl.trimEnd('/')) {
+            try {
+                val response = app.get(url)
+                val json = parseNextData(response.text)
+                val items = extractItemsFromNext(json)
+                val home = items.mapNotNull { obj -> nextItemToSearchResponse(obj) }
+                if (home.isNotEmpty()) {
+                    return newHomePageResponse(request.name, home, hasNext = false)
+                }
+            } catch (e: Exception) {
+                Log.w("DZP", "Ana sayfa RSC parse başarısız: ${e.message}")
             }
         }
 
-        // 2) JSON'dan gelmediyse DOM'a fallback yap
-        if (home.isEmpty()) {
-            val document = response.document
-            document.select("a[href*='/filmler/'], a[href*='/diziler/'], a[href*='/movies/'], a[href*='/series/']")
-                .forEach { el ->
-                    val href = el.attr("href")
-                    val title = el.selectFirst("h3, .card-title, [class*=title]")?.text()?.trim()
-                        ?: el.attr("title").takeIf { it.isNotBlank() }
-                        ?: return@forEach
-                    val poster = el.selectFirst("img")?.let {
-                        it.attr("data-src").ifEmpty { it.attr("src") }
-                    }
-                    val isMovie = href.contains("/filmler/") || href.contains("/movies/")
-                    val resp = if (isMovie) {
-                        newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
-                            this.posterUrl = fixUrlNull(poster)
-                        }
-                    } else {
-                        newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
-                            this.posterUrl = fixUrlNull(poster)
-                        }
-                    }
-                    home.add(resp)
-                }
+        // 2) LİSTELEME SAYFALARI: API endpoint'ini dene
+        val apiResult = tryApiListing(url, page)
+        if (apiResult.isNotEmpty()) {
+            return newHomePageResponse(request.name, apiResult, hasNext = apiResult.size >= 20)
         }
+
+        // 3) HTML/DOM fallback
+        val response = app.get(url)
+        val document = response.document
+        val home = document.select("a[href*='/filmler/'], a[href*='/diziler/'], a[href*='/movies/'], a[href*='/series/']")
+            .mapNotNull { el ->
+                val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val title = el.selectFirst("h3, .card-title, [class*=title]")?.text()?.trim()
+                    ?: el.attr("title").takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val poster = el.selectFirst("img")?.let {
+                    it.attr("data-src").ifEmpty { it.attr("src") }
+                }
+                val isMovie = href.contains("/filmler/") || href.contains("/movies/")
+                if (isMovie) newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+                    this.posterUrl = fixUrlNull(poster)
+                } else newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                    this.posterUrl = fixUrlNull(poster)
+                }
+            }
 
         return newHomePageResponse(request.name, home.distinctBy { it.url }, hasNext = false)
     }
 
-    // -------------------------------------------------------------------------
+    /**
+     * /movies, /series gibi liste sayfaları için Next.js API endpoint'ini dener.
+     * Siteye göre endpoint isimleri değişebilir, birden fazlası sırayla denenir.
+     */
+    private suspend fun tryApiListing(url: String, page: Int): List<SearchResponse> {
+        val isMovie = url.contains("/filmler") || url.contains("/movies")
+        val type = if (isMovie) "movie" else "series"
+        val slug = url.substringAfter(mainUrl).trim('/').substringAfterLast('/')
+
+        val candidates = listOf(
+            "$mainUrl/api/$type?page=$page",
+            "$mainUrl/api/content?type=$type&page=$page",
+            "$mainUrl/api/discover?type=$type&page=$page",
+            "$mainUrl/api/load-more?type=$type&page=$page",
+            "$mainUrl/api/$type?page=$page&slug=$slug",
+            "$mainUrl/api/discover?type=$type&page=$page&genre=$slug"
+        )
+
+        for (endpoint in candidates) {
+            try {
+                val resp = app.get(
+                    endpoint,
+                    headers = mapOf(
+                        "Accept" to "application/json",
+                        "X-Requested-With" to "XMLHttpRequest"
+                    ),
+                    referer = url
+                )
+
+                val text = resp.text.trim()
+                if (!text.startsWith("{") && !text.startsWith("[")) continue
+
+                val root = JSONObject(
+                    if (text.startsWith("[")) """{"data":$text}""" else text
+                )
+
+                val array = root.optJSONArray("data")
+                    ?: root.optJSONArray("items")
+                    ?: root.optJSONArray("results")
+                    ?: root.optJSONArray("movies")
+                    ?: root.optJSONArray("series")
+                    ?: continue
+
+                val list = mutableListOf<SearchResponse>()
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    val item = nextItemToSearchResponse(obj) ?: continue
+                    list.add(item)
+                }
+
+                if (list.isNotEmpty()) return list
+            } catch (e: Exception) {
+                Log.d("DZP", "API denemesi başarısız ($endpoint): ${e.message}")
+            }
+        }
+        return emptyList()
+    }
+
+    // =========================================================================
     // SEARCH
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Önce Ajax endpoint'i dene
+        // 1) Ajax endpoint
         try {
             val searchUrl = "$mainUrl/ajax-search?q=$query"
             val responseRaw = app.get(
@@ -189,8 +295,10 @@ class DiziPalOriginal : MainAPI() {
                 referer = "$mainUrl/"
             )
 
-            if (responseRaw.text.trim().startsWith("{")) {
-                val jsonResponse = AppUtils.parseJson<DizipalSearchData>(responseRaw.text)
+            val body = responseRaw.text.trim()
+            if (body.startsWith("{")) {
+                val jsonResponse: DizipalSearchData =
+                    mapper.readValue(body, DizipalSearchData::class.java)
                 val list = mutableListOf<SearchResponse>()
                 jsonResponse.results?.forEach { item ->
                     val title = item.title ?: return@forEach
@@ -211,10 +319,10 @@ class DiziPalOriginal : MainAPI() {
                 if (list.isNotEmpty()) return list
             }
         } catch (e: Exception) {
-            Log.w("DZP", "Ajax arama başarısız, HTML fallback: ${e.message}")
+            Log.w("DZP", "Ajax arama başarısız: ${e.message}")
         }
 
-        // HTML fallback: /arama?q= veya /search?q=
+        // 2) Next.js search sayfası RSC
         val searchUrls = listOf(
             "$mainUrl/arama?q=$query",
             "$mainUrl/search?q=$query",
@@ -222,8 +330,15 @@ class DiziPalOriginal : MainAPI() {
         )
         for (su in searchUrls) {
             try {
-                val doc = app.get(su).document
-                val list = doc.select("a[href*='/filmler/'], a[href*='/diziler/'], a[href*='/movies/'], a[href*='/series/']")
+                val resp = app.get(su)
+                val json = parseNextData(resp.text)
+                val items = extractItemsFromNext(json)
+                val list = items.mapNotNull { nextItemToSearchResponse(it) }
+                if (list.isNotEmpty()) return list
+
+                // DOM fallback
+                val doc = resp.document
+                val domList = doc.select("a[href*='/filmler/'], a[href*='/diziler/'], a[href*='/movies/'], a[href*='/series/']")
                     .mapNotNull { el ->
                         val href = el.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
                         val title = el.selectFirst("h3, .card-title, [class*=title]")?.text()?.trim()
@@ -238,7 +353,7 @@ class DiziPalOriginal : MainAPI() {
                             this.posterUrl = fixUrlNull(poster)
                         }
                     }
-                if (list.isNotEmpty()) return list
+                if (domList.isNotEmpty()) return domList
             } catch (_: Exception) {}
         }
 
@@ -247,9 +362,9 @@ class DiziPalOriginal : MainAPI() {
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // LOAD
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     override suspend fun load(url: String): LoadResponse? {
         // Bölüm linki yönlendirmesi
@@ -265,8 +380,6 @@ class DiziPalOriginal : MainAPI() {
         val response = app.get(url)
         val html = response.text
         val document = response.document
-
-        // Next.js JSON'dan içerik bilgisi
         val json = parseNextData(html)
 
         val poster = fixUrlNull(
@@ -275,7 +388,7 @@ class DiziPalOriginal : MainAPI() {
 
         val isSeries = url.contains("/diziler/") || url.contains("/series/")
 
-        // JSON'dan detay çekmeye çalış
+        // RSC içindeki eşleşen objeyi bul
         val items = extractItemsFromNext(json)
         val matched = items.firstOrNull { obj ->
             val u = obj.optString("url")
@@ -289,7 +402,6 @@ class DiziPalOriginal : MainAPI() {
             ?: return null
 
         val year = matched?.optInt("release_year")?.takeIf { it > 0 }
-            ?: matched?.optInt("release_year")?.takeIf { it > 0 }
 
         val description = matched?.optString("description")?.takeIf { it.isNotBlank() }
             ?: matched?.optString("short_description")?.takeIf { it.isNotBlank() }
@@ -314,37 +426,31 @@ class DiziPalOriginal : MainAPI() {
         if (isSeries) {
             val episodes = mutableListOf<Episode>()
 
-            // 1) JSON'dan bölümleri çek
+            // 1) RSC JSON'dan bölümleri çek
             json?.let { j ->
                 val episodeItems = mutableListOf<JSONObject>()
-                fun deepEp(obj: JSONObject) {
-                    val keys = obj.keys()
-                    while (keys.hasNext()) {
-                        val k = keys.next()
-                        val v = obj.opt(k)
-                        when {
-                            v is JSONObject -> {
-                                if (v.has("episode_number") && v.has("season_number")) {
-                                    episodeItems.add(v)
-                                }
-                                deepEp(v)
+
+                fun deepEp(obj: Any?) {
+                    when (obj) {
+                        is JSONObject -> {
+                            if (obj.has("episode_number") && obj.has("season_number")) {
+                                episodeItems.add(obj)
                             }
-                            v is JSONArray -> {
-                                for (i in 0 until v.length()) {
-                                    v.optJSONObject(i)?.let { child ->
-                                        if (child.has("episode_number") && child.has("season_number")) {
-                                            episodeItems.add(child)
-                                        }
-                                        deepEp(child)
-                                    }
-                                }
+                            val keys = obj.keys()
+                            while (keys.hasNext()) {
+                                deepEp(obj.opt(keys.next()))
+                            }
+                        }
+                        is JSONArray -> {
+                            for (i in 0 until obj.length()) {
+                                deepEp(obj.opt(i))
                             }
                         }
                     }
                 }
                 deepEp(j)
 
-                episodeItems.forEach { ep ->
+                episodeItems.distinctBy { it.optString("url") }.forEach { ep ->
                     val epTitle = ep.optString("episode_title").takeIf { it.isNotBlank() }
                         ?: ep.optString("title").takeIf { it.isNotBlank() }
                         ?: "Bölüm"
@@ -362,20 +468,21 @@ class DiziPalOriginal : MainAPI() {
 
             // 2) DOM fallback
             if (episodes.isEmpty()) {
-                document.select("a[href*='/bolum/'], a[href*='/episode/'], .episode-item, [class*=episode]").forEach { el ->
-                    val epHref = el.attr("href").takeIf { it.isNotBlank() } ?: return@forEach
-                    val epName = el.selectFirst(".title, [class*=title], h3, h4")?.text()?.trim()
-                        ?: el.text().trim().takeIf { it.isNotBlank() }
-                        ?: return@forEach
-                    val subtitle = el.selectFirst(".subtitle, [class*=subtitle]")?.text()?.trim() ?: ""
-                    val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
-                        ?: Regex("""S(\d+)\s*E(\d+)""", RegexOption.IGNORE_CASE).find(subtitle)
-                    episodes.add(newEpisode(fixUrl(epHref)) {
-                        this.name = epName
-                        this.season = match?.groupValues?.getOrNull(1)?.toIntOrNull()
-                        this.episode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
-                    })
-                }
+                document.select("a[href*='/bolum/'], a[href*='/episode/'], .episode-item, [class*=episode]")
+                    .forEach { el ->
+                        val epHref = el.attr("href").takeIf { it.isNotBlank() } ?: return@forEach
+                        val epName = el.selectFirst(".title, [class*=title], h3, h4")?.text()?.trim()
+                            ?: el.text().trim().takeIf { it.isNotBlank() }
+                            ?: return@forEach
+                        val subtitle = el.selectFirst(".subtitle, [class*=subtitle]")?.text()?.trim() ?: ""
+                        val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
+                            ?: Regex("""S(\d+)\s*E(\d+)""", RegexOption.IGNORE_CASE).find(subtitle)
+                        episodes.add(newEpisode(fixUrl(epHref)) {
+                            this.name = epName
+                            this.season = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+                            this.episode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+                        })
+                    }
             }
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }) {
@@ -396,9 +503,9 @@ class DiziPalOriginal : MainAPI() {
         }
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // LOAD LINKS
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     override suspend fun loadLinks(
         data: String,
@@ -489,7 +596,7 @@ class DiziPalOriginal : MainAPI() {
                         url = finalM3u8Url,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        referer = mapOf("Referer" to embedUrl).toString()
+                        referer = embedUrl
                         headers = mapOf("Cookie" to sessionCookie)
                         quality = Qualities.Unknown.value
                     }
