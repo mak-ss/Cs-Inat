@@ -792,4 +792,48 @@ class DiziPalOriginal : MainAPI() {
             val idRegex = Regex("""embed-([^.]+)\.html""")
             val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
             if (idMatch != null) {
-                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${id
+                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
+            } else {
+                Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
+                null
+            }
+        } else {
+            extractedUrl
+        }
+
+        if (finalM3u8Url.isNullOrEmpty()) return false
+
+        Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
+
+        callback.invoke(
+            newExtractorLink(
+                source = this.name,
+                name = "Dizipal (Ana Sunucu)",
+                url = finalM3u8Url,
+                type = ExtractorLinkType.M3U8
+            ) {
+                referer = finalEmbedUrl
+                quality = Qualities.Unknown.value
+            }
+        )
+
+        // 5) ALTYAZILAR
+        val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+            .find(embedSource)
+        tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
+            val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
+            trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
+                val itemStr = itemMatch.groupValues[1]
+                val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
+                val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
+                val fileUrl = fileMatch?.groupValues?.getOrNull(1)
+                val label = labelMatch?.groupValues?.getOrNull(1) ?: "Unknown"
+                if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
+                    subtitleCallback.invoke(SubtitleFile(lang = label, url = fixUrl(fileUrl)))
+                }
+            }
+        }
+
+        return true
+    }
+}
