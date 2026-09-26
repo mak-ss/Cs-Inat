@@ -96,7 +96,6 @@ class StarTv : MainAPI() {
 
     // 3. DETAY SAYFASI
     override suspend fun load(url: String): LoadResponse {
-        // Canlı yayın tespiti
         if (url.contains("canli-yayin") || url.contains("daioncdn") || url.contains(".m3u8")) {
             return newLiveStreamLoadResponse(
                 name = "Star TV Canlı",
@@ -107,7 +106,6 @@ class StarTv : MainAPI() {
             }
         }
 
-        // Dizi/Program Detayı
         val doc = Jsoup.connect(url)
             .userAgent(userAgent)
             .ignoreContentType(true)
@@ -144,13 +142,14 @@ class StarTv : MainAPI() {
         }
     }
 
-    // 4. VİDEO LİNK YÜKLEME
+    // 4. VİDEO LİNK YÜKLEME (MNCDN / .TS DÜZELTMESİ)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Canlı Yayın Akışı
         if (data.contains("canli-yayin") || data.contains("daioncdn") || data.contains(".m3u8")) {
             callback(
                 newExtractorLink(
@@ -167,24 +166,54 @@ class StarTv : MainAPI() {
             return true
         }
 
+        // Dizi / Bölüm Akışı
         runCatching {
             val doc = Jsoup.connect(data)
                 .userAgent(userAgent)
                 .ignoreContentType(true)
                 .get()
 
-            val m3u8Url = doc.select("iframe.player-frame").attr("src")
+            var streamUrl = ""
 
-            if (m3u8Url.isNotBlank()) {
+            // 1. İframe kontrolü
+            val iframeSrc = doc.select("iframe.player-frame").attr("src")
+            if (iframeSrc.isNotBlank()) {
+                val iframeDoc = Jsoup.connect(fixUrl(iframeSrc))
+                    .userAgent(userAgent)
+                    .ignoreContentType(true)
+                    .get()
+                streamUrl = Regex("""(https?://[^\s"'<>]+?(?:\.m3u8|\.smil/?[^\s"'<>]*))""").find(iframeDoc.html())?.value ?: ""
+            }
+
+            // 2. Sayfa içi Regex taraması (MNCDN linkleri için)
+            if (streamUrl.isBlank()) {
+                streamUrl = Regex("""(https?://[^\s"'<>]+mncdn[^\s"'<>]+)""").find(doc.html())?.value ?: ""
+            }
+
+            // 3. .ts uzantılı link gelirse bunu m3u8 playlist formatına çevir
+            if (streamUrl.contains(".ts")) {
+                streamUrl = streamUrl.replace(Regex("""/media_b\d+_\d+\.ts"""), "/playlist.m3u8")
+            } else if (streamUrl.contains(".smil") && !streamUrl.contains(".m3u8")) {
+                streamUrl = if (streamUrl.contains("?")) {
+                    streamUrl.replace(".smil?", ".smil/playlist.m3u8?")
+                } else {
+                    "$streamUrl/playlist.m3u8"
+                }
+            }
+
+            if (streamUrl.isNotBlank()) {
                 callback(
                     newExtractorLink(
                         source = this.name,
-                        name = "Star TV Stream",
-                        url = m3u8Url,
+                        name = "Star TV HD",
+                        url = streamUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = mainUrl
-                        this.headers = mapOf("User-Agent" to userAgent)
+                        this.headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "Origin" to "https://www.startv.com.tr"
+                        )
                         this.quality = Qualities.P1080.value
                     }
                 )
