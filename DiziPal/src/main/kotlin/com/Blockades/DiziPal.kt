@@ -158,7 +158,9 @@ class DiziPalOriginal : MainAPI() {
         val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a").map { it.text().trim() }
         val duration: Int? = null
 
-        if (url.contains("/dizi/")) {
+        val isSeries = url.contains("/dizi/") || url.contains("/bolum/")
+
+        if (isSeries) {
             val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
 
             val episodes = document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
@@ -213,6 +215,7 @@ class DiziPalOriginal : MainAPI() {
 
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
+        // 1. AŞAMA: GET isteği atıp hem Token'ı hem de ÇEREZLERİ alıyoruz
         val getResponse = app.get(
             url = data,
             headers = mapOf(
@@ -230,11 +233,9 @@ class DiziPalOriginal : MainAPI() {
             return false
         }
 
-        val cookies = getResponse.cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-
         Log.d("DZP", "Bulunan Token » $configToken")
-        Log.d("DZP", "Yakalanan Çerezler » $cookies")
 
+        // 2. AŞAMA: Token'ı Base64 Decode Et
         val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
         val decodedToken = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
         Log.d("DZP", "Decoded Token » $decodedToken")
@@ -250,6 +251,7 @@ class DiziPalOriginal : MainAPI() {
         val embedUrl = fixUrl(embedUrlRaw)
         Log.d("DZP", "Çözülen Embed URL » $embedUrl")
 
+        // 3. AŞAMA: Imagestoo sağlayıcısı için özel akış
         if (embedUrl.contains("imagestoo")) {
             val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
             val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
@@ -311,33 +313,56 @@ class DiziPalOriginal : MainAPI() {
             }
         }
 
+        // 4. AŞAMA: Diğer embed sağlayıcıları için embed sayfasını çek
         val embedSource = app.get(
             url = embedUrl,
             referer = data,
             headers = mapOf("User-Agent" to userAgent)
         ).text
 
+        // 4a. Video kaynağını bul (m3u8 veya html)
         val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
             ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
 
-        val extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
+        var extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
+
+        // Alternatif aramalar
+        if (extractedUrl == null) {
+            val altMatch = Regex(""""securedLink"\s*:\s*"([^"]+)"""").find(embedSource)
+                ?: Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)"""").find(embedSource)
+            extractedUrl = altMatch?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+        }
 
         if (extractedUrl == null) {
             Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı!")
             return false
         }
 
+        Log.d("DZP", "Embed'den çıkarılan ham URL » $extractedUrl")
+
+        // 5. AŞAMA: URL'yi işle
         val finalM3u8Url = if (extractedUrl.contains(".html")) {
+            // Örn: .../embed-p7013okller2.html -> p7013okller2
             val idRegex = Regex("""embed-([^.]+)\.html""")
             val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
 
             if (idMatch != null) {
-                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
+                // Yeni CDN domaini ve yolu
+                val baseCdn = "https://s6.superadjacentsoddenly.xyz"
+                // Yol bilgisini orijinal URL'den çıkarmaya çalış
+                val pathMatch = Regex("""hls2/(\d+)/(\d+)/""").find(extractedUrl)
+                val pathPrefix = if (pathMatch != null) {
+                    "hls2/${pathMatch.groupValues[1]}/${pathMatch.groupValues[2]}"
+                } else {
+                    "hls2/01/00009" // varsayılan
+                }
+                "$baseCdn/$pathPrefix/${idMatch}_n/master.m3u8"
             } else {
                 Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
                 null
             }
         } else {
+            // Zaten m3u8 ise olduğu gibi kullan
             extractedUrl
         }
 
@@ -346,8 +371,8 @@ class DiziPalOriginal : MainAPI() {
         }
 
         Log.d("DZP", "Başarıyla üretilen M3U8 URL: $finalM3u8Url")
-        Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
 
+        // 6. AŞAMA: Video linkini callback ile gönder
         callback.invoke(
             newExtractorLink(
                 source = this.name,
@@ -360,7 +385,9 @@ class DiziPalOriginal : MainAPI() {
             }
         )
 
+        // 7. AŞAMA: Altyazıları yakala
         val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(embedSource)
+        var subtitlesFound = false
 
         tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
             val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
@@ -381,7 +408,29 @@ class DiziPalOriginal : MainAPI() {
                             url = fixUrl(fileUrl)
                         )
                     )
+                    subtitlesFound = true
                 }
+            }
+        }
+
+        // Embed'de altyazı bulunamazsa CDN üzerinden VTT URL'si oluştur
+        if (!subtitlesFound && finalM3u8Url.contains("superadjacentsoddenly.xyz")) {
+            val cdnMatch = Regex("""https://([^/]+)/hls2/(\d+)/(\d+)/([^_/]+)_n/""").find(finalM3u8Url)
+            if (cdnMatch != null) {
+                val domain = cdnMatch.groupValues[1]
+                val part1 = cdnMatch.groupValues[2]
+                val part2 = cdnMatch.groupValues[3]
+                val videoId = cdnMatch.groupValues[4]
+
+                val subtitleUrl = "https://$domain/vtt/$part1/$part2/${videoId}_tur.vtt"
+                Log.d("DZP", "CDN üzerinden oluşturulan altyazı URL » $subtitleUrl")
+
+                subtitleCallback.invoke(
+                    SubtitleFile(
+                        lang = "Türkçe",
+                        url = subtitleUrl
+                    )
+                )
             }
         }
 
