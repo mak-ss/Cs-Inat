@@ -16,7 +16,7 @@ class StarTv : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val homeCategories = mutableListOf<HomePageList>()
 
-        // A) Canlı Yayın Bölümü
+        // A) Canlı Yayın
         val liveItem = newLiveSearchResponse("Star TV Canlı Yayın", "$mainUrl/canli-yayin", TvType.Live) {
             this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
         }
@@ -75,12 +75,10 @@ class StarTv : MainAPI() {
         }
     }
 
-    // 3. DETAY SAYFASI VE BÖLÜMLER
+    // 3. DETAY SAYFASI
     override suspend fun load(url: String): LoadResponse {
         if (url.contains("canli-yayin")) {
-            return newLiveStreamLoadResponse("Star TV Canlı", url, TvType.Live, url) {
-                this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
-            }
+            return newLiveStreamLoadResponse("Star TV Canlı", url, TvType.Live, url)
         }
 
         val doc = Jsoup.connect(url).get()
@@ -118,7 +116,7 @@ class StarTv : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Canlı Yayın Linki
+        // Canlı Yayın
         if (data.contains("canli-yayin")) {
             val liveM3u8 = "https://canli.startv.com.tr/startv/startv.m3u8"
             callback(
@@ -135,7 +133,7 @@ class StarTv : MainAPI() {
             return true
         }
 
-        // Dizi / Program Bölümü Linki
+        // Dizi / Program Bölümü
         val doc = Jsoup.connect(data).get()
         val m3u8Url = doc.select("iframe.player-frame").attr("src")
 
