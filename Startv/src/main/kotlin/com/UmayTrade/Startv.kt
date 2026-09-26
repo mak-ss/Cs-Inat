@@ -1,9 +1,9 @@
 package com.UmayTrade
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils.parseDate
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.parseDate
 
 @Suppress("unused")
 class StarTVProvider : MainAPI() {
@@ -108,10 +108,15 @@ val document = app.get(url).document
                     url = videoUrl,
                     referer = referer,
                     quality = 0,
+                    isM3u8 = false,
                     headers = mapOf("Referer" to referer)
                 )
             )
         }
+        return true
+}
+}
+
         return true
 }
 }
