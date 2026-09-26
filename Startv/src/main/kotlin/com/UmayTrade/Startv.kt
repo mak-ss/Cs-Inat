@@ -14,6 +14,7 @@ class StarTv : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     private val liveStreamUrl = "https://dogus.daioncdn.net/startv/startv_720p.m3u8?&sid=8sa1zezrv6wm&app=a20ac41e-bdc3-4aa1-934d-26b484480ac9&ce=3"
+    private val defaultPoster = "https://upload.wikimedia.org/wikipedia/commons/5/55/Star_TV.png"
 
     // 1. ANA SAYFA
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -25,11 +26,11 @@ class StarTv : MainAPI() {
             "$mainUrl/canli-yayin", 
             TvType.Live
         ) {
-            this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
+            this.posterUrl = defaultPoster
         }
         homeCategories.add(HomePageList("Canlı TV", listOf(liveItem)))
 
-        // B) Diziler
+        // B) Diziler Sayfası
         runCatching {
             val dizilerDoc = Jsoup.connect("$mainUrl/dizi")
                 .userAgent(userAgent)
@@ -42,7 +43,7 @@ class StarTv : MainAPI() {
                 val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
                 
                 newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
-                    this.posterUrl = fixUrlNull(poster)
+                    this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
             }
             if (dizilerList.isNotEmpty()) {
@@ -50,7 +51,7 @@ class StarTv : MainAPI() {
             }
         }
 
-        // C) Programlar
+        // C) Programlar Sayfası
         runCatching {
             val programlarDoc = Jsoup.connect("$mainUrl/program")
                 .userAgent(userAgent)
@@ -63,7 +64,7 @@ class StarTv : MainAPI() {
                 val poster = element.select("img").attr("data-src").ifEmpty { element.select("img").attr("src") }
                 
                 newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
-                    this.posterUrl = fixUrlNull(poster)
+                    this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
             }
             if (programlarList.isNotEmpty()) {
@@ -74,7 +75,7 @@ class StarTv : MainAPI() {
         return newHomePageResponse(homeCategories)
     }
 
-    // 2. ARAMA
+    // 2. ARAMA MOTORU
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/arama?q=$query"
         val doc = Jsoup.connect(searchUrl)
@@ -88,25 +89,25 @@ class StarTv : MainAPI() {
             val poster = element.select("img").attr("src")
 
             newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
-                this.posterUrl = fixUrlNull(poster)
+                this.posterUrl = fixUrlNull(poster) ?: defaultPoster
             }
         }
     }
 
-    // 3. DETAY YÜKLEME (CRITICAL FIX)
+    // 3. DETAY SAYFASI
     override suspend fun load(url: String): LoadResponse {
-        // Canlı yayın linki geldiyse Jsoup.connect YAPMADAN doğrudan nesne döndür
+        // Canlı yayın tespiti
         if (url.contains("canli-yayin") || url.contains("daioncdn") || url.contains(".m3u8")) {
             return newLiveStreamLoadResponse(
                 name = "Star TV Canlı",
                 url = url,
                 dataUrl = url
             ) {
-                this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
+                this.posterUrl = defaultPoster
             }
         }
 
-        // Normal Dizi/Program Detayı
+        // Dizi/Program Detayı
         val doc = Jsoup.connect(url)
             .userAgent(userAgent)
             .ignoreContentType(true)
@@ -132,25 +133,24 @@ class StarTv : MainAPI() {
                     this.name = epTitle
                     this.season = 1
                     this.episode = index + 1
-                    this.posterUrl = fixUrlNull(epPoster)
+                    this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
                 }
             }
         }.getOrDefault(emptyList())
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.plot = description
-            this.posterUrl = fixUrlNull(poster)
+            this.posterUrl = fixUrlNull(poster) ?: defaultPoster
         }
     }
 
-    // 4. VİDEO LİNK YÜKLEME (CRITICAL FIX)
+    // 4. VİDEO LİNK YÜKLEME
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Canlı yayın kontrolü
         if (data.contains("canli-yayin") || data.contains("daioncdn") || data.contains(".m3u8")) {
             callback(
                 newExtractorLink(
@@ -167,7 +167,6 @@ class StarTv : MainAPI() {
             return true
         }
 
-        // VOD (Dizi / Bölüm) Akışı
         runCatching {
             val doc = Jsoup.connect(data)
                 .userAgent(userAgent)
