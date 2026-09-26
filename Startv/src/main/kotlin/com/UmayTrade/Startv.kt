@@ -1,9 +1,9 @@
 package com.UmayTrade
+
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.AppUtils.parseDate
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
-import com.lagradost.cloudstream3.utils.parseDate
 
 @Suppress("unused")
 class StarTVProvider : MainAPI() {
@@ -11,9 +11,9 @@ class StarTVProvider : MainAPI() {
 override var name = "Star TV"
 override val hasMainPage = true
 override var lang = "tr"
-override val supportedTypes = setOf(TvType.TvSeries, TvType.Anime)
+override val supportedTypes = setOf(TvType.TvSeries)
 
-    private val posterBaseUrl = "https://img-s.mncdn.com"
+    private val posterBaseUrl = "https://img-web.stcdn.net"
 override val mainPage = mainPageOf(
         "$mainUrl/diziler" to "Diziler",
         "$mainUrl/programlar" to "Programlar"
@@ -66,8 +66,9 @@ val document = app.get(url).document
             val epUrl = ep.select("a").attr("href")
             val epImage = ep.select("img").attr("data-src")
             val releaseText = ep.select("span.date").text().trim()
-            val releaseDate = parseDate(releaseText) // String → Long dönüşümü
-episodes.add(
+            val releaseDate = parseDate(releaseText)
+
+            episodes.add(
                 newEpisode(epUrl) {
                     name = epTitle
                     posterUrl = if (epImage.startsWith("/")) "$posterBaseUrl${epImage.removePrefix("/")}" else epImage
@@ -98,16 +99,18 @@ episodes.add(
                 videoUrl,
                 data,
                 headers = mapOf("Referer" to referer)
-            ).forEach(callback)
+            ).forEach { callback(it) }
         } else {
-            newExtractorLink(
-                source = videoUrl,
-                name = name,
-                url = videoUrl,
-                referer = referer,
-                quality = Qualities.Preview.value,
-                headers = mapOf("Referer" to referer)
-            ).let(callback)
+            callback(
+                ExtractorLink(
+                    source = name,
+                    name = name,
+                    url = videoUrl,
+                    referer = referer,
+                    quality = 0,
+                    headers = mapOf("Referer" to referer)
+                )
+            )
         }
         return true
 }
