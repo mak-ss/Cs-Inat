@@ -1,6 +1,6 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
-package com.UmayTrade
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -17,8 +17,6 @@ class DiziPalOriginal : MainAPI() {
 
     // ! CloudFlare bypass
     override var sequentialMainPage = true
-    // override var sequentialMainPageDelay       = 250L
-    // override var sequentialMainPageScrollDelay = 250L
 
     override val mainPage = mainPageOf(
         "${mainUrl}/bolumler"                                      to "Son Bölümler",
@@ -51,7 +49,7 @@ class DiziPalOriginal : MainAPI() {
     }
 
     private fun Element.sonBolumler(): SearchResponse? {
-        val name      = this.selectFirst(".ep-title")?.text() ?: return null
+        val name        = this.selectFirst(".ep-title")?.text() ?: return null
         val episodeText = this.selectFirst(".ep-info")?.text()?.trim() ?: return null
 
         // "2. Sezon 1. Bölüm" -> "2x1"
@@ -62,8 +60,8 @@ class DiziPalOriginal : MainAPI() {
             episodeText.replace(". Sezon ", "x").replace(". Bölüm", "")
         }
 
-        val title = "$name $episode"
-        val href  = fixUrlNull(this.attr("href")) ?: return null
+        val title      = "$name $episode"
+        val href       = fixUrlNull(this.attr("href")) ?: return null
         val imgElement = this.selectFirst("img")
         val posterUrl  = fixUrlNull(imgElement?.attr("data-src")?.ifEmpty { imgElement.attr("src") })
 
