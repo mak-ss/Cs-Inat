@@ -5,8 +5,9 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 
 @CloudstreamPlugin
-class StarTvPlugin : Plugin() {
+class StarTVPlugin: Plugin() {
     override fun load(context: Context) {
+        // StarTv sınıf adıyla kaydediyoruz
         registerMainAPI(StarTv())
     }
 }
