@@ -20,7 +20,7 @@ class StarTv : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val homeCategories = mutableListOf<HomePageList>()
 
-        // A) Canlı Yayın
+        // Canlı Yayın
         val liveItem = newLiveSearchResponse(
             "Star TV Canlı Yayın", 
             "$mainUrl/canli-yayin", 
@@ -30,50 +30,51 @@ class StarTv : MainAPI() {
         }
         homeCategories.add(HomePageList("Canlı TV", listOf(liveItem)))
 
-        // B) Diziler Sayfası (Güncellenmiş Seçiciler)
+        // Diziler Sayfası
         runCatching {
             val dizilerDoc = Jsoup.connect("$mainUrl/dizi")
                 .userAgent(userAgent)
                 .ignoreContentType(true)
                 .get()
 
-            val dizilerList = dizilerDoc.select("div.poster-card").mapNotNull { element ->
-                val title = element.select("img").attr("alt").ifEmpty { 
-                    element.select("img").attr("title") 
-                }.ifEmpty { return@mapNotNull null }
-
-                val href = element.select("a").attr("href")
-                val poster = element.select("img").attr("src")
+            val dizilerList = dizilerDoc.select("div.poster-card, div.card-series, a.card, div.col-grid-item").mapNotNull { element ->
+                val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
+                val imgEl = element.selectFirst("img")
                 
-                newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                val title = imgEl?.attr("alt")?.ifEmpty { imgEl.attr("title") }?.ifEmpty { element.text() } ?: return@mapNotNull null
+                val href = linkEl?.attr("href") ?: return@mapNotNull null
+                val poster = imgEl.attr("src").ifEmpty { imgEl.attr("data-src") }
+
+                if (href.contains("canli-yayin")) null
+                else newTvSeriesSearchResponse(title.trim(), fixUrl(href), TvType.TvSeries) {
                     this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
-            }
+            }.distinctBy { it.url }
 
             if (dizilerList.isNotEmpty()) {
                 homeCategories.add(HomePageList("Diziler", dizilerList))
             }
         }
 
-        // C) Programlar Sayfası
+        // Programlar Sayfası
         runCatching {
             val programlarDoc = Jsoup.connect("$mainUrl/program")
                 .userAgent(userAgent)
                 .ignoreContentType(true)
                 .get()
 
-            val programlarList = programlarDoc.select("div.poster-card, div.card-series").mapNotNull { element ->
-                val title = element.select("img").attr("alt").ifEmpty { 
-                    element.select("h3").text() 
-                }.ifEmpty { return@mapNotNull null }
+            val programlarList = programlarDoc.select("div.poster-card, div.card-series, a.card, div.col-grid-item").mapNotNull { element ->
+                val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
+                val imgEl = element.selectFirst("img")
 
-                val href = element.select("a").attr("href")
-                val poster = element.select("img").attr("src").ifEmpty { element.select("img").attr("data-src") }
-                
-                newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+                val title = imgEl?.attr("alt")?.ifEmpty { imgEl.attr("title") }?.ifEmpty { element.text() } ?: return@mapNotNull null
+                val href = linkEl?.attr("href") ?: return@mapNotNull null
+                val poster = imgEl.attr("src").ifEmpty { imgEl.attr("data-src") }
+
+                newTvSeriesSearchResponse(title.trim(), fixUrl(href), TvType.TvSeries) {
                     this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
-            }
+            }.distinctBy { it.url }
 
             if (programlarList.isNotEmpty()) {
                 homeCategories.add(HomePageList("Programlar", programlarList))
@@ -91,21 +92,21 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        return doc.select("div.poster-card, div.search-result-item").mapNotNull { element ->
-            val title = element.select("img").attr("alt").ifEmpty { 
-                element.select(".title").text() 
-            }.ifEmpty { return@mapNotNull null }
+        return doc.select("div.poster-card, div.card-series, div.search-result-item").mapNotNull { element ->
+            val linkEl = element.selectFirst("a")
+            val imgEl = element.selectFirst("img")
 
-            val href = element.select("a").attr("href")
-            val poster = element.select("img").attr("src")
+            val title = imgEl?.attr("alt")?.ifEmpty { element.select(".title").text() } ?: return@mapNotNull null
+            val href = linkEl?.attr("href") ?: return@mapNotNull null
+            val poster = imgEl.attr("src")
 
-            newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+            newTvSeriesSearchResponse(title.trim(), fixUrl(href), TvType.TvSeries) {
                 this.posterUrl = fixUrlNull(poster) ?: defaultPoster
             }
-        }
+        }.distinctBy { it.url }
     }
 
-    // 3. DETAY SAYFASI
+    // 3. DETAY VE BÖLÜM YÜKLEME (Çok Yakında Sorununu Çözen Kısım)
     override suspend fun load(url: String): LoadResponse {
         if (url.contains("canli-yayin") || url.contains("daioncdn") || url.contains(".m3u8")) {
             return newLiveStreamLoadResponse(
@@ -122,45 +123,66 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        val title = doc.select("h1.detail-title, h1").text().ifEmpty { "Star TV" }
-        val description = doc.select("div.detail-description, div.description").text()
-        val poster = doc.select("div.detail-banner img, img.poster").attr("src")
+        val title = doc.select("h1.detail-title, h1.title, h1").first()?.text()?.trim() ?: "Star TV Dizisi"
+        val description = doc.select("div.detail-description, div.description, p.summary").text()
+        val poster = doc.select("div.detail-banner img, img.poster, meta[property=og:image]").attr("src").ifEmpty {
+            doc.select("meta[property=og:image]").attr("content")
+        }
 
+        val episodes = mutableListOf<Episode>()
+
+        // Alternatif 1: Bölümler alt sayfasından dene
         val episodesUrl = if (url.endsWith("/bolumler")) url else "$url/bolumler"
-        val episodes = runCatching {
+        runCatching {
             val episodesDoc = Jsoup.connect(episodesUrl)
                 .userAgent(userAgent)
                 .ignoreContentType(true)
                 .get()
 
-            episodesDoc.select("div.episode-item, div.poster-card").mapIndexed { index, element ->
-                val epTitle = element.select(".ep-title, img").attr("alt").ifEmpty { "${index + 1}. Bölüm" }
-                val epHref = element.select("a").attr("href")
-                val epPoster = element.select("img").attr("src")
+            episodesDoc.select("div.episode-item, div.poster-card, div.card-series, a.card").forEachIndexed { index, element ->
+                val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
+                val imgEl = element.selectFirst("img")
+                val epHref = linkEl?.attr("href") ?: return@forEachIndexed
 
-                newEpisode(fixUrl(epHref)) {
-                    this.name = epTitle
-                    this.season = 1
-                    this.episode = index + 1
-                    this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
-                }
+                val epTitle = imgEl?.attr("alt")?.ifEmpty { element.select(".title").text() }?.ifEmpty { "${index + 1}. Bölüm" } ?: "${index + 1}. Bölüm"
+                val epPoster = imgEl?.attr("src")?.ifEmpty { imgEl.attr("data-src") }
+
+                episodes.add(
+                    newEpisode(fixUrl(epHref)) {
+                        this.name = epTitle.trim()
+                        this.season = 1
+                        this.episode = index + 1
+                        this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
+                    }
+                )
             }
-        }.getOrDefault(emptyList())
+        }
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        // Alternatif 2: Bölümler listesi boşsa doğrudan tıklanan sayfanın kendisini tek bölüm/video olarak ekle
+        if (episodes.isEmpty()) {
+            episodes.add(
+                newEpisode(url) {
+                    this.name = "$title - İzle"
+                    this.season = 1
+                    this.episode = 1
+                    this.posterUrl = fixUrlNull(poster) ?: defaultPoster
+                }
+            )
+        }
+
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }) {
             this.plot = description
             this.posterUrl = fixUrlNull(poster) ?: defaultPoster
         }
     }
 
-    // 4. VİDEO LİNK YÜKLEME (MNCDN / .TS DÜZELTMESİ)
+    // 4. VİDEO LİNK YÜKLEME
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Canlı Yayın Akışı
         if (data.contains("canli-yayin") || data.contains("daioncdn") || data.contains(".m3u8")) {
             callback(
                 newExtractorLink(
@@ -177,7 +199,6 @@ class StarTv : MainAPI() {
             return true
         }
 
-        // Dizi / Bölüm Akışı
         runCatching {
             val doc = Jsoup.connect(data)
                 .userAgent(userAgent)
@@ -186,22 +207,27 @@ class StarTv : MainAPI() {
 
             var streamUrl = ""
 
-            // 1. İframe kontrolü
-            val iframeSrc = doc.select("iframe.player-frame, iframe").attr("src")
+            // 1. Player iframe kontrolü
+            val iframeSrc = doc.select("iframe[src*=player], iframe[src*=video], iframe").attr("src")
             if (iframeSrc.isNotBlank()) {
                 val iframeDoc = Jsoup.connect(fixUrl(iframeSrc))
                     .userAgent(userAgent)
                     .ignoreContentType(true)
                     .get()
+
                 streamUrl = Regex("""(https?://[^\s"'<>]+?(?:\.m3u8|\.smil/?[^\s"'<>]*))""").find(iframeDoc.html())?.value ?: ""
             }
 
-            // 2. Sayfa içi Regex taraması (MNCDN linkleri için)
+            // 2. Doğrudan HTML içinden MNCDN / M3U8 yakalama
             if (streamUrl.isBlank()) {
-                streamUrl = Regex("""(https?://[^\s"'<>]+mncdn[^\s"'<>]+)""").find(doc.html())?.value ?: ""
+                streamUrl = Regex("""(https?://[^\s"'<>]+?(?:mncdn|daioncdn)[^\s"'<>]+)""").find(doc.html())?.value ?: ""
             }
 
-            // 3. .ts uzantılı link gelirse bunu m3u8 playlist formatına çevir
+            if (streamUrl.isBlank()) {
+                streamUrl = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)"*""").find(doc.html())?.value ?: ""
+            }
+
+            // 3. Uzantı düzenlemeleri
             if (streamUrl.contains(".ts")) {
                 streamUrl = streamUrl.replace(Regex("""/media_b\d+_\d+\.ts"""), "/playlist.m3u8")
             } else if (streamUrl.contains(".smil") && !streamUrl.contains(".m3u8")) {
