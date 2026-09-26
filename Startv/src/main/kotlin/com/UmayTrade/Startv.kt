@@ -13,7 +13,7 @@ override val hasMainPage = true
 override var lang = "tr"
 override val supportedTypes = setOf(TvType.TvSeries)
 
-    private val posterBaseUrl = "https://img-web.stcdn.net"
+    private val posterBaseUrl = "https://img-s.mncdn.com"
 override val mainPage = mainPageOf(
         "$mainUrl/diziler" to "Diziler",
         "$mainUrl/programlar" to "Programlar"
@@ -102,13 +102,12 @@ val document = app.get(url).document
             ).forEach { callback(it) }
         } else {
             callback(
-                ExtractorLink(
+                newExtractorLink(
                     source = name,
                     name = name,
                     url = videoUrl,
                     referer = referer,
                     quality = 0,
-                    isM3u8 = false,
                     headers = mapOf("Referer" to referer)
                 )
             )
@@ -117,6 +116,3 @@ val document = app.get(url).document
 }
 }
 
-        return true
-}
-}
