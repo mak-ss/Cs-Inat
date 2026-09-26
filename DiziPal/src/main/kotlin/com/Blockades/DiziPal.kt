@@ -222,7 +222,6 @@ class DiziPalOriginal : MainAPI() {
 
     /**
      * /movies, /series gibi liste sayfaları için Next.js API endpoint'ini dener.
-     * Siteye göre endpoint isimleri değişebilir, birden fazlası sırayla denenir.
      */
     private suspend fun tryApiListing(url: String, page: Int): List<SearchResponse> {
         val isMovie = url.contains("/filmler") || url.contains("/movies")
@@ -508,290 +507,291 @@ class DiziPalOriginal : MainAPI() {
     // =========================================================================
 
     override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    Log.d("DZP", "Oynatılacak Bölüm Linki » $data")
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        Log.d("DZP", "Oynatılacak Bölüm Linki » $data")
 
-    val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-    val getResponse = app.get(
-        url = data,
-        headers = mapOf(
-            "User-Agent"    to userAgent,
-            "Cache-Control" to "no-cache",
-            "Pragma"        to "no-cache"
-        )
-    )
-
-    val html = getResponse.text
-    val document = getResponse.document
-
-    // =====================================================================
-    // 1) EMBED URL'İ BULMA — Çoklu strateji
-    // =====================================================================
-
-    var embedUrl: String? = null
-
-    // 1a) Klasik data-cfg token'ı (eski yapı)
-    val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
-    if (!configToken.isNullOrEmpty()) {
-        try {
-            val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
-            val decoded = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
-            Log.d("DZP", "data-cfg decoded » $decoded")
-            embedUrl = Regex(""""v"\s*:\s*"([^"]+)"""").find(decoded)
-                ?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-        } catch (e: Exception) {
-            Log.w("DZP", "data-cfg decode başarısız: ${e.message}")
-        }
-    }
-
-    // 1b) Alternatif data attribute'ları
-    if (embedUrl.isNullOrEmpty()) {
-        val altAttrs = listOf("data-config", "data-player", "data-source", "data-video", "data-embed")
-        for (attr in altAttrs) {
-            val val_ = document.selectFirst("[#videoContainer], [class*=player], [id*=player]")
-                ?.attr(attr)?.trim()
-            if (!val_.isNullOrEmpty()) {
-                try {
-                    val padded = val_ + "=".repeat((4 - val_.length % 4) % 4)
-                    val decoded = String(android.util.Base64.decode(padded, android.util.Base64.DEFAULT))
-                    val found = Regex(""""v"\s*:\s*"([^"]+)"""").find(decoded)
-                        ?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-                    if (!found.isNullOrEmpty()) {
-                        embedUrl = found
-                        break
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
-    // 1c) iframe src
-    if (embedUrl.isNullOrEmpty()) {
-        val iframeSrc = document.selectFirst("iframe[src]")?.attr("src")?.trim()
-        if (!iframeSrc.isNullOrEmpty() && !iframeSrc.contains("youtube") && !iframeSrc.contains("youtu.be")) {
-            embedUrl = iframeSrc
-        }
-    }
-
-    // 1d) Next.js RSC JSON içinden embed/player URL'i ara
-    if (embedUrl.isNullOrEmpty()) {
-        val json = parseNextData(html)
-        if (json != null) {
-            val keysToFind = listOf(
-                "video_url", "embed_url", "player_url", "iframe_url", "source", "url", "src", "file"
-            )
-            embedUrl = findStringInJson(json, keysToFind) { value ->
-                value.startsWith("http") &&
-                    (value.contains("/embed") || value.contains("/player") ||
-                     value.contains("/video") || value.contains(".m3u8"))
-            }
-        }
-    }
-
-    // 1e) Script tag'leri içinde regex ile ara
-    if (embedUrl.isNullOrEmpty()) {
-        val patterns = listOf(
-            Regex("""["'](https?://[^"']+/embed[^"']*)["']"""),
-            Regex("""["'](https?://[^"']*\.m3u8[^"']*)["']"""),
-            Regex("""["']v["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""file\s*:\s*["']([^"']+)["']"""),
-            Regex("""source\s*:\s*["']([^"']+)["']""")
-        )
-        for (p in patterns) {
-            val m = p.find(html)
-            val found = m?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-            if (!found.isNullOrEmpty() && found.startsWith("http")) {
-                embedUrl = found
-                break
-            }
-        }
-    }
-
-    if (embedUrl.isNullOrEmpty()) {
-        Log.e("DZP", "Hiçbir yöntemle embed URL bulunamadı!")
-        return false
-    }
-
-    val finalEmbedUrl = fixUrl(embedUrl)
-    Log.d("DZP", "Çözülen Embed URL » $finalEmbedUrl")
-
-    // =====================================================================
-    // 2) IMAGESTOO ÖZEL İŞLEME
-    // =====================================================================
-    if (finalEmbedUrl.contains("imagestoo")) {
-        val videoId = finalEmbedUrl.trimEnd('/').substringAfterLast("/")
-        val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
-        Log.d("DZP", "Imagestoo API URL » $imagestooApiUrl")
-
-        val apiResponse = app.post(
-            url = imagestooApiUrl,
-            referer = finalEmbedUrl,
+        val getResponse = app.get(
+            url = data,
             headers = mapOf(
-                "User-Agent" to userAgent,
-                "X-Requested-With" to "XMLHttpRequest",
-                "Accept" to "*/*"
+                "User-Agent"    to userAgent,
+                "Cache-Control" to "no-cache",
+                "Pragma"        to "no-cache"
             )
         )
 
-        var sessionCookie = ""
-        val playerToken = apiResponse.cookies["fireplayer_player"]
-        if (!playerToken.isNullOrEmpty()) {
-            sessionCookie = "fireplayer_player=$playerToken"
-        } else {
-            val rawSetCookie = apiResponse.headers["Set-Cookie"] ?: apiResponse.headers["set-cookie"]
-            if (rawSetCookie != null && rawSetCookie.contains("fireplayer_player")) {
-                sessionCookie = rawSetCookie.split(";").firstOrNull() ?: ""
+        val html = getResponse.text
+        val document = getResponse.document
+
+        // =====================================================================
+        // 1) EMBED URL'İ BULMA — Çoklu strateji
+        // =====================================================================
+
+        var embedUrl: String? = null
+
+        // 1a) Klasik data-cfg token'ı
+        val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
+        if (!configToken.isNullOrEmpty()) {
+            try {
+                val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
+                val decoded = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
+                Log.d("DZP", "data-cfg decoded » $decoded")
+                embedUrl = Regex(""""v"\s*:\s*"([^"]+)"""").find(decoded)
+                    ?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+            } catch (e: Exception) {
+                Log.w("DZP", "data-cfg decode başarısız: ${e.message}")
             }
         }
 
-        val responseText = apiResponse.text
-        val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""")
-            .find(responseText)?.groupValues?.getOrNull(1)
+        // 1b) Alternatif data attribute'ları
+        if (embedUrl.isNullOrEmpty()) {
+            val altAttrs = listOf("data-config", "data-player", "data-source", "data-video", "data-embed")
+            for (attr in altAttrs) {
+                val attrVal = document.selectFirst("[#videoContainer], [class*=player], [id*=player]")
+                    ?.attr(attr)?.trim()
+                if (!attrVal.isNullOrEmpty()) {
+                    try {
+                        val padded = attrVal + "=".repeat((4 - attrVal.length % 4) % 4)
+                        val decoded = String(android.util.Base64.decode(padded, android.util.Base64.DEFAULT))
+                        val found = Regex(""""v"\s*:\s*"([^"]+)"""").find(decoded)
+                            ?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+                        if (!found.isNullOrEmpty()) {
+                            embedUrl = found
+                            break
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
 
-        if (videoSourceRaw != null) {
-            val finalM3u8Url = fixUrl(videoSourceRaw.replace("\\/", "/"))
-            Log.d("DZP", "Imagestoo M3U8 » $finalM3u8Url")
+        // 1c) iframe src
+        if (embedUrl.isNullOrEmpty()) {
+            val iframeSrc = document.selectFirst("iframe[src]")?.attr("src")?.trim()
+            if (!iframeSrc.isNullOrEmpty() && !iframeSrc.contains("youtube") && !iframeSrc.contains("youtu.be")) {
+                embedUrl = iframeSrc
+            }
+        }
+
+        // 1d) Next.js RSC JSON içinden embed/player URL'i ara
+        if (embedUrl.isNullOrEmpty()) {
+            val json = parseNextData(html)
+            if (json != null) {
+                val keysToFind = listOf(
+                    "video_url", "embed_url", "player_url", "iframe_url", "source", "url", "src", "file"
+                )
+                embedUrl = findStringInJson(json, keysToFind) { value ->
+                    value.startsWith("http") &&
+                        (value.contains("/embed") || value.contains("/player") ||
+                         value.contains("/video") || value.contains(".m3u8"))
+                }
+            }
+        }
+
+        // 1e) Script tag'leri içinde regex ile ara
+        if (embedUrl.isNullOrEmpty()) {
+            val patterns = listOf(
+                Regex("""["'](https?://[^"']+/embed[^"']*)["']"""),
+                Regex("""["'](https?://[^"']*\.m3u8[^"']*)["']"""),
+                Regex("""["']v["']\s*:\s*["']([^"']+)["']"""),
+                Regex("""file\s*:\s*["']([^"']+)["']"""),
+                Regex("""source\s*:\s*["']([^"']+)["']""")
+            )
+            for (p in patterns) {
+                val m = p.find(html)
+                val found = m?.groupValues?.getOrNull(1)?.replace("\\/", "/")
+                if (!found.isNullOrEmpty() && found.startsWith("http")) {
+                    embedUrl = found
+                    break
+                }
+            }
+        }
+
+        if (embedUrl.isNullOrEmpty()) {
+            Log.e("DZP", "Hiçbir yöntemle embed URL bulunamadı!")
+            return false
+        }
+
+        val finalEmbedUrl = fixUrl(embedUrl)
+        Log.d("DZP", "Çözülen Embed URL » $finalEmbedUrl")
+
+        // =====================================================================
+        // 2) IMAGESTOO ÖZEL İŞLEME
+        // =====================================================================
+        if (finalEmbedUrl.contains("imagestoo")) {
+            val videoId = finalEmbedUrl.trimEnd('/').substringAfterLast("/")
+            val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
+            Log.d("DZP", "Imagestoo API URL » $imagestooApiUrl")
+
+            val apiResponse = app.post(
+                url = imagestooApiUrl,
+                referer = finalEmbedUrl,
+                headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Accept" to "*/*"
+                )
+            )
+
+            var sessionCookie = ""
+            val playerToken = apiResponse.cookies["fireplayer_player"]
+            if (!playerToken.isNullOrEmpty()) {
+                sessionCookie = "fireplayer_player=$playerToken"
+            } else {
+                val rawSetCookie = apiResponse.headers["Set-Cookie"] ?: apiResponse.headers["set-cookie"]
+                if (rawSetCookie != null && rawSetCookie.contains("fireplayer_player")) {
+                    sessionCookie = rawSetCookie.split(";").firstOrNull() ?: ""
+                }
+            }
+
+            val responseText = apiResponse.text
+            val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""")
+                .find(responseText)?.groupValues?.getOrNull(1)
+
+            if (videoSourceRaw != null) {
+                val finalM3u8Url = fixUrl(videoSourceRaw.replace("\\/", "/"))
+                Log.d("DZP", "Imagestoo M3U8 » $finalM3u8Url")
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = "Dizipal (Imagestoo)",
+                        url = finalM3u8Url,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        referer = finalEmbedUrl
+                        headers = mapOf("Cookie" to sessionCookie)
+                        quality = Qualities.Unknown.value
+                    }
+                )
+                return true
+            }
+            Log.e("DZP", "Imagestoo videoSource alınamadı!")
+            return false
+        }
+
+        // =====================================================================
+        // 3) DOĞRUDAN M3U8 İSE HEMEN VER
+        // =====================================================================
+        if (finalEmbedUrl.contains(".m3u8")) {
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
-                    name = "Dizipal (Imagestoo)",
-                    url = finalM3u8Url,
+                    name = "Dizipal (M3U8)",
+                    url = finalEmbedUrl,
                     type = ExtractorLinkType.M3U8
                 ) {
-                    referer = finalEmbedUrl
-                    headers = mapOf("Cookie" to sessionCookie)
+                    referer = data
                     quality = Qualities.Unknown.value
                 }
             )
             return true
         }
-        Log.e("DZP", "Imagestoo videoSource alınamadı!")
-        return false
-    }
 
-    // =====================================================================
-    // 3) DOĞRUDAN M3U8 İSE HEMEN VER
-    // =====================================================================
-    if (finalEmbedUrl.contains(".m3u8")) {
+        // =====================================================================
+        // 4) EMBED SAYFASINI ÇEK VE M3U8 ÇIKAR
+        // =====================================================================
+        val embedSource = app.get(
+            url = finalEmbedUrl,
+            referer = data,
+            headers = mapOf("User-Agent" to userAgent)
+        ).text
+
+        val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""")
+            .find(embedSource)
+            ?: Regex("""file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
+            ?: Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(embedSource)
+            ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
+
+        val extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
+
+        if (extractedUrl == null) {
+            Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı! Embed: $finalEmbedUrl")
+            return false
+        }
+
+        val finalM3u8Url = if (extractedUrl.contains(".html") && !extractedUrl.contains(".m3u8")) {
+            val idRegex = Regex("""embed-([^.]+)\.html""")
+            val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
+            if (idMatch != null) {
+                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
+            } else {
+                Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
+                null
+            }
+        } else {
+            extractedUrl
+        }
+
+        if (finalM3u8Url.isNullOrEmpty()) return false
+
+        Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
+
         callback.invoke(
             newExtractorLink(
                 source = this.name,
-                name = "Dizipal (M3U8)",
-                url = finalEmbedUrl,
+                name = "Dizipal (Ana Sunucu)",
+                url = finalM3u8Url,
                 type = ExtractorLinkType.M3U8
             ) {
-                referer = data
+                referer = finalEmbedUrl
                 quality = Qualities.Unknown.value
             }
         )
+
+        // =====================================================================
+        // 5) ALTYAZILAR
+        // =====================================================================
+        val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
+            .find(embedSource)
+        tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
+            val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
+            trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
+                val itemStr = itemMatch.groupValues[1]
+                val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
+                val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
+                val fileUrl = fileMatch?.groupValues?.getOrNull(1)
+                val label = labelMatch?.groupValues?.getOrNull(1) ?: "Unknown"
+                if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
+                    subtitleCallback.invoke(SubtitleFile(lang = label, url = fixUrl(fileUrl)))
+                }
+            }
+        }
+
         return true
     }
 
-    // =====================================================================
-    // 4) EMBED SAYFASINI ÇEK VE M3U8 ÇIKAR
-    // =====================================================================
-    val embedSource = app.get(
-        url = finalEmbedUrl,
-        referer = data,
-        headers = mapOf("User-Agent" to userAgent)
-    ).text
-
-    val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""")
-        .find(embedSource)
-        ?: Regex("""file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
-        ?: Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""").find(embedSource)
-        ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
-
-    val extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
-
-    if (extractedUrl == null) {
-        Log.e("DZP", "Embed kaynağında geçerli bir link bulunamadı! Embed: $finalEmbedUrl")
-        return false
-    }
-
-    val finalM3u8Url = if (extractedUrl.contains(".html") && !extractedUrl.contains(".m3u8")) {
-        val idRegex = Regex("""embed-([^.]+)\.html""")
-        val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
-        if (idMatch != null) {
-            "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
-        } else {
-            Log.e("DZP", "HTML linkinden ID ayıklanamadı: $extractedUrl")
-            null
-        }
-    } else {
-        extractedUrl
-    }
-
-    if (finalM3u8Url.isNullOrEmpty()) return false
-
-    Log.d("DZP", "Bulunan M3U8 » $finalM3u8Url")
-
-    callback.invoke(
-        newExtractorLink(
-            source = this.name,
-            name = "Dizipal (Ana Sunucu)",
-            url = finalM3u8Url,
-            type = ExtractorLinkType.M3U8
-        ) {
-            referer = finalEmbedUrl
-            quality = Qualities.Unknown.value
-        }
-    )
-
-    // =====================================================================
-    // 5) ALTYAZILAR
-    // =====================================================================
-    val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL)
-        .find(embedSource)
-    tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
-        val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
-        trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
-            val itemStr = itemMatch.groupValues[1]
-            val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
-            val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
-            val fileUrl = fileMatch?.groupValues?.getOrNull(1)
-            val label = labelMatch?.groupValues?.getOrNull(1) ?: "Unknown"
-            if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
-                subtitleCallback.invoke(SubtitleFile(lang = label, url = fixUrl(fileUrl)))
+    /**
+     * JSON ağacında verilen key isimlerinden birini bulup predicate'e uyan ilk
+     * String değeri döndürür.
+     */
+    private fun findStringInJson(
+        obj: Any?,
+        keys: List<String>,
+        predicate: (String) -> Boolean
+    ): String? {
+        when (obj) {
+            is JSONObject -> {
+                val iter = obj.keys()
+                while (iter.hasNext()) {
+                    val k = iter.next()
+                    val v = obj.opt(k)
+                    if (k in keys && v is String && predicate(v)) return v
+                    val nested = findStringInJson(v, keys, predicate)
+                    if (nested != null) return nested
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until obj.length()) {
+                    val nested = findStringInJson(obj.opt(i), keys, predicate)
+                    if (nested != null) return nested
+                }
             }
         }
+        return null
     }
-
-    return true
-}
-
-/**
- * JSON ağacında verilen key isimlerinden birini bulup predicate'e uyan ilk
- * String değeri döndürür.
- */
-private fun findStringInJson(
-    obj: Any?,
-    keys: List<String>,
-    predicate: (String) -> Boolean
-): String? {
-    when (obj) {
-        is JSONObject -> {
-            val iter = obj.keys()
-            while (iter.hasNext()) {
-                val k = iter.next()
-                val v = obj.opt(k)
-                if (k in keys && v is String && predicate(v)) return v
-                val nested = findStringInJson(v, keys, predicate)
-                if (nested != null) return nested
-            }
-        }
-        is JSONArray -> {
-            for (i in 0 until obj.length()) {
-                val nested = findStringInJson(obj.opt(i), keys, predicate)
-                if (nested != null) return nested
-            }
-        }
-    }
-    return null
 }
