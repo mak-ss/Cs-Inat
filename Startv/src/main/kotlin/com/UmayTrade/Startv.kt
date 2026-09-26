@@ -1,9 +1,9 @@
 package com.UmayTrade
-
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.parseDate
 
 @Suppress("unused")
 class StarTVProvider : MainAPI() {
@@ -11,9 +11,9 @@ class StarTVProvider : MainAPI() {
 override var name = "Star TV"
 override val hasMainPage = true
 override var lang = "tr"
-override val supportedTypes = setOf(TvType.Live)
+override val supportedTypes = setOf(TvType.TvSeries, TvType.Anime)
 
-    private val posterBaseUrl = "https://images.startv.com.tr/"
+    private val posterBaseUrl = "https://img-s.mncdn.com"
 override val mainPage = mainPageOf(
         "$mainUrl/diziler" to "Diziler",
         "$mainUrl/programlar" to "Programlar"
@@ -65,15 +65,14 @@ val document = app.get(url).document
             val epTitle = ep.select("h4").text().trim()
             val epUrl = ep.select("a").attr("href")
             val epImage = ep.select("img").attr("data-src")
-            val release = ep.select("span.date").text().trim()
-
-            episodes.add(
-                Episode(
-                    epUrl,
-                    name = epTitle,
-                    posterUrl = if (epImage.startsWith("/")) "$posterBaseUrl${epImage.removePrefix("/")}" else epImage,
-                    date = release
-                )
+            val releaseText = ep.select("span.date").text().trim()
+            val releaseDate = parseDate(releaseText) // String → Long dönüşümü
+episodes.add(
+                newEpisode(epUrl) {
+                    name = epTitle
+                    posterUrl = if (epImage.startsWith("/")) "$posterBaseUrl${epImage.removePrefix("/")}" else epImage
+                    this.date = releaseDate
+                }
             )
         }
 
@@ -91,24 +90,24 @@ val document = app.get(url).document
     ): Boolean {
         val document = app.get(data).document
         val videoUrl = document.select("video source").attr("src")
+        val referer = mainUrl
 
         if (videoUrl.contains(".m3u8")) {
             M3u8Helper.generateM3u8(
                 name,
                 videoUrl,
                 data,
-                headers = mapOf("Referer" to mainUrl)
+                headers = mapOf("Referer" to referer)
             ).forEach(callback)
         } else {
-            callback.invoke(
-                ExtractorLink(
-                    name,
-                    name,
-                    videoUrl,
-                    referer = mainUrl,
-                    quality = Qualities.Unknown.value
-                )
-            )
+            newExtractorLink(
+                source = videoUrl,
+                name = name,
+                url = videoUrl,
+                referer = referer,
+                quality = Qualities.Preview.value,
+                headers = mapOf("Referer" to referer)
+            ).let(callback)
         }
         return true
 }
