@@ -17,7 +17,7 @@ class StarTv : MainAPI() {
         val homeCategories = mutableListOf<HomePageList>()
 
         // A) Canlı Yayın
-        val liveItem = newLiveSearchResponse("Star TV Canlı Yayın", "$mainUrl/canli-yayin", TvType.Live) {
+        val liveItem = newLiveSearchResponse("Star TV Canlı Yayın", "https://dogus.daioncdn.net/startv/startv_720p.m3u8?&sid=8sa1zezrv6wm&app=a20ac41e-bdc3-4aa1-934d-26b484480ac9&ce=3", TvType.Live) {
             this.posterUrl = "https://www.startv.com.tr/assets/img/star-og-image.jpg"
         }
         homeCategories.add(HomePageList("Canlı TV", listOf(liveItem)))
