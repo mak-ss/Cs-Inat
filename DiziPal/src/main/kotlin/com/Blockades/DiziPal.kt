@@ -21,7 +21,15 @@ class DiziPal : MainAPI() {
         "${mainUrl}/bolumler"                    to "Yeni Bölümler",
         "${mainUrl}/populer"                     to "Popüler Filmler",
         "${mainUrl}/diziler?sort=popular"        to "Popüler Diziler",
-        "${mainUrl}/platform/netflix"            to "Netflix Dizileri",
+        "${mainUrl}/platform/netflix"            to "Netflix",
+        "${mainUrl}/platform/exxen"              to "Exxen",
+        "${mainUrl}/platform/prime-video"        to "Prime&Video",
+        "${mainUrl}/platform/disney-plus"        to "Disney Plus",
+        "${mainUrl}/platform/hbo-max"            to "HBO-MAX",
+        "${mainUrl}/platform/tabii"              to "Tabii",
+        "${mainUrl}/platform/gain"               to "Gain",
+        "${mainUrl}/platform/apple-tv"           to "Apple Tv",
+        "${mainUrl}/platform/hulu"               to "Hulu",
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
