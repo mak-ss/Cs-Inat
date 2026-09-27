@@ -21,6 +21,7 @@ class DiziPal : MainAPI() {
         "${mainUrl}/bolumler"                    to "Yeni Bölümler",
         "${mainUrl}/populer"                     to "Popüler Filmler",
         "${mainUrl}/diziler?sort=popular"        to "Popüler Diziler",
+        "${mainUrl}/platform/netflix"            to "Netflix Dizileri",
     )
 
     private fun Element.toSearchResponse(): SearchResponse? {
