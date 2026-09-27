@@ -1,6 +1,7 @@
 package com.UmayTrade
 
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
@@ -17,7 +18,7 @@ class StarTv : MainAPI() {
     private val liveStreamUrl = "https://dogus.daioncdn.net/startv/startv_720p.m3u8?&sid=8sa1zezrv6wm&app=a20ac41e-bdc3-4aa1-934d-26b484480ac9&ce=3"
     private val defaultPoster = "https://upload.wikimedia.org/wikipedia/commons/5/55/Star_TV.png"
 
-    // 1. ANA SAYFA VE DİZİLER LİSTESİ (/dizi)
+    // 1. ANA SAYFA VE /dizi KAPSAMLI SCRABBER
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val homeCategories = mutableListOf<HomePageList>()
 
@@ -31,7 +32,7 @@ class StarTv : MainAPI() {
         }
         homeCategories.add(HomePageList("Canlı TV", listOf(liveItem)))
 
-        // /dizi Bağlantısı Üzerinden Tüm Dizileri Scrape Etme
+        // Tüm Dizileri Çekme (/dizi)
         runCatching {
             val dizilerDoc = Jsoup.connect("$mainUrl/dizi")
                 .userAgent(userAgent)
@@ -39,20 +40,21 @@ class StarTv : MainAPI() {
                 .get()
 
             val dizilerList = dizilerDoc.select(
-                "div.col-grid-item, div.swiper-slide, div.poster-card, div.card-series, a.card, div.card-item, div.grid-item"
+                "a[href*=/dizi/], div.col-grid-item, div.swiper-slide, div.poster-card, div.card-series, a.card"
             ).mapNotNull { element ->
-                val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
+                val linkEl = if (element.tagName() == "a") element else element.selectFirst("a[href*=/dizi/]") ?: element.selectFirst("a")
                 val imgEl = element.selectFirst("img")
                 
+                val href = linkEl?.attr("href") ?: return@mapNotNull null
+                if (href.contains("canli-yayin") || href == "/dizi" || href == "/dizi/") return@mapNotNull null
+
                 val title = imgEl?.attr("alt")?.ifEmpty { imgEl.attr("title") }
                     ?.ifEmpty { element.select(".title, .card-title, h3, h4").text() }
                     ?.ifEmpty { element.text() } ?: return@mapNotNull null
 
-                val href = linkEl?.attr("href") ?: return@mapNotNull null
                 val poster = imgEl?.attr("src")?.ifEmpty { imgEl.attr("data-src") }
 
-                if (href.contains("canli-yayin")) null
-                else newTvSeriesSearchResponse(title.trim(), fixUrl(href), TvType.TvSeries) {
+                newTvSeriesSearchResponse(title.trim(), fixUrl(href), TvType.TvSeries) {
                     this.posterUrl = fixUrlNull(poster) ?: defaultPoster
                 }
             }.distinctBy { it.url }
@@ -73,12 +75,12 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        return doc.select("div.col-grid-item, div.swiper-slide, div.poster-card, div.card-series, div.search-result-item").mapNotNull { element ->
+        return doc.select("a[href*=/dizi/], div.col-grid-item, div.swiper-slide, div.poster-card, div.card-series, div.search-result-item").mapNotNull { element ->
             val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
             val imgEl = element.selectFirst("img")
 
-            val title = imgEl?.attr("alt")?.ifEmpty { element.select(".title, h4").text() } ?: return@mapNotNull null
             val href = linkEl?.attr("href") ?: return@mapNotNull null
+            val title = imgEl?.attr("alt")?.ifEmpty { element.select(".title, h4").text() } ?: return@mapNotNull null
             val poster = imgEl?.attr("src")?.ifEmpty { imgEl.attr("data-src") }
 
             newTvSeriesSearchResponse(title.trim(), fixUrl(href), TvType.TvSeries) {
@@ -87,7 +89,7 @@ class StarTv : MainAPI() {
         }.distinctBy { it.url }
     }
 
-    // 3. DİZİ DETAYI VE BÖLÜMLER
+    // 3. TÜM BÖLÜMLERİ TARAYAN DERİN DETAY SCRAPERI
     override suspend fun load(url: String): LoadResponse {
         if (url.contains("canli-yayin") || url.contains("daioncdn") || url.contains(".m3u8")) {
             return newLiveStreamLoadResponse(
@@ -112,7 +114,99 @@ class StarTv : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
 
-        // JSON-LD Taraması
+        // 1. JSON-LD Şema Taraması
+        parseJsonLdEpisodes(doc, poster, episodes)
+
+        // 2. /bolumler Sayfalarını ve Tüm Sayfalandırmayı (Pagination) Derinlemesine Tarama
+        val baseUrlForEpisodes = if (url.contains("/bolumler")) url else "${url.removeSuffix("/")}/bolumler"
+        
+        var currentPageUrl: String? = baseUrlForEpisodes
+        var pageCount = 1
+        val maxPages = 15 // Aşırı döngüyü önlemek için güvenlik sınırı
+
+        while (currentPageUrl != null && pageCount <= maxPages) {
+            runCatching {
+                val epDoc = if (pageCount == 1 && url.contains("/bolumler")) doc else Jsoup.connect(currentPageUrl)
+                    .userAgent(userAgent)
+                    .ignoreContentType(true)
+                    .get()
+
+                val foundOnPage = parseEpisodesFromDoc(epDoc, episodes)
+
+                // Sonraki Sayfa Bağlantısını Bulma
+                val nextPageEl = epDoc.select("a.pagination-next, a[rel=next], a:contains(Sonraki), a:contains(>)").first()
+                val nextHref = nextPageEl?.attr("href")
+
+                if (!nextHref.isNullOrEmpty() && foundOnPage > 0) {
+                    currentPageUrl = fixUrl(nextHref)
+                    pageCount++
+                } else if (pageCount == 1 && foundOnPage > 0) {
+                    // Sayfalama linki yoksa sayfa parametresi ile dene (?page=2)
+                    currentPageUrl = "$baseUrlForEpisodes?page=2"
+                    pageCount++
+                } else {
+                    currentPageUrl = null
+                }
+            }.onFailure {
+                currentPageUrl = null
+            }
+        }
+
+        // 3. Yedek: Eğer hiç bölüm bulunamadıysa ana sayfadaki videoyu ekle
+        if (episodes.isEmpty()) {
+            episodes.add(
+                newEpisode(url) {
+                    this.name = "$title - İzle"
+                    this.season = 1
+                    this.episode = 1
+                    this.posterUrl = fixUrlNull(poster) ?: defaultPoster
+                }
+            )
+        }
+
+        // Bölüm numarasına göre sırala ve tekrarları temizle
+        val sortedEpisodes = episodes.distinctBy { it.data }.sortedBy { it.episode }
+
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sortedEpisodes) {
+            this.plot = description
+            this.posterUrl = fixUrlNull(poster) ?: defaultPoster
+        }
+    }
+
+    // Yardımcı: HTML dokümanından bölüm kartlarını toplar
+    private fun parseEpisodesFromDoc(doc: Document, episodes: MutableList<Episode>): Int {
+        var count = 0
+        doc.select("a[href*=/bolumler/], div.col-grid-item, div.swiper-slide, div.episode-item, div.poster-card, div.card-series, div.video-card").forEach { element ->
+            val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
+            val imgEl = element.selectFirst("img")
+            val epHref = linkEl?.attr("href") ?: return@forEach
+
+            if (!epHref.contains("/bolumler/") || epHref.contains("fragman")) return@forEach
+
+            val epTitle = imgEl?.attr("alt")?.ifEmpty { element.select("h4, .video-card-title, .title").text() }?.ifEmpty { element.text() } ?: ""
+            val epPoster = imgEl?.attr("src")?.ifEmpty { imgEl.attr("data-src") }
+            val epNum = Regex("""(\d+)\.\s*Bölüm""").find(epTitle)?.groupValues?.get(1)?.toIntOrNull() 
+                ?: Regex("""(\d+)-bolum""").find(epHref)?.groupValues?.get(1)?.toIntOrNull() 
+                ?: (episodes.size + 1)
+
+            val fullUrl = fixUrl(epHref)
+            if (episodes.none { it.data == fullUrl }) {
+                episodes.add(
+                    newEpisode(fullUrl) {
+                        this.name = if (epTitle.isNotBlank()) epTitle.trim() else "$epNum. Bölüm"
+                        this.season = 1
+                        this.episode = epNum
+                        this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
+                    }
+                )
+                count++
+            }
+        }
+        return count
+    }
+
+    // Yardımcı: JSON-LD Şeması Üzerinden Bölüm Toplama
+    private fun parseJsonLdEpisodes(doc: Document, defaultPoster: String, episodes: MutableList<Episode>) {
         val jsonLdElements = doc.select("script[type=application/ld+json]")
         for (element in jsonLdElements) {
             runCatching {
@@ -128,68 +222,28 @@ class StarTv : MainAPI() {
                                 val epUrl = item.optString("contentUrl").ifEmpty { item.optString("embedUrl") }
                                 val epDesc = item.optString("description")
                                 val thumbArray = item.optJSONArray("thumbnailUrl")
-                                val epPoster = if (thumbArray != null && thumbArray.length() > 0) thumbArray.getString(0) else poster
+                                val epPoster = if (thumbArray != null && thumbArray.length() > 0) thumbArray.getString(0) else defaultPoster
 
-                                if (epUrl.isNotBlank()) {
-                                    val epNum = Regex("""(\d+)\.\s*Bölüm""").find(epName)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                                    episodes.add(
-                                        newEpisode(fixUrl(epUrl)) {
-                                            this.name = epName
-                                            this.description = epDesc
-                                            this.season = 1
-                                            this.episode = epNum
-                                            this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
-                                        }
-                                    )
+                                if (epUrl.isNotBlank() && !epUrl.contains("fragman")) {
+                                    val epNum = Regex("""(\d+)\.\s*Bölüm""").find(epName)?.groupValues?.get(1)?.toIntOrNull() ?: (episodes.size + 1)
+                                    val fullUrl = fixUrl(epUrl)
+                                    if (episodes.none { it.data == fullUrl }) {
+                                        episodes.add(
+                                            newEpisode(fullUrl) {
+                                                this.name = epName
+                                                this.description = epDesc
+                                                this.season = 1
+                                                this.episode = epNum
+                                                this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
-
-        // /bolumler Sayfası Taraması
-        val episodesUrl = if (url.contains("/bolumler")) url else if (url.endsWith("/")) "${url}bolumler" else "$url/bolumler"
-        runCatching {
-            val episodesDoc = if (url.contains("/bolumler")) doc else Jsoup.connect(episodesUrl).userAgent(userAgent).ignoreContentType(true).get()
-
-            episodesDoc.select("div.col-grid-item, div.swiper-slide, div.episode-item, div.poster-card, div.card-series, div.video-card").forEachIndexed { index, element ->
-                val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
-                val imgEl = element.selectFirst("img")
-                val epHref = linkEl?.attr("href") ?: return@forEachIndexed
-
-                if (!epHref.contains("/bolumler/") || epHref.contains("fragman")) return@forEachIndexed
-
-                val epTitle = imgEl?.attr("alt")?.ifEmpty { element.select("h4, .video-card-title, .title").text() }?.ifEmpty { "${index + 1}. Bölüm" } ?: "${index + 1}. Bölüm"
-                val epPoster = imgEl?.attr("src")?.ifEmpty { imgEl.attr("data-src") }
-                val epNum = Regex("""(\d+)\.\s*Bölüm""").find(epTitle)?.groupValues?.get(1)?.toIntOrNull() ?: (index + 1)
-
-                episodes.add(
-                    newEpisode(fixUrl(epHref)) {
-                        this.name = epTitle.trim()
-                        this.season = 1
-                        this.episode = epNum
-                        this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
-                    }
-                )
-            }
-        }
-
-        if (episodes.isEmpty()) {
-            episodes.add(
-                newEpisode(url) {
-                    this.name = "$title - İzle"
-                    this.season = 1
-                    this.episode = 1
-                    this.posterUrl = fixUrlNull(poster) ?: defaultPoster
-                }
-            )
-        }
-
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }) {
-            this.plot = description
-            this.posterUrl = fixUrlNull(poster) ?: defaultPoster
         }
     }
 
