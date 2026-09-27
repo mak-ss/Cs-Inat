@@ -60,30 +60,35 @@ class DiziPal : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text()?.replace(" izle", "")?.trim() ?: return null
+        // JSON-LD'den film/dizi bilgilerini almaya çalış
+        val jsonLd = document.select("script[type='application/ld+json']")
+            .mapNotNull { it.data() }
+            .firstOrNull { it.contains("\"@type\":\"Movie\"") || it.contains("\"@type\":\"TVSeries\"") }
+
+        val title = document.selectFirst("h1")?.text()?.replace(" izle", "")?.trim()
+            ?: jsonLd?.let { Regex(""""name"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1) }
+            ?: return null
+
         val poster = fixUrlNull(document.selectFirst("meta[property='og:image']")?.attr("content"))
+            ?: jsonLd?.let { Regex(""""image"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1)?.let { p -> fixUrl(p) } }
+
         val description = document.selectFirst("meta[property='og:description']")?.attr("content")
+            ?: jsonLd?.let { Regex(""""description"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1) }
+
         val tags = document.select("a[href*='/tur/']").map { it.text().trim() }
 
         return if (url.contains("/diziler/")) {
-            // Her bölüm için bir çift (href, name, season, episode) verisi topluyoruz
             data class EpData(val href: String, val name: String?, val season: Int, val episode: Int?)
 
             val epDataList = document.select("a[href*='/bolumler/']").mapNotNull { el ->
                 val epHref = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-
-                // Bölüm başlığını bulmak için birden fazla seçici deniyoruz
                 val epText = el.selectFirst("p.text-\\[12px\\]")?.text()?.trim()
                     ?: el.selectFirst("p.font-semibold")?.text()?.trim()
                     ?: el.text().trim()
-
                 val season = Regex("""(\d+)\.\s*Sezon""").find(epText)?.groupValues?.get(1)?.toIntOrNull() ?: 1
                 val episode = Regex("""(\d+)\.\s*Bölüm""").find(epText)?.groupValues?.get(1)?.toIntOrNull()
-
-                // Bölüm adını almak için deneme
                 val epName = el.selectFirst("p.text-\\[11px\\].text-\\[\\#aaa\\]")?.text()?.trim()
                     ?: el.selectFirst("p.text-\\[\\#aaa\\]")?.text()?.trim()
-
                 EpData(epHref, epName, season, episode)
             }.distinctBy { it.href }
 
@@ -118,16 +123,23 @@ class DiziPal : MainAPI() {
         Log.d("DPO", "data » $data")
         val document = app.get(data).document
 
-        val iframeUrl = document.selectFirst("iframe[src]")?.attr("src")
+        // Öncelik sırası: iframe[src] > og:video > og:video:secure_url > JSON-LD embedUrl
+        val embedUrl = document.selectFirst("iframe[src]")?.attr("src")
+            ?.takeIf { it.contains("player") || it.contains("embed") || it.contains("video") }
             ?: document.selectFirst("meta[property='og:video']")?.attr("content")
             ?: document.selectFirst("meta[property='og:video:secure_url']")?.attr("content")
+            ?: document.select("script[type='application/ld+json']")
+                .mapNotNull { it.data() }
+                .firstOrNull { it.contains("\"embedUrl\"") }
+                ?.let { Regex(""""embedUrl"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1) }
 
-        if (iframeUrl.isNullOrBlank()) {
-            Log.d("DPO", "iframe veya og:video bulunamadı.")
+        if (embedUrl.isNullOrBlank()) {
+            Log.d("DPO", "embedUrl bulunamadı, doğrudan video kaynağı aranıyor...")
             val videoSrc = document.selectFirst("video source[src]")?.attr("src")
+                ?: document.selectFirst("video[src]")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
-                 Log.d("DPO", "Doğrudan video kaynağı bulundu: $videoSrc")
-                 callback.invoke(
+                Log.d("DPO", "Doğrudan video kaynağı bulundu: $videoSrc")
+                callback.invoke(
                     newExtractorLink(
                         source = this.name,
                         name = this.name,
@@ -143,41 +155,67 @@ class DiziPal : MainAPI() {
             return false
         }
 
-        val embedUrl = fixUrl(iframeUrl)
-        Log.d("DPO", "embedUrl » $embedUrl")
+        val fixedEmbedUrl = fixUrl(embedUrl)
+        Log.d("DPO", "embedUrl » $fixedEmbedUrl")
 
+        // videoplays.cfd için özel extractor
+        if (fixedEmbedUrl.contains("videoplays.cfd")) {
+            try {
+                VideoplaysCfd().getUrl(fixedEmbedUrl, data, subtitleCallback, callback)
+                Log.d("DPO", "VideoplaysCfd extractor çağrıldı.")
+                return true
+            } catch (e: Exception) {
+                Log.d("DPO", "VideoplaysCfd extractor hatası » ${e.message}")
+            }
+        }
+
+        // Yedek: Embed sayfasını çekip regex ile m3u8/mp4 bul
         try {
             val embedResp = app.get(
-                embedUrl,
-                referer = "${mainUrl}/",
-                headers = mapOf("User-Agent" to USER_AGENT)
+                fixedEmbedUrl,
+                referer = "$mainUrl/",
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8",
+                    "Origin" to mainUrl
+                )
             ).text
 
-            val m3u8 = Regex("""(https?://[^\s"'\\]+\.m3u8[^\s"'\\]*)""").find(embedResp)?.groupValues?.get(1)
-            val mp4 = Regex("""(https?://[^\s"'\\]+\.mp4[^\s"'\\]*)""").find(embedResp)?.groupValues?.get(1)
-            val videoUrl = m3u8 ?: mp4
+            Log.d("DPO", "embed response length » ${embedResp.length}")
 
-            if (videoUrl != null) {
-                Log.d("DPO", "Regex ile videoUrl bulundu » $videoUrl")
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = videoUrl,
-                        type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = embedUrl
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-                return true
+            val patterns = listOf(
+                Regex("""(https?://[^\s"'\\]+\.m3u8[^\s"'\\]*)"""),
+                Regex("""(https?://[^\s"'\\]+\.mp4[^\s"'\\]*)"""),
+                Regex("""file\s*:\s*["']([^"']+)["']"""),
+                Regex("""source\s+src=["']([^"']+)["']""")
+            )
+
+            for (pattern in patterns) {
+                val match = pattern.find(embedResp)?.groupValues?.get(1)
+                if (!match.isNullOrBlank()) {
+                    Log.d("DPO", "Regex ile videoUrl bulundu » $match")
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = match,
+                            type = if (match.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = fixedEmbedUrl
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    return true
+                }
             }
         } catch (e: Exception) {
             Log.d("DPO", "embed fetch hatası » ${e.message}")
         }
 
+        // Son çare: loadExtractor
         try {
-            if (loadExtractor(embedUrl, "${mainUrl}/", subtitleCallback, callback)) {
+            if (loadExtractor(fixedEmbedUrl, "$mainUrl/", subtitleCallback, callback)) {
                 Log.d("DPO", "loadExtractor başarılı.")
                 return true
             }
