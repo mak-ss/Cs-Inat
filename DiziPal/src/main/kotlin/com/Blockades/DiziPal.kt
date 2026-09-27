@@ -11,7 +11,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 class DiziPal : MainAPI() {
-    override var mainUrl = "https://dizipal1430.com"
+    override var mainUrl = "https://dizipal1432.com"
     override var name = "DiziPal"
     override val hasMainPage = true
     override var lang = "tr"
