@@ -17,6 +17,12 @@ class DizipalPlayer2 : ExtractorApi() {
     override var mainUrl = "https://dizipal2134.com"
     override val requiresReferer = true
 
+    init {
+        Log.e("DPPLAYER2", "========================================")
+        Log.e("DPPLAYER2", "EXTRACTOR YÜKLENDİ! (2026-09-28 02:50)")
+        Log.e("DPPLAYER2", "========================================")
+    }
+
     override suspend fun getUrl(
         url: String,
         referer: String?,
@@ -24,8 +30,9 @@ class DizipalPlayer2 : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
+        Log.d("DPPLAYER2", "url » $url")
 
-        // 1. Bölüm sayfası
+        // 1. Bölüm sayfası — cookie topla
         val pageResp = try {
             app.get(url, referer = "$mainUrl/")
         } catch (e: Exception) {
@@ -35,7 +42,10 @@ class DizipalPlayer2 : ExtractorApi() {
         val document = pageResp.document
 
         val cookieMap: Map<String, String> = pageResp.cookies
-        Log.d("DPPLAYER2", "COOKIES » ${cookieMap.keys}")
+        Log.d("DPPLAYER2", "COOKIES KEYS » ${cookieMap.keys}")
+        cookieMap.forEach { (k, v) ->
+            Log.d("DPPLAYER2", "  → $k = ${v.take(80)}")
+        }
 
         // 2. cfg
         val cfg = document.selectFirst("#videoContainer")
@@ -46,7 +56,12 @@ class DizipalPlayer2 : ExtractorApi() {
         }
         Log.d("DPPLAYER2", "cfg » $cfg")
 
-        // 3. RETRY MEKANİZMASI — 3 deneme
+        // 3. CSRF token meta'dan
+        val csrfToken = document.selectFirst("meta[name='csrf-token']")
+            ?.attr("content")?.takeIf { it.isNotBlank() } ?: ""
+        Log.d("DPPLAYER2", "CSRF » ${csrfToken.take(60)}")
+
+        // 4. RETRY MEKANİZMASI — 3 deneme
         var response: String? = null
         for (attempt in 1..3) {
             Log.d("DPPLAYER2", "DENEME #$attempt")
@@ -73,7 +88,7 @@ class DizipalPlayer2 : ExtractorApi() {
 
             Log.d("DPPLAYER2", "DENEME #$attempt RESPONSE » ${response?.take(300)}")
 
-            // Başarılı mı?
+            // Başarılı mı? (message alanı yoksa başarılı)
             if (response != null && !response.contains("\"message\"")) {
                 Log.d("DPPLAYER2", "DENEME #$attempt BAŞARILI")
                 break
@@ -91,7 +106,7 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
-        // 4. Decrypt
+        // 5. Decrypt
         val result = parseAndDecrypt(response)
         if (result == null) {
             Log.e("DPPLAYER2", "Decrypt BAŞARISIZ")
@@ -102,14 +117,21 @@ class DizipalPlayer2 : ExtractorApi() {
         Log.d("DPPLAYER2", ">>> videoUrl » $videoUrl")
         Log.d("DPPLAYER2", ">>> videoType » $videoType")
 
-        // 5. Doğru yönlendirme — iframe ise loadExtractor
-        if (videoType == "iframe" || videoUrl.contains("iframe", true)) {
+        // 6. iframe ise loadExtractor
+        if (videoType == "iframe" || videoUrl.contains("<iframe", true)) {
             val iframeUrl = Regex("""src=["']([^"']+)["']""")
                 .find(videoUrl)?.groupValues?.get(1)
                 ?: videoUrl.takeIf { it.startsWith("http") }
+
             if (!iframeUrl.isNullOrBlank()) {
+                val fixedUrl = fixUrl(iframeUrl)
+                Log.d("DPPLAYER2", "iframe » $fixedUrl")
                 try {
-                    if (loadExtractor(fixUrl(iframeUrl), url, subtitleCallback, callback)) return
+                    if (loadExtractor(fixedUrl, url, subtitleCallback, callback)) {
+                        Log.d("DPPLAYER2", "loadExtractor BAŞARILI")
+                        return
+                    }
+                    Log.d("DPPLAYER2", "loadExtractor FALSE döndü")
                 } catch (e: Exception) {
                     Log.e("DPPLAYER2", "loadExtractor hata » ${e.message}")
                 }
@@ -117,8 +139,9 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
-        // 6. m3u8/mp4 ise direkt gönder
+        // 7. m3u8/mp4 ise direkt gönder
         val isM3u8 = videoUrl.contains(".m3u8", true)
+        Log.d("DPPLAYER2", "ExtractorLink gönderiliyor (m3u8=$isM3u8)")
         callback.invoke(
             newExtractorLink(
                 source = this.name,
@@ -135,6 +158,7 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             }
         )
+        Log.d("DPPLAYER2", "===== BİTİŞ =====")
     }
 
     private fun parseAndDecrypt(response: String): Pair<String, String>? {
@@ -154,10 +178,12 @@ class DizipalPlayer2 : ExtractorApi() {
                 if (directV != null) {
                     val t = config.optString("t", "").takeIf { it.isNotBlank() }
                         ?: detectType(directV)
+                    Log.d("DPPLAYER2", "Direkt config.v bulundu, tip=$t")
                     return directV to t
                 }
                 val directUrl = json.optString("url", "").takeIf { it.isNotBlank() }
                 if (directUrl != null) return directUrl to detectType(directUrl)
+                Log.e("DPPLAYER2", "enc YOK. keys=${json.keys().asSequence().toList()}")
                 return null
             }
 
@@ -166,14 +192,22 @@ class DizipalPlayer2 : ExtractorApi() {
             val ivB64 = enc.optString("iv", "")
             val ctB64 = enc.optString("c", "")
 
+            Log.d("DPPLAYER2", "enc: k1=${k1B64.length} k2=${k2B64.length} iv=${ivB64.length} c=${ctB64.length}")
+
             if (k1B64.isEmpty() || k2B64.isEmpty() ||
-                ivB64.isEmpty() || ctB64.isEmpty()) return null
+                ivB64.isEmpty() || ctB64.isEmpty()) {
+                Log.e("DPPLAYER2", "enc alanlarından biri BOŞ")
+                return null
+            }
 
             val k1 = decodeBase64(k1B64) ?: return null
             val k2 = decodeBase64(k2B64) ?: return null
             val iv = decodeBase64(ivB64) ?: return null
             val ct = decodeBase64(ctB64) ?: return null
 
+            Log.d("DPPLAYER2", "decoded: k1=${k1.size}b k2=${k2.size}b iv=${iv.size}b ct=${ct.size}b")
+
+            // key = k1 XOR k2
             val keyLen = minOf(k1.size, k2.size)
             val key = ByteArray(keyLen)
             for (i in 0 until keyLen) {
@@ -183,25 +217,50 @@ class DizipalPlayer2 : ExtractorApi() {
             val decrypted = aesCbcDecrypt(key, iv, ct) ?: return null
             Log.d("DPPLAYER2", "DECRYPTED » $decrypted")
 
+            // JSON içerik mi?
             if (decrypted.trim().startsWith("{")) {
                 try {
                     val inner = JSONObject(decrypted.trim())
                     val u = inner.optString("url", "").takeIf { it.isNotBlank() }
                         ?: inner.optString("v", "").takeIf { it.isNotBlank() }
                         ?: inner.optString("file", "").takeIf { it.isNotBlank() }
-                    if (u != null) return u to detectType(u)
+                    if (u != null) {
+                        val t = inner.optString("type", "").takeIf { it.isNotBlank() }
+                            ?: detectType(u)
+                        Log.d("DPPLAYER2", "JSON içinden URL çıkarıldı: $u (tip=$t)")
+                        return u to t
+                    }
                 } catch (_: Exception) {}
             }
 
-            if (decrypted.contains("<iframe")) return decrypted to "iframe"
+            // iframe HTML
+            if (decrypted.contains("<iframe")) {
+                Log.d("DPPLAYER2", "iframe HTML bulundu")
+                return decrypted to "iframe"
+            }
 
+            // m3u8
             Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""")
-                .find(decrypted)?.groupValues?.get(1)?.let { return it to "m3u8" }
-            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
-                .find(decrypted)?.groupValues?.get(1)?.let { return it to "mp4" }
-            Regex("""(https?://[^\s"'\\<>]+)""")
-                .find(decrypted)?.groupValues?.get(1)?.let { return it to detectType(it) }
+                .find(decrypted)?.groupValues?.get(1)?.let {
+                    Log.d("DPPLAYER2", "m3u8 URL bulundu: $it")
+                    return it to "m3u8"
+                }
 
+            // mp4
+            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
+                .find(decrypted)?.groupValues?.get(1)?.let {
+                    Log.d("DPPLAYER2", "mp4 URL bulundu: $it")
+                    return it to "mp4"
+                }
+
+            // Genel URL
+            Regex("""(https?://[^\s"'\\<>]+)""")
+                .find(decrypted)?.groupValues?.get(1)?.let {
+                    Log.d("DPPLAYER2", "Genel URL bulundu: $it")
+                    return it to detectType(it)
+                }
+
+            Log.e("DPPLAYER2", "Decrypted içerikten URL çıkarılamadı")
             return null
         } catch (e: Exception) {
             Log.e("DPPLAYER2", "parseAndDecrypt HATA » ${e.message}")
@@ -209,13 +268,17 @@ class DizipalPlayer2 : ExtractorApi() {
         }
     }
 
-    // ✅ DÜZELTİLDİ — .html ise "iframe" döndür
+    /**
+     * URL'yi analiz edip tip döndürür.
+     * .html veya /embed içeriyorsa → iframe (loadExtractor ile çözülür)
+     */
     private fun detectType(url: String): String = when {
         url.contains(".m3u8", true) -> "m3u8"
         url.contains(".mp4", true) -> "mp4"
         url.contains("<iframe", true) -> "iframe"
-        url.contains("/embed", true) -> "iframe"    // ← YENİ
-        url.endsWith(".html") -> "iframe"            // ← YENİ
+        url.contains("/embed", true) -> "iframe"
+        url.contains("/player", true) -> "iframe"
+        url.endsWith(".html") -> "iframe"
         url.contains("iframe", true) -> "iframe"
         else -> "m3u8"
     }
@@ -232,7 +295,10 @@ class DizipalPlayer2 : ExtractorApi() {
         } else {
             android.util.Base64.decode(normalized, android.util.Base64.DEFAULT)
         }
-    } catch (e: Exception) { null }
+    } catch (e: Exception) {
+        Log.e("DPPLAYER2", "Base64 fail » ${e.message}")
+        null
+    }
 
     private fun aesCbcDecrypt(key: ByteArray, iv: ByteArray, ct: ByteArray): String? = try {
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
