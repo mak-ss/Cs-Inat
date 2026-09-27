@@ -87,7 +87,6 @@ class DiziPal2 : MainAPI() {
             referer = "$mainUrl/"
         )
 
-        // JSONObject ile parse et — Jackson'a gerek yok
         val results = mutableListOf<SearchResponse>()
         try {
             val json = org.json.JSONObject(responseRaw.text)
@@ -161,8 +160,8 @@ class DiziPal2 : MainAPI() {
                 val subtitle = anchor.selectFirst("div.detail-episode-subtitle")?.text()?.trim() ?: ""
                 val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
 
-                val epSeason   = match?.groupValues?.getOrNull(1)?.toIntOrNull()
-                val epEpisode  = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+                val epSeason  = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val epEpisode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
 
                 newEpisode(epHref) {
                     this.name    = epName
@@ -209,196 +208,17 @@ class DiziPal2 : MainAPI() {
         Log.e("DiziPal2", "===== loadLinks ÇAĞRILDI =====")
         Log.e("DiziPal2", "data » $data")
 
-        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-
-        // 1. AŞAMA: GET isteği atıp hem Token'ı hem de ÇEREZLERİ alıyoruz
-        val getResponse = try {
-            app.get(
-                url = data,
-                headers = mapOf(
-                    "User-Agent"    to userAgent,
-                    "Cache-Control" to "no-cache",
-                    "Pragma"        to "no-cache"
-                )
-            )
+        // DizipalPlayer2 extractor'ünü kullan
+        try {
+            Log.e("DiziPal2", ">>> DizipalPlayer2 INSTANCE OLUŞTURULUYOR...")
+            val player = DizipalPlayer2()
+            Log.e("DiziPal2", ">>> DizipalPlayer2 getUrl ÇAĞRILIYOR...")
+            player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
+            Log.e("DiziPal2", ">>> DizipalPlayer2 TAMAMLANDI")
+            return true
         } catch (e: Exception) {
-            Log.e("DiziPal2", "GET hatası » ${e.message}")
+            Log.e("DiziPal2", "DizipalPlayer2 HATA » ${e.message}", e)
             return false
         }
-
-        val document = getResponse.document
-        val configToken = document.selectFirst("#videoContainer")?.attr("data-cfg")?.trim()
-
-        if (configToken.isNullOrEmpty()) {
-            Log.e("DiziPal2", "data-cfg alınamadı!")
-            return false
-        }
-
-        val cookies = getResponse.cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-        Log.d("DiziPal2", "Bulunan Token » $configToken")
-        Log.d("DiziPal2", "Yakalanan Çerezler » $cookies")
-
-        // 2. AŞAMA: Token'ı Base64 Decode Et
-        val paddedToken = configToken + "=".repeat((4 - configToken.length % 4) % 4)
-        val decodedToken = String(android.util.Base64.decode(paddedToken, android.util.Base64.DEFAULT))
-        Log.d("DiziPal2", "Decoded Token » $decodedToken")
-
-        val embedUrlRaw = Regex(""""v"\s*:\s*"([^"]+)"""").find(decodedToken)
-            ?.groupValues?.getOrNull(1)?.replace("\\/", "/")
-
-        if (embedUrlRaw.isNullOrEmpty()) {
-            Log.e("DiziPal2", "Embed URL token içinden alınamadı: $decodedToken")
-            return false
-        }
-
-        val embedUrl = fixUrl(embedUrlRaw)
-        Log.d("DiziPal2", "Çözülen Embed URL » $embedUrl")
-
-        if (embedUrl.contains("imagestoo")) {
-            val videoId = embedUrl.trimEnd('/').substringAfterLast("/")
-            val imagestooApiUrl = "https://imagestoo.com/player/index.php?data=$videoId&do=getVideo"
-            Log.d("DiziPal2", "Imagestoo API URL » $imagestooApiUrl")
-
-            val apiResponse = try {
-                app.post(
-                    url = imagestooApiUrl,
-                    referer = embedUrl,
-                    headers = mapOf(
-                        "User-Agent"       to userAgent,
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Accept"           to "*/*"
-                    )
-                )
-            } catch (e: Exception) {
-                Log.e("DiziPal2", "Imagestoo POST hatası » ${e.message}")
-                return false
-            }
-
-            var sessionCookie = ""
-
-            val playerToken = apiResponse.cookies["fireplayer_player"]
-            if (!playerToken.isNullOrEmpty()) {
-                sessionCookie = "fireplayer_player=$playerToken"
-            } else {
-                val rawSetCookie = apiResponse.headers["Set-Cookie"] ?: apiResponse.headers["set-cookie"]
-                if (rawSetCookie != null && rawSetCookie.contains("fireplayer_player")) {
-                    val cleanCookie = rawSetCookie.split(";").firstOrNull()
-                    if (cleanCookie != null) sessionCookie = "$cleanCookie;"
-                }
-            }
-
-            Log.d("DiziPal2", "Yakalanan Cookie » $sessionCookie")
-
-            val responseText = apiResponse.text
-            val videoSourceRaw = Regex(""""securedLink"\s*:\s*"([^"]+)"""").find(responseText)
-                ?.groupValues?.getOrNull(1)
-
-            if (videoSourceRaw != null) {
-                val cleanUrl = videoSourceRaw.replace("\\/", "/")
-                val finalM3u8Url = fixUrl(cleanUrl)
-
-                Log.d("DiziPal2", "Imagestoo Çözülen Video » $finalM3u8Url")
-
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = "Dizipal (Imagestoo)",
-                        url = finalM3u8Url,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = embedUrl
-                        this.headers = mapOf(
-                            "Referer" to embedUrl,
-                            "Cookie"  to sessionCookie
-                        )
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-                return true
-            } else {
-                Log.e("DiziPal2", "Imagestoo videoSource yok. Yanıt: ${responseText.take(300)}")
-                return false
-            }
-        }
-
-        // 3. AŞAMA: Normal embed — sources veya v değişkeni ara
-        val embedSource = try {
-            app.get(
-                url = embedUrl,
-                referer = data,
-                headers = mapOf("User-Agent" to userAgent)
-            ).text
-        } catch (e: Exception) {
-            Log.e("DiziPal2", "embed GET hatası » ${e.message}")
-            return false
-        }
-
-        val m3u8Match = Regex("""sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+\.m3u8.*?)["']""").find(embedSource)
-            ?: Regex("""v\s*:\s*["']([^"']+\.html.*?)["']""").find(embedSource)
-
-        val extractedUrl = m3u8Match?.groupValues?.getOrNull(1)
-
-        if (extractedUrl == null) {
-            Log.e("DiziPal2", "Embed kaynağında geçerli bir link bulunamadı!")
-            return false
-        }
-
-        val finalM3u8Url: String? = if (extractedUrl.contains(".html")) {
-            val idRegex = Regex("""embed-([^.]+)\.html""")
-            val idMatch = idRegex.find(extractedUrl)?.groupValues?.getOrNull(1)
-
-            if (idMatch != null) {
-                "https://s2.superadjacentsoddenly.xyz/hls2/01/00007/${idMatch}_,n,h,.urlset/master.m3u8"
-            } else {
-                Log.e("DiziPal2", "HTML linkinden ID ayıklanamadı: $extractedUrl")
-                null
-            }
-        } else {
-            extractedUrl
-        }
-
-        if (finalM3u8Url == null) return false
-
-        Log.d("DiziPal2", "Bulunan M3U8 » $finalM3u8Url")
-
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = "Dizipal (Ana Sunucu)",
-                url = finalM3u8Url,
-                type = ExtractorLinkType.M3U8
-            ) {
-                this.referer = embedUrl
-                this.quality = Qualities.Unknown.value
-            }
-        )
-
-        // 4. AŞAMA: Altyazıları yakala
-        val tracksBlockMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(embedSource)
-
-        tracksBlockMatch?.groupValues?.getOrNull(1)?.let { tracksBlock ->
-            val trackItemRegex = Regex("""\{(.*?)\}""", RegexOption.DOT_MATCHES_ALL)
-
-            trackItemRegex.findAll(tracksBlock).forEach { itemMatch ->
-                val itemStr = itemMatch.groupValues[1]
-
-                val fileMatch = Regex("""file\s*:\s*["']([^"']+)["']""").find(itemStr)
-                val labelMatch = Regex("""label\s*:\s*["']([^"']+)["']""").find(itemStr)
-
-                val fileUrl = fileMatch?.groupValues?.getOrNull(1)
-                val label = labelMatch?.groupValues?.getOrNull(1) ?: "Unknown"
-
-                if (fileUrl != null && (fileUrl.endsWith(".vtt") || fileUrl.endsWith(".srt"))) {
-                    subtitleCallback.invoke(
-                        SubtitleFile(
-                            lang = label,
-                            url = fixUrl(fileUrl)
-                        )
-                    )
-                }
-            }
-        }
-
-        return true
     }
 }
