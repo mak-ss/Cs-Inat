@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Element
 
 class DiziPal2 : MainAPI() {
-    override var mainUrl              = "https://dizipal2134.com"
+    override var mainUrl              = "https://dizipal737.com"
     override var name                 = "DiziPal2"
     override val hasMainPage          = true
     override var lang                 = "tr"
@@ -244,15 +244,6 @@ class DiziPal2 : MainAPI() {
                 val fixedUrl = fixUrl(embedUrl)
                 Log.d("DPO2", "Yedek embedUrl » $fixedUrl")
 
-                if (fixedUrl.contains("videoplays.cfd")) {
-                    try {
-                        VideoplaysCfd().getUrl(fixedUrl, data, subtitleCallback, callback)
-                        return true
-                    } catch (e: Exception) {
-                        Log.d("DPO2", "VideoplaysCfd hatası » ${e.message}")
-                    }
-                }
-
                 try {
                     if (loadExtractor(fixedUrl, data, subtitleCallback, callback)) {
                         Log.d("DPO2", "loadExtractor başarılı.")
@@ -263,6 +254,7 @@ class DiziPal2 : MainAPI() {
                 }
             }
 
+            // 3. Doğrudan video kaynağı
             val videoSrc = document.selectFirst("video[src]")?.attr("src")
                 ?: document.selectFirst("video source[src]")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
