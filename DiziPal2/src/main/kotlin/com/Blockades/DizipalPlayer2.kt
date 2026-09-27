@@ -22,97 +22,138 @@ class DizipalPlayer2 : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val fixedReferer = referer ?: "$mainUrl/"
         Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
 
-        // 1. Bölüm sayfasını çek
+        // 1. Bölüm sayfası
         val pageResp = try {
-            app.get(url, referer = fixedReferer)
+            app.get(url, referer = "$mainUrl/")
         } catch (e: Exception) {
             Log.e("DPPLAYER2", "Sayfa hatası » ${e.message}")
             return
         }
         val document = pageResp.document
-
-        // 2. Cookie'lerden _ct token'ını ara — .cookies bir Map<String,String>
-        val cookieMap: Map<String, String> = pageResp.cookies
-        Log.d("DPPLAYER2", "COOKIES » $cookieMap")
-
-        var token = ""
-        val cookieToken = cookieMap["_ct"]
-        if (!cookieToken.isNullOrBlank()) {
-            token = cookieToken
-            Log.d("DPPLAYER2", "Token _ct cookie'sinden alındı » $token")
+        
+        // TÜM cookie'leri logla
+        val pageCookies = pageResp.cookies
+        Log.d("DPPLAYER2", "SAYFA COOKIES » $pageCookies")
+        pageCookies.forEach { (k, v) ->
+            Log.d("DPPLAYER2", "  → $k = ${v.take(50)}")
         }
 
-        // 3. cfg al
+        // 2. cfg
         val cfg = document.selectFirst("#videoContainer")
             ?.attr("data-cfg")?.takeIf { it.isNotBlank() }
         if (cfg.isNullOrBlank()) {
-            Log.e("DPPLAYER2", "data-cfg YOK")
+            Log.e("DPPLAYER2", "cfg YOK")
             return
         }
         Log.d("DPPLAYER2", "cfg » $cfg")
 
-        // 4. Cookie'den token gelmediyse endpoint'i dene
-        if (token.isBlank()) {
-            token = getAjaxToken(url)
-            Log.d("DPPLAYER2", "Token endpoint'ten » $token")
-        }
+        // 3. CSRF token'ı meta'dan al
+        val csrfToken = document.selectFirst("meta[name='csrf-token']")
+            ?.attr("content")?.takeIf { it.isNotBlank() } ?: ""
+        Log.d("DPPLAYER2", "CSRF TOKEN » $csrfToken")
 
-        // 5. Hâlâ yoksa meta[name='csrf-token'] dene
+        // 4. XSRF-TOKEN cookie'sini al (Laravel)
+        val xsrfCookie = pageCookies["XSRF-TOKEN"] ?: ""
+        Log.d("DPPLAYER2", "XSRF-TOKEN » ${xsrfCookie.take(50)}")
+
+        // 5. _ct cookie'sini al
+        val ctCookie = pageCookies["_ct"] ?: ""
+        Log.d("DPPLAYER2", "CT COOKIE » $ctCookie")
+
+        // 6. Token sırası: _ct → ajax-token → csrf
+        var token = ctCookie
         if (token.isBlank()) {
-            val metaToken = document.selectFirst("meta[name='csrf-token']")?.attr("content")
-            if (!metaToken.isNullOrBlank()) {
-                token = metaToken
-                Log.d("DPPLAYER2", "Token meta csrf-token'dan » $token")
+            Log.d("DPPLAYER2", "_ct yok, /ajax-token deneniyor...")
+            val tokenResp = try {
+                app.get("$mainUrl/ajax-token",
+                    referer = url,
+                    headers = mapOf(
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "User-Agent" to USER_AGENT,
+                        "Accept" to "application/json, text/plain, */*"
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e("DPPLAYER2", "ajax-token hata » ${e.message}")
+                null
+            }
+            
+            if (tokenResp != null) {
+                Log.d("DPPLAYER2", "ajax-token STATUS » ${tokenResp.code}")
+                Log.d("DPPLAYER2", "ajax-token BODY » ${tokenResp.text}")
+                Log.d("DPPLAYER2", "ajax-token COOKIES » ${tokenResp.cookies}")
+                
+                token = tokenResp.cookies["_ct"]?.takeIf { it.isNotBlank() } ?: ""
+                
+                if (token.isBlank()) {
+                    try {
+                        val json = JSONObject(tokenResp.text)
+                        token = json.optString("t", "").takeIf { it.isNotBlank() }
+                            ?: json.optString("token", "").takeIf { it.isNotBlank() }
+                            ?: ""
+                    } catch (_: Exception) {}
+                }
             }
         }
 
-        if (token.isBlank()) {
-            Log.e("DPPLAYER2", "Token HİÇBİR YERDEN alınamadı!")
-            return
-        }
+        if (token.isBlank()) token = csrfToken
 
-        // 6. POST /ajax-player-config
+        Log.d("DPPLAYER2", "FINAL TOKEN » ${token.take(80)}")
+
+        // 7. Cookie Map'i hazırla — TÜM cookie'leri gönder
+        val cookiesMap = mutableMapOf<String, String>()
+        pageCookies.forEach { (k, v) -> 
+            if (v.isNotBlank()) cookiesMap[k] = v
+        }
+        // Ek cookie'ler
+        if (ctCookie.isNotBlank()) cookiesMap["_ct"] = ctCookie
+        if (xsrfCookie.isNotBlank()) cookiesMap["XSRF-TOKEN"] = xsrfCookie
+        
+        Log.d("DPPLAYER2", "GÖNDERİLEN COOKIES » ${cookiesMap.keys}")
+
+        // 8. POST /ajax-player-config — TÜM header'lar
         val response = try {
             app.post(
                 "$mainUrl/ajax-player-config",
                 data = mapOf(
                     "cfg" to cfg,
-                    "token" to token,
-                    "csrf_token" to token,
-                    "_token" to token
+                    "_token" to token,        // Laravel'in beklediği isim
+                    "csrf_token" to token,    // Alternatif
+                    "token" to token          // Alternatif
                 ),
                 referer = url,
+                cookies = cookiesMap,
                 headers = mapOf(
                     "Origin" to mainUrl,
+                    "Referer" to url,
                     "X-Requested-With" to "XMLHttpRequest",
                     "User-Agent" to USER_AGENT,
-                    "Accept" to "application/json, text/plain, */*",
-                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                    "Accept" to "*/*",
+                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-CSRF-TOKEN" to csrfToken,        // Laravel header
+                    "X-XSRF-TOKEN" to xsrfCookie        // Laravel XSRF header
                 )
             ).text
         } catch (e: Exception) {
-            Log.e("DPPLAYER2", "POST hatası » ${e.message}")
+            Log.e("DPPLAYER2", "POST hata » ${e.message}")
             return
         }
 
         Log.d("DPPLAYER2", "RAW RESPONSE » ${response.take(600)}")
 
-        // 7. Decrypt
+        // 9. Decrypt
         val result = parseAndDecrypt(response)
         if (result == null) {
             Log.e("DPPLAYER2", "Decrypt BAŞARISIZ")
             return
         }
 
-        val videoUrl = result.first
-        val videoType = result.second
+        val (videoUrl, videoType) = result
         Log.d("DPPLAYER2", ">>> videoUrl » $videoUrl")
         Log.d("DPPLAYER2", ">>> videoType » $videoType")
 
-        // 8. iframe
         if (videoType == "iframe") {
             val iframeUrl = Regex("""src=["']([^"']+)["']""")
                 .find(videoUrl)?.groupValues?.get(1)
@@ -121,13 +162,12 @@ class DizipalPlayer2 : ExtractorApi() {
                 try {
                     if (loadExtractor(fixUrl(iframeUrl), url, subtitleCallback, callback)) return
                 } catch (e: Exception) {
-                    Log.e("DPPLAYER2", "loadExtractor hatası » ${e.message}")
+                    Log.e("DPPLAYER2", "loadExtractor hata » ${e.message}")
                 }
             }
             return
         }
 
-        // 9. Direkt link
         val isM3u8 = videoType == "m3u8" || videoUrl.contains(".m3u8", true)
         callback.invoke(
             newExtractorLink(
@@ -145,53 +185,6 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             }
         )
-    }
-
-    private suspend fun getAjaxToken(referer: String): String {
-        return try {
-            // Önce ana sayfayı ziyaret et (cookie toplamak için)
-            try {
-                app.get(mainUrl, referer = null)
-            } catch (_: Exception) {}
-
-            val resp = try {
-                app.get(
-                    "$mainUrl/ajax-token",
-                    referer = referer,
-                    headers = mapOf(
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "User-Agent" to USER_AGENT,
-                        "Accept" to "application/json, text/plain, */*"
-                    )
-                )
-            } catch (e: Exception) {
-                Log.e("DPPLAYER2", "ajax-token isteği hatası » ${e.message}")
-                return ""
-            }
-
-            Log.d("DPPLAYER2", "ajax-token STATUS » ${resp.code}")
-            Log.d("DPPLAYER2", "ajax-token YANIT » ${resp.text}")
-
-            // Cookie'den kontrol et
-            val cookieMap: Map<String, String> = resp.cookies
-            val ct = cookieMap["_ct"]
-            if (!ct.isNullOrBlank()) {
-                Log.d("DPPLAYER2", "Cookie _ct bulundu: $ct")
-                return ct
-            }
-
-            val json = JSONObject(resp.text)
-            val t = json.optString("t", "")
-            if (t.isNotBlank()) return t
-
-            val token2 = json.optString("token", "")
-            if (token2.isNotBlank()) return token2
-
-            ""
-        } catch (e: Exception) {
-            Log.e("DPPLAYER2", "getAjaxToken genel hata » ${e.message}")
-            ""
-        }
     }
 
     private fun parseAndDecrypt(response: String): Pair<String, String>? {
@@ -248,17 +241,12 @@ class DizipalPlayer2 : ExtractorApi() {
 
             if (decrypted.contains("<iframe")) return decrypted to "iframe"
 
-            val m3u8 = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""")
-                .find(decrypted)?.groupValues?.get(1)
-            if (m3u8 != null) return m3u8 to "m3u8"
-
-            val mp4 = Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
-                .find(decrypted)?.groupValues?.get(1)
-            if (mp4 != null) return mp4 to "mp4"
-
-            val anyUrl = Regex("""(https?://[^\s"'\\<>]+)""")
-                .find(decrypted)?.groupValues?.get(1)
-            if (anyUrl != null) return anyUrl to detectType(anyUrl)
+            Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""")
+                .find(decrypted)?.groupValues?.get(1)?.let { return it to "m3u8" }
+            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
+                .find(decrypted)?.groupValues?.get(1)?.let { return it to "mp4" }
+            Regex("""(https?://[^\s"'\\<>]+)""")
+                .find(decrypted)?.groupValues?.get(1)?.let { return it to detectType(it) }
 
             return null
         } catch (e: Exception) {
