@@ -11,19 +11,6 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * Dizipal2134 player extractor — main.js analizine göre KESİN çalışan versiyon.
- *
- * Akış:
- *  1. #videoContainer[data-cfg] al
- *  2. POST {mainUrl}/ajax-player-config  (Content-Type: form-urlencoded, body: cfg=<value>)
- *  3. Yanıt: { "success": true, "enc": { "k1": "...", "k2": "...", "iv": "...", "c": "..." } }
- *  4. key = base64_decode(k1) XOR base64_decode(k2)
- *  5. AES-CBC + Pkcs7 decrypt(base64_decode(c), key, base64_decode(iv)) → video URL
- *  6. ExtractorLink olarak gönder
- *
- * NOT: CSRF token player için GEREKLİ DEĞİL (main.js'te sadece cfg gönderiliyor).
- */
 class DizipalPlayer2 : ExtractorApi() {
     override var name = "DizipalPlayer2"
     override var mainUrl = "https://dizipal2134.com"
@@ -36,27 +23,32 @@ class DizipalPlayer2 : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         val fixedReferer = referer ?: "$mainUrl/"
+        Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
         Log.d("DPPLAYER2", "url » $url")
 
-        // 1. Bölüm sayfasını çek
+        // 1) Bölüm sayfasını çek
         val document = try {
             app.get(url, referer = fixedReferer).document
         } catch (e: Exception) {
-            Log.d("DPPLAYER2", "Sayfa yükleme hatası » ${e.message}")
+            Log.e("DPPLAYER2", "Sayfa hatası » ${e.message}", e)
             return
         }
 
-        // 2. #videoContainer → data-cfg
+        // 2) cfg'yi al
         val videoContainer = document.selectFirst("#videoContainer")
-        val cfg = videoContainer?.attr("data-cfg")?.takeIf { it.isNotBlank() }
+        if (videoContainer == null) {
+            Log.e("DPPLAYER2", "#videoContainer YOK")
+            return
+        }
 
+        val cfg = videoContainer.attr("data-cfg").takeIf { it.isNotBlank() }
         if (cfg.isNullOrBlank()) {
-            Log.d("DPPLAYER2", "data-cfg bulunamadı!")
+            Log.e("DPPLAYER2", "data-cfg YOK. HTML: ${videoContainer.outerHtml().take(300)}")
             return
         }
         Log.d("DPPLAYER2", "cfg » $cfg")
 
-        // 3. POST /ajax-player-config  (sadece cfg — CSRF YOK)
+        // 3) POST ajax-player-config
         val response = try {
             app.post(
                 "$mainUrl/ajax-player-config",
@@ -70,44 +62,49 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             ).text
         } catch (e: Exception) {
-            Log.d("DPPLAYER2", "POST hatası » ${e.message}")
+            Log.e("DPPLAYER2", "POST hatası » ${e.message}", e)
             return
         }
 
-        Log.d("DPPLAYER2", "raw response » ${response.take(400)}")
+        Log.d("DPPLAYER2", "RAW RESPONSE (tam) » $response")
 
-        // 4. Parse + decrypt
+        // 4) Decrypt
         val result = parseAndDecrypt(response)
         if (result == null) {
-            Log.d("DPPLAYER2", "Video çözülemedi")
+            Log.e("DPPLAYER2", "Decrypt başarısız!")
             return
         }
 
         val (videoUrl, videoType) = result
-        Log.d("DPPLAYER2", "videoUrl » $videoUrl")
-        Log.d("DPPLAYER2", "videoType » $videoType")
+        Log.d("DPPLAYER2", ">>> videoUrl » $videoUrl")
+        Log.d("DPPLAYER2", ">>> videoType » $videoType")
 
-        // 5. iframe tipindeyse loadExtractor'a düşür
-        if (videoType == "iframe" || videoUrl.contains("<iframe")) {
-            val iframeUrl = Regex("""src=["']([^"']+)["']""").find(videoUrl)
-                ?.groupValues?.get(1)
+        // 5) iframe ise loadExtractor
+        if (videoType == "iframe") {
+            val iframeUrl = Regex("""src=["']([^"']+)["']""")
+                .find(videoUrl)?.groupValues?.get(1)
+                ?: videoUrl.takeIf { it.startsWith("http") }
+
             if (!iframeUrl.isNullOrBlank()) {
                 val fixed = fixUrl(iframeUrl)
-                Log.d("DPPLAYER2", "iframe bulundu » $fixed")
+                Log.d("DPPLAYER2", "iframe » $fixed")
                 try {
-                    if (loadExtractor(fixed, url, subtitleCallback, callback)) return
+                    if (loadExtractor(fixed, url, subtitleCallback, callback)) {
+                        Log.d("DPPLAYER2", "loadExtractor BAŞARILI")
+                        return
+                    }
                 } catch (e: Exception) {
-                    Log.d("DPPLAYER2", "loadExtractor hatası » ${e.message}")
+                    Log.e("DPPLAYER2", "loadExtractor hatası » ${e.message}")
                 }
             }
             return
         }
 
-        // 6. m3u8/mp4 doğrudan link
+        // 6) Direkt link
         val isM3u8 = videoType == "m3u8" ||
-                     videoUrl.contains(".m3u8") ||
-                     videoUrl.contains("m3u8")
+                     videoUrl.contains(".m3u8", ignoreCase = true)
 
+        Log.d("DPPLAYER2", "ExtractorLink gönderiliyor (m3u8=$isM3u8)")
         callback.invoke(
             newExtractorLink(
                 source = this.name,
@@ -124,140 +121,166 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             }
         )
+        Log.d("DPPLAYER2", "===== BİTİŞ =====")
     }
 
     /**
-     * Sunucu yanıtını parse eder ve enc alanını AES-CBC ile çözer.
+     * Sunucu yanıtını parse eder ve AES-CBC ile decrypt eder.
      *
-     * Beklenen format:
-     *   {
-     *     "success": true,
-     *     "enc": {
-     *       "k1": "base64...",  // anahtar parçası 1
-     *       "k2": "base64...",  // anahtar parçası 2
-     *       "iv": "base64...",  // initialization vector
-     *       "c":  "base64..."   // ciphertext (video URL)
-     *     }
-     *   }
-     *
-     * Bazı durumlarda zaten decrypt edilmiş format da olabilir:
-     *   { "success": true, "config": { "v": "https://...m3u8", "t": "m3u8", "p": "poster" } }
+     * Beklenen (main.js'ten):
+     *   { "enc": { "k1": "...", "k2": "...", "iv": "...", "c": "..." } }
+     *   veya
+     *   { "success": true, "enc": { ... } }
      */
     private fun parseAndDecrypt(response: String): Pair<String, String>? {
-        return try {
+        try {
+            Log.d("DPPLAYER2", "parseAndDecrypt başladı")
             val json = JSONObject(response)
 
-            if (!json.optBoolean("success", false)) {
-                Log.d("DPPLAYER2", "success=false")
-                return null
+            // ⚠️ success kontrolü YAPMIYORUZ (main.js de yapmıyor)
+            // Sadece "enc" var mı diye bakıyoruz
+
+            // A) "enc" kök seviyede mi?
+            var enc = json.optJSONObject("enc")
+
+            // B) "config.enc" içinde mi?
+            if (enc == null) {
+                enc = json.optJSONObject("config")?.optJSONObject("enc")
+                if (enc != null) Log.d("DPPLAYER2", "enc config içinde bulundu")
             }
 
-            // A) Zaten decrypt edilmiş formatta mı? (bazı CDN'ler için)
-            json.optJSONObject("config")?.let { config ->
-                val v = config.optString("v", "").takeIf { it.isNotBlank() }
-                val t = config.optString("t", "m3u8")
-                if (v != null) {
-                    Log.d("DPPLAYER2", "Direkt config bulundu")
-                    return v to t
+            // C) Direkt video URL (decrypt edilmiş halde)
+            if (enc == null) {
+                val config = json.optJSONObject("config")
+                val directV = config?.optString("v", "")?.takeIf { it.isNotBlank() }
+                if (directV != null) {
+                    Log.d("DPPLAYER2", "Direkt config.v bulundu")
+                    val t = config.optString("t", "m3u8")
+                    return directV to t
                 }
-            }
-
-            // B) Şifreli "enc" alanı — KÖK SEVİYEDE
-            val enc = json.optJSONObject("enc") ?: run {
-                Log.d("DPPLAYER2", "enc alanı yok")
+                // Bazı durumlarda "url" alanı olabilir
+                val directUrl = json.optString("url", "").takeIf { it.isNotBlank() }
+                if (directUrl != null) {
+                    Log.d("DPPLAYER2", "Direkt url alanı bulundu")
+                    return directUrl to detectType(directUrl)
+                }
+                Log.e("DPPLAYER2", "enc alanı YOK. JSON keys: ${json.keys().asSequence().toList()}")
                 return null
             }
 
+            // enc içeriğini al
             val k1B64 = enc.optString("k1", "")
             val k2B64 = enc.optString("k2", "")
             val ivB64 = enc.optString("iv", "")
             val ctB64 = enc.optString("c", "")
 
+            Log.d("DPPLAYER2", "enc keys » ${enc.keys().asSequence().toList()}")
+            Log.d("DPPLAYER2", "k1.length=${k1B64.length} k2.length=${k2B64.length} iv.length=${ivB64.length} c.length=${ctB64.length}")
+
             if (k1B64.isEmpty() || k2B64.isEmpty() ||
                 ivB64.isEmpty() || ctB64.isEmpty()
             ) {
-                Log.d("DPPLAYER2", "enc alanlarından biri boş")
+                Log.e("DPPLAYER2", "enc alanlarından biri BOŞ!")
                 return null
             }
 
-            val k1 = decodeBase64(k1B64) ?: return null
-            val k2 = decodeBase64(k2B64) ?: return null
-            val iv = decodeBase64(ivB64) ?: return null
-            val ct = decodeBase64(ctB64) ?: return null
+            // Base64 decode
+            val k1 = decodeBase64(k1B64)
+            val k2 = decodeBase64(k2B64)
+            val iv = decodeBase64(ivB64)
+            val ct = decodeBase64(ctB64)
 
-            // key = k1 XOR k2 (main.js'te xorBytes(k1, k2))
+            if (k1 == null || k2 == null || iv == null || ct == null) {
+                Log.e("DPPLAYER2", "Base64 decode FAIL")
+                return null
+            }
+
+            Log.d("DPPLAYER2", "decoded: k1=${k1.size}b k2=${k2.size}b iv=${iv.size}b ct=${ct.size}b")
+
+            // key = k1 XOR k2
             val keyLen = minOf(k1.size, k2.size)
             val key = ByteArray(keyLen)
             for (i in 0 until keyLen) {
                 key[i] = (k1[i].toInt() xor k2[i].toInt()).toByte()
             }
 
-            Log.d("DPPLAYER2", "key len » ${key.size}, iv len » ${iv.size}, ct len » ${ct.size}")
-
+            // AES-CBC decrypt
             val decrypted = aesCbcDecrypt(key, iv, ct)
             if (decrypted.isNullOrBlank()) {
-                Log.d("DPPLAYER2", "AES decrypt başarısız")
+                Log.e("DPPLAYER2", "AES decrypt BOŞ")
                 return null
             }
 
-            Log.d("DPPLAYER2", "Decrypted » ${decrypted.take(300)}")
+            Log.d("DPPLAYER2", "DECRYPTED PLAIN » $decrypted")
 
-            // Decrypted içeriği video URL'sini içerir
-            // Bazen direkt URL, bazen JSON, bazen iframe HTML olabilir
+            // Decrypted içerikten video URL çıkar
+            // 1) JSON ise
+            if (decrypted.trim().startsWith("{")) {
+                try {
+                    val innerJson = JSONObject(decrypted.trim())
+                    val innerUrl = innerJson.optString("url", "")
+                        .takeIf { it.isNotBlank() }
+                        ?: innerJson.optString("v", "").takeIf { it.isNotBlank() }
+                        ?: innerJson.optString("file", "").takeIf { it.isNotBlank() }
+                    if (innerUrl != null) {
+                        val t = innerJson.optString("type", "").takeIf { it.isNotBlank() }
+                            ?: detectType(innerUrl)
+                        Log.d("DPPLAYER2", "JSON içinden URL çıkarıldı")
+                        return innerUrl to t
+                    }
+                } catch (_: Exception) {}
+            }
 
-            // 1. m3u8 bul
+            // 2) iframe HTML
+            if (decrypted.contains("<iframe")) {
+                Log.d("DPPLAYER2", "iframe HTML bulundu")
+                return decrypted to "iframe"
+            }
+
+            // 3) m3u8 URL
             Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""")
                 .find(decrypted)?.groupValues?.get(1)?.let {
                     return it to "m3u8"
                 }
 
-            // 2. mp4 bul
+            // 4) mp4 URL
             Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
                 .find(decrypted)?.groupValues?.get(1)?.let {
                     return it to "mp4"
                 }
 
-            // 3. iframe HTML ise src'yi çıkar
-            if (decrypted.contains("<iframe")) {
-                Regex("""src=["']([^"']+)["']""")
-                    .find(decrypted)?.groupValues?.get(1)?.let {
-                        return it to "iframe"
-                    }
-            }
-
-            // 4. Direkt URL ise
-            val trimmed = decrypted.trim()
-            if (trimmed.startsWith("http")) {
-                val type = when {
-                    trimmed.contains(".m3u8") -> "m3u8"
-                    trimmed.contains(".mp4")  -> "mp4"
-                    else -> "m3u8"
+            // 5) Herhangi bir http URL (uzantısız olabilir)
+            Regex("""(https?://[^\s"'\\<>]+)""")
+                .find(decrypted)?.groupValues?.get(1)?.let {
+                    Log.d("DPPLAYER2", "Genel URL yakalandı » $it")
+                    return it to detectType(it)
                 }
-                return trimmed to type
-            }
 
-            Log.d("DPPLAYER2", "Decrypted içerikten video URL çıkarılamadı")
-            null
+            Log.e("DPPLAYER2", "Decrypted içerikten URL çıkarılamadı!")
+            return null
         } catch (e: Exception) {
-            Log.d("DPPLAYER2", "parseAndDecrypt hatası » ${e.message}")
-            null
+            Log.e("DPPLAYER2", "parseAndDecrypt EXCEPTION » ${e.message}", e)
+            return null
         }
     }
 
-    /**
-     * Base64 decode — URL-safe ve normal base64'ü destekler.
-     * main.js'teki atob() ile uyumlu.
-     */
+    private fun detectType(url: String): String {
+        return when {
+            url.contains(".m3u8", true) -> "m3u8"
+            url.contains(".mp4", true) -> "mp4"
+            url.contains("iframe", true) -> "iframe"
+            else -> "m3u8"  // varsayılan
+        }
+    }
+
     private fun decodeBase64(input: String): ByteArray? {
         return try {
-            // atob() standard base64 bekler — padding ekle
             val padded = when (input.length % 4) {
                 2 -> "$input=="
                 3 -> "$input="
                 0 -> input
-                else -> input  // hatalı durum — olduğu gibi dene
+                else -> input
             }
-            // URL-safe karakterleri normalize et
             val normalized = padded.replace('-', '+').replace('_', '/')
 
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -266,29 +289,23 @@ class DizipalPlayer2 : ExtractorApi() {
                 android.util.Base64.decode(normalized, android.util.Base64.DEFAULT)
             }
         } catch (e: Exception) {
-            Log.d("DPPLAYER2", "Base64 decode hatası » ${e.message} | input=${input.take(30)}")
+            Log.e("DPPLAYER2", "Base64 fail » ${e.message} | input=${input.take(40)}")
             null
         }
     }
 
-    /**
-     * AES-CBC/Pkcs7 decrypt.
-     * main.js: CryptoJS.AES.decrypt({ciphertext: ct}, key, {iv, mode: CBC, padding: Pkcs7})
-     */
     private fun aesCbcDecrypt(
-        key: ByteArray,
-        iv: ByteArray,
-        ciphertext: ByteArray
+        key: ByteArray, iv: ByteArray, ciphertext: ByteArray
     ): String? {
         return try {
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")  // Pkcs7 == PKCS5 Android'de
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             val secretKey = SecretKeySpec(key, "AES")
             val ivSpec = IvParameterSpec(iv)
             cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
             val plainBytes = cipher.doFinal(ciphertext)
             String(plainBytes, Charsets.UTF_8)
         } catch (e: Exception) {
-            Log.d("DPPLAYER2", "AES decrypt hatası » ${e.message}")
+            Log.e("DPPLAYER2", "AES fail » ${e.message}")
             null
         }
     }
