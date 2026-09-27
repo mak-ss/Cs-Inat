@@ -34,13 +34,14 @@ class DizipalPlayer2 : ExtractorApi() {
         }
         val document = pageResp.document
 
-        // 2. Cookie'lerden _ct token'ını ara (cookieMap kullan — Pair DEĞİL)
-        val cookieMap = pageResp.cookieMap
+        // 2. Cookie'lerden _ct token'ını ara — .cookies bir Map<String,String>
+        val cookieMap: Map<String, String> = pageResp.cookies
         Log.d("DPPLAYER2", "COOKIES » $cookieMap")
 
         var token = ""
-        cookieMap["_ct"]?.takeIf { it.isNotBlank() }?.let { ct ->
-            token = ct
+        val cookieToken = cookieMap["_ct"]
+        if (!cookieToken.isNullOrBlank()) {
+            token = cookieToken
             Log.d("DPPLAYER2", "Token _ct cookie'sinden alındı » $token")
         }
 
@@ -61,8 +62,11 @@ class DizipalPlayer2 : ExtractorApi() {
 
         // 5. Hâlâ yoksa meta[name='csrf-token'] dene
         if (token.isBlank()) {
-            token = document.selectFirst("meta[name='csrf-token']")?.attr("content") ?: ""
-            Log.d("DPPLAYER2", "Token meta csrf-token'dan » $token")
+            val metaToken = document.selectFirst("meta[name='csrf-token']")?.attr("content")
+            if (!metaToken.isNullOrBlank()) {
+                token = metaToken
+                Log.d("DPPLAYER2", "Token meta csrf-token'dan » $token")
+            }
         }
 
         if (token.isBlank()) {
@@ -103,7 +107,8 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
-        val (videoUrl, videoType) = result
+        val videoUrl = result.first
+        val videoType = result.second
         Log.d("DPPLAYER2", ">>> videoUrl » $videoUrl")
         Log.d("DPPLAYER2", ">>> videoType » $videoType")
 
@@ -167,16 +172,22 @@ class DizipalPlayer2 : ExtractorApi() {
             Log.d("DPPLAYER2", "ajax-token STATUS » ${resp.code}")
             Log.d("DPPLAYER2", "ajax-token YANIT » ${resp.text}")
 
-            // Cookie'den kontrol et (cookieMap kullan)
-            resp.cookieMap["_ct"]?.takeIf { it.isNotBlank() }?.let { ct ->
+            // Cookie'den kontrol et
+            val cookieMap: Map<String, String> = resp.cookies
+            val ct = cookieMap["_ct"]
+            if (!ct.isNullOrBlank()) {
                 Log.d("DPPLAYER2", "Cookie _ct bulundu: $ct")
                 return ct
             }
 
             val json = JSONObject(resp.text)
-            json.optString("t", "").takeIf { it.isNotBlank() }
-                ?: json.optString("token", "").takeIf { it.isNotBlank() }
-                ?: ""
+            val t = json.optString("t", "")
+            if (t.isNotBlank()) return t
+
+            val token2 = json.optString("token", "")
+            if (token2.isNotBlank()) return token2
+
+            ""
         } catch (e: Exception) {
             Log.e("DPPLAYER2", "getAjaxToken genel hata » ${e.message}")
             ""
@@ -237,12 +248,17 @@ class DizipalPlayer2 : ExtractorApi() {
 
             if (decrypted.contains("<iframe")) return decrypted to "iframe"
 
-            Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""")
-                .find(decrypted)?.groupValues?.get(1)?.let { return it to "m3u8" }
-            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
-                .find(decrypted)?.groupValues?.get(1)?.let { return it to "mp4" }
-            Regex("""(https?://[^\s"'\\<>]+)""")
-                .find(decrypted)?.groupValues?.get(1)?.let { return it to detectType(it) }
+            val m3u8 = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""")
+                .find(decrypted)?.groupValues?.get(1)
+            if (m3u8 != null) return m3u8 to "m3u8"
+
+            val mp4 = Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""")
+                .find(decrypted)?.groupValues?.get(1)
+            if (mp4 != null) return mp4 to "mp4"
+
+            val anyUrl = Regex("""(https?://[^\s"'\\<>]+)""")
+                .find(decrypted)?.groupValues?.get(1)
+            if (anyUrl != null) return anyUrl to detectType(anyUrl)
 
             return null
         } catch (e: Exception) {
