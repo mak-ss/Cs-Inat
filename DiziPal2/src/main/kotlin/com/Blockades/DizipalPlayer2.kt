@@ -25,7 +25,7 @@ class DizipalPlayer2 : ExtractorApi() {
         val fixedReferer = referer ?: "$mainUrl/"
         Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
 
-        // 1. Bölüm sayfasını çek + RESPONSE'u da al (cookie toplamak için)
+        // 1. Bölüm sayfasını çek
         val pageResp = try {
             app.get(url, referer = fixedReferer)
         } catch (e: Exception) {
@@ -34,16 +34,14 @@ class DizipalPlayer2 : ExtractorApi() {
         }
         val document = pageResp.document
 
-        // 2. Cookie'lerden _ct token'ını ara
-        val cookies = pageResp.cookies
-        Log.d("DPPLAYER2", "COOKIES » ${cookies.map { "${it.name}=${it.value}" }}")
+        // 2. Cookie'lerden _ct token'ını ara (cookieMap kullan — Pair DEĞİL)
+        val cookieMap = pageResp.cookieMap
+        Log.d("DPPLAYER2", "COOKIES » $cookieMap")
 
         var token = ""
-        cookies.forEach { c ->
-            if (c.name == "_ct" && c.value.isNotBlank()) {
-                token = c.value
-                Log.d("DPPLAYER2", "Token _ct cookie'sinden alındı » $token")
-            }
+        cookieMap["_ct"]?.takeIf { it.isNotBlank() }?.let { ct ->
+            token = ct
+            Log.d("DPPLAYER2", "Token _ct cookie'sinden alındı » $token")
         }
 
         // 3. cfg al
@@ -146,7 +144,7 @@ class DizipalPlayer2 : ExtractorApi() {
 
     private suspend fun getAjaxToken(referer: String): String {
         return try {
-            // Önce cookie'leri toplamak için ana sayfayı ziyaret et
+            // Önce ana sayfayı ziyaret et (cookie toplamak için)
             try {
                 app.get(mainUrl, referer = null)
             } catch (_: Exception) {}
@@ -169,12 +167,10 @@ class DizipalPlayer2 : ExtractorApi() {
             Log.d("DPPLAYER2", "ajax-token STATUS » ${resp.code}")
             Log.d("DPPLAYER2", "ajax-token YANIT » ${resp.text}")
 
-            // Cookie'den de kontrol et
-            resp.cookies.forEach { c ->
-                if (c.name == "_ct" && c.value.isNotBlank()) {
-                    Log.d("DPPLAYER2", "Cookie _ct bulundu: ${c.value}")
-                    return c.value
-                }
+            // Cookie'den kontrol et (cookieMap kullan)
+            resp.cookieMap["_ct"]?.takeIf { it.isNotBlank() }?.let { ct ->
+                Log.d("DPPLAYER2", "Cookie _ct bulundu: $ct")
+                return ct
             }
 
             val json = JSONObject(resp.text)
