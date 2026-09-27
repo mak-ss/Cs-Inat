@@ -111,7 +111,7 @@ class VideoplaysCfd : ExtractorApi() {
         }
     }
 
-    private fun sendLink(
+    private suspend fun sendLink(
         videoUrl: String,
         embedUrl: String,
         callback: (ExtractorLink) -> Unit
