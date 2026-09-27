@@ -25,49 +25,69 @@ class DizipalPlayer2 : ExtractorApi() {
         val fixedReferer = referer ?: "$mainUrl/"
         Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
 
-        // 1. Bölüm sayfasını çek
-        val document = try {
-            app.get(url, referer = fixedReferer).document
+        // 1. Bölüm sayfasını çek + RESPONSE'u da al (cookie toplamak için)
+        val pageResp = try {
+            app.get(url, referer = fixedReferer)
         } catch (e: Exception) {
             Log.e("DPPLAYER2", "Sayfa hatası » ${e.message}")
             return
         }
+        val document = pageResp.document
 
-        // 2. cfg al
+        // 2. Cookie'lerden _ct token'ını ara
+        val cookies = pageResp.cookies
+        Log.d("DPPLAYER2", "COOKIES » ${cookies.map { "${it.name}=${it.value}" }}")
+
+        var token = ""
+        cookies.forEach { c ->
+            if (c.name == "_ct" && c.value.isNotBlank()) {
+                token = c.value
+                Log.d("DPPLAYER2", "Token _ct cookie'sinden alındı » $token")
+            }
+        }
+
+        // 3. cfg al
         val cfg = document.selectFirst("#videoContainer")
-            ?.attr("data-cfg")
-            ?.takeIf { it.isNotBlank() }
-
+            ?.attr("data-cfg")?.takeIf { it.isNotBlank() }
         if (cfg.isNullOrBlank()) {
             Log.e("DPPLAYER2", "data-cfg YOK")
             return
         }
         Log.d("DPPLAYER2", "cfg » $cfg")
 
-        // 3. TOKEN AL — /ajax-token endpoint
-        val token = getAjaxToken(url)
-        Log.d("DPPLAYER2", "token » $token")
+        // 4. Cookie'den token gelmediyse endpoint'i dene
+        if (token.isBlank()) {
+            token = getAjaxToken(url)
+            Log.d("DPPLAYER2", "Token endpoint'ten » $token")
+        }
+
+        // 5. Hâlâ yoksa meta[name='csrf-token'] dene
+        if (token.isBlank()) {
+            token = document.selectFirst("meta[name='csrf-token']")?.attr("content") ?: ""
+            Log.d("DPPLAYER2", "Token meta csrf-token'dan » $token")
+        }
 
         if (token.isBlank()) {
-            Log.e("DPPLAYER2", "Token ALINAMADI!")
+            Log.e("DPPLAYER2", "Token HİÇBİR YERDEN alınamadı!")
             return
         }
 
-        // 4. POST /ajax-player-config — token EKLENDİ
+        // 6. POST /ajax-player-config
         val response = try {
             app.post(
                 "$mainUrl/ajax-player-config",
                 data = mapOf(
                     "cfg" to cfg,
-                    "token" to token,           // ← KRİTİK! Token eklendi
-                    "csrf_token" to token       // ← alternatif isim de deneyelim
+                    "token" to token,
+                    "csrf_token" to token,
+                    "_token" to token
                 ),
                 referer = url,
                 headers = mapOf(
                     "Origin" to mainUrl,
                     "X-Requested-With" to "XMLHttpRequest",
                     "User-Agent" to USER_AGENT,
-                    "Accept" to "*/*",
+                    "Accept" to "application/json, text/plain, */*",
                     "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                 )
             ).text
@@ -78,7 +98,7 @@ class DizipalPlayer2 : ExtractorApi() {
 
         Log.d("DPPLAYER2", "RAW RESPONSE » ${response.take(600)}")
 
-        // 5. Decrypt
+        // 7. Decrypt
         val result = parseAndDecrypt(response)
         if (result == null) {
             Log.e("DPPLAYER2", "Decrypt BAŞARISIZ")
@@ -89,7 +109,7 @@ class DizipalPlayer2 : ExtractorApi() {
         Log.d("DPPLAYER2", ">>> videoUrl » $videoUrl")
         Log.d("DPPLAYER2", ">>> videoType » $videoType")
 
-        // 6. iframe ise loadExtractor
+        // 8. iframe
         if (videoType == "iframe") {
             val iframeUrl = Regex("""src=["']([^"']+)["']""")
                 .find(videoUrl)?.groupValues?.get(1)
@@ -104,7 +124,7 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
-        // 7. Direkt link
+        // 9. Direkt link
         val isM3u8 = videoType == "m3u8" || videoUrl.contains(".m3u8", true)
         callback.invoke(
             newExtractorLink(
@@ -124,41 +144,47 @@ class DizipalPlayer2 : ExtractorApi() {
         )
     }
 
-    /**
-     * main.js'teki _gt() fonksiyonunun birebir kopyası.
-     * 1. _ct cookie'sinden token al (varsa)
-     * 2. Yoksa /ajax-token endpoint'inden al
-     */
     private suspend fun getAjaxToken(referer: String): String {
-        // 1. Yol: /ajax-token endpoint
-        try {
-            val resp = app.get(
-                "$mainUrl/ajax-token",
-                referer = referer,
-                headers = mapOf(
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "User-Agent" to USER_AGENT,
-                    "Accept" to "application/json, text/plain, */*"
+        return try {
+            // Önce cookie'leri toplamak için ana sayfayı ziyaret et
+            try {
+                app.get(mainUrl, referer = null)
+            } catch (_: Exception) {}
+
+            val resp = try {
+                app.get(
+                    "$mainUrl/ajax-token",
+                    referer = referer,
+                    headers = mapOf(
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "User-Agent" to USER_AGENT,
+                        "Accept" to "application/json, text/plain, */*"
+                    )
                 )
-            ).text
-
-            Log.d("DPPLAYER2", "ajax-token yanıtı » $resp")
-
-            val json = JSONObject(resp)
-            val t = json.optString("t", "").takeIf { it.isNotBlank() }
-            if (t != null) {
-                Log.d("DPPLAYER2", "Token endpoint'ten alındı")
-                return t
+            } catch (e: Exception) {
+                Log.e("DPPLAYER2", "ajax-token isteği hatası » ${e.message}")
+                return ""
             }
 
-            // Bazen "token" ismiyle dönüyor olabilir
-            val t2 = json.optString("token", "").takeIf { it.isNotBlank() }
-            if (t2 != null) return t2
-        } catch (e: Exception) {
-            Log.e("DPPLAYER2", "ajax-token hatası » ${e.message}")
-        }
+            Log.d("DPPLAYER2", "ajax-token STATUS » ${resp.code}")
+            Log.d("DPPLAYER2", "ajax-token YANIT » ${resp.text}")
 
-        return ""
+            // Cookie'den de kontrol et
+            resp.cookies.forEach { c ->
+                if (c.name == "_ct" && c.value.isNotBlank()) {
+                    Log.d("DPPLAYER2", "Cookie _ct bulundu: ${c.value}")
+                    return c.value
+                }
+            }
+
+            val json = JSONObject(resp.text)
+            json.optString("t", "").takeIf { it.isNotBlank() }
+                ?: json.optString("token", "").takeIf { it.isNotBlank() }
+                ?: ""
+        } catch (e: Exception) {
+            Log.e("DPPLAYER2", "getAjaxToken genel hata » ${e.message}")
+            ""
+        }
     }
 
     private fun parseAndDecrypt(response: String): Pair<String, String>? {
@@ -170,9 +196,7 @@ class DizipalPlayer2 : ExtractorApi() {
             }
 
             var enc = json.optJSONObject("enc")
-            if (enc == null) {
-                enc = json.optJSONObject("config")?.optJSONObject("enc")
-            }
+            if (enc == null) enc = json.optJSONObject("config")?.optJSONObject("enc")
 
             if (enc == null) {
                 val config = json.optJSONObject("config")
@@ -180,7 +204,6 @@ class DizipalPlayer2 : ExtractorApi() {
                 if (directV != null) return directV to config.optString("t", "m3u8")
                 val directUrl = json.optString("url", "").takeIf { it.isNotBlank() }
                 if (directUrl != null) return directUrl to detectType(directUrl)
-                Log.e("DPPLAYER2", "enc YOK. keys=${json.keys().asSequence().toList()}")
                 return null
             }
 
@@ -251,10 +274,7 @@ class DizipalPlayer2 : ExtractorApi() {
         } else {
             android.util.Base64.decode(normalized, android.util.Base64.DEFAULT)
         }
-    } catch (e: Exception) {
-        Log.e("DPPLAYER2", "Base64 fail » ${e.message}")
-        null
-    }
+    } catch (e: Exception) { null }
 
     private fun aesCbcDecrypt(key: ByteArray, iv: ByteArray, ct: ByteArray): String? = try {
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
