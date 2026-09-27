@@ -122,18 +122,17 @@ class StarTv : MainAPI() {
         
         var currentPageUrl: String? = baseUrlForEpisodes
         var pageCount = 1
-        val maxPages = 15 // Aşırı döngüyü önlemek için güvenlik sınırı
+        val maxPages = 15
 
         while (currentPageUrl != null && pageCount <= maxPages) {
             runCatching {
-                val epDoc = if (pageCount == 1 && url.contains("/bolumler")) doc else Jsoup.connect(currentPageUrl)
+                val epDoc = if (pageCount == 1 && url.contains("/bolumler")) doc else Jsoup.connect(currentPageUrl!!)
                     .userAgent(userAgent)
                     .ignoreContentType(true)
                     .get()
 
                 val foundOnPage = parseEpisodesFromDoc(epDoc, episodes)
 
-                // Sonraki Sayfa Bağlantısını Bulma
                 val nextPageEl = epDoc.select("a.pagination-next, a[rel=next], a:contains(Sonraki), a:contains(>)").first()
                 val nextHref = nextPageEl?.attr("href")
 
@@ -141,7 +140,6 @@ class StarTv : MainAPI() {
                     currentPageUrl = fixUrl(nextHref)
                     pageCount++
                 } else if (pageCount == 1 && foundOnPage > 0) {
-                    // Sayfalama linki yoksa sayfa parametresi ile dene (?page=2)
                     currentPageUrl = "$baseUrlForEpisodes?page=2"
                     pageCount++
                 } else {
@@ -152,7 +150,6 @@ class StarTv : MainAPI() {
             }
         }
 
-        // 3. Yedek: Eğer hiç bölüm bulunamadıysa ana sayfadaki videoyu ekle
         if (episodes.isEmpty()) {
             episodes.add(
                 newEpisode(url) {
@@ -164,7 +161,6 @@ class StarTv : MainAPI() {
             )
         }
 
-        // Bölüm numarasına göre sırala ve tekrarları temizle
         val sortedEpisodes = episodes.distinctBy { it.data }.sortedBy { it.episode }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sortedEpisodes) {
@@ -173,7 +169,6 @@ class StarTv : MainAPI() {
         }
     }
 
-    // Yardımcı: HTML dokümanından bölüm kartlarını toplar
     private fun parseEpisodesFromDoc(doc: Document, episodes: MutableList<Episode>): Int {
         var count = 0
         doc.select("a[href*=/bolumler/], div.col-grid-item, div.swiper-slide, div.episode-item, div.poster-card, div.card-series, div.video-card").forEach { element ->
@@ -205,7 +200,6 @@ class StarTv : MainAPI() {
         return count
     }
 
-    // Yardımcı: JSON-LD Şeması Üzerinden Bölüm Toplama
     private fun parseJsonLdEpisodes(doc: Document, defaultPoster: String, episodes: MutableList<Episode>) {
         val jsonLdElements = doc.select("script[type=application/ld+json]")
         for (element in jsonLdElements) {
