@@ -104,11 +104,16 @@ class DiziPal : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    override suspend fun loadLinks(
+        data: String, 
+        isCasting: Boolean, 
+        subtitleCallback: (SubtitleFile) -> Unit, 
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         Log.d("DPO", "data » $data")
         val document = app.get(data).document
 
-        // 1. meta-og:video — streamcorecdn embed URL'sini doğrudan al
+        // 1. meta-og:video — embed URL'sini al
         val embedUrl = document.selectFirst("meta[property='og:video']")?.attr("content")
             ?: document.selectFirst("meta[property='og:video:secure_url']")?.attr("content")
 
@@ -119,7 +124,9 @@ class DiziPal : MainAPI() {
 
         Log.d("DPO", "embedUrl » $embedUrl")
 
-        // 2. Embed sayfasını tarayıcı gibi header'larla çek
+        var foundLink = false
+
+        // 2. Embed sayfasını çek ve doğrudan medya bağlantılarını ayıkla
         try {
             val embedResp = app.get(
                 embedUrl,
@@ -135,13 +142,9 @@ class DiziPal : MainAPI() {
 
             Log.d("DPO", "embed response length » ${embedResp.length}")
 
-            // m3u8 linkleri ara
             val m3u8 = Regex("""(https?://[^\s"'\\]+\.m3u8[^\s"'\\]*)""").find(embedResp)?.groupValues?.get(1)
-            // file:"..." deseni (JWPlayer)
             val fileField = Regex("""file\s*:\s*["']([^"']+)""").find(embedResp)?.groupValues?.get(1)
-            // source src="..." deseni
             val sourceSrc = Regex("""source\s+src=["']([^"']+)""").find(embedResp)?.groupValues?.get(1)
-            // mp4 linki
             val mp4 = Regex("""(https?://[^\s"'\\]+\.mp4[^\s"'\\]*)""").find(embedResp)?.groupValues?.get(1)
 
             val videoUrl = m3u8 ?: fileField ?: sourceSrc ?: mp4
@@ -159,33 +162,21 @@ class DiziPal : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
-                return true
+                foundLink = true
             }
         } catch (e: Exception) {
             Log.d("DPO", "embed fetch hatası » ${e.message}")
         }
 
-        // 3. loadExtractor dene (belki CloudStream tanır)
-        try {
-            loadExtractor(embedUrl, "${mainUrl}/", subtitleCallback, callback)
-        } catch (e: Exception) {
-            Log.d("DPO", "loadExtractor hatası » ${e.message}")
+        // 3. Extractor ile çözümlemeyi dene
+        if (!foundLink) {
+            try {
+                foundLink = loadExtractor(embedUrl, "${mainUrl}/", subtitleCallback, callback)
+            } catch (e: Exception) {
+                Log.d("DPO", "loadExtractor hatası » ${e.message}")
+            }
         }
 
-        // 4. Son çare — embed URL'yi doğrudan video olarak ver
-        // CloudStream'in player'ı yönlendirmeleri takip edebilir
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = "${this.name} (Embed)",
-                url = embedUrl,
-                type = ExtractorLinkType.VIDEO
-            ) {
-                this.referer = "${mainUrl}/"
-                this.quality = Qualities.Unknown.value
-            }
-        )
-
-        return true
+        return foundLink
     }
 }
