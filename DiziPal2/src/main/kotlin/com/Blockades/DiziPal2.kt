@@ -24,36 +24,10 @@ class DiziPal2 : MainAPI() {
 
     // ==================== ORTAK PARSER ====================
 
-    /**
-     * content-card veya trending-item elementini SearchResponse'a çevirir.
-     * HTML:
-     *   <a href="..." class="card-link">
-     *     <div class="card-poster">
-     *       <img class="lazyload" data-src="..." alt="...">
-     *       <div class="card-info">
-     *         <h3 class="card-title">Title</h3>
-     *         <div class="card-meta">
-     *           <span class="card-rating"><i class="fas fa-star"></i> 7.0</span>
-     *           <span class="card-year">2026</span>
-     *         </div>
-     *       </div>
-     *     </div>
-     *   </a>
-     *
-     * trending-item:
-     *   <a href="..." class="trending-item">
-     *     <div class="trending-poster"><img data-src="..." alt="..."></div>
-     *     <div class="trending-info">
-     *       <span class="trending-badge">Dizi</span>
-     *       <h3 class="trending-title">Title</h3>
-     *     </div>
-     *   </a>
-     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = fixUrlNull(this.attr("href")) ?: return null
         if (href.isBlank()) return null
 
-        // Başlık
         val title = this.selectFirst(".card-title")?.text()?.trim()
             ?: this.selectFirst(".trending-title")?.text()?.trim()
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.replace(" izle", "")
@@ -61,18 +35,15 @@ class DiziPal2 : MainAPI() {
 
         if (title.isBlank()) return null
 
-        // Poster (lazyload data-src öncelikli)
         val poster = fixUrlNull(
             this.selectFirst("img.lazyload")?.attr("data-src")?.takeIf { it.isNotBlank() }
                 ?: this.selectFirst("img[data-src]")?.attr("data-src")?.takeIf { it.isNotBlank() }
                 ?: this.selectFirst("img")?.attr("src")
         )
 
-        // Puan
         val rating = this.selectFirst(".card-rating")?.text()?.trim()
             ?.let { Regex("""([\d.]+)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull() }
 
-        // Yıl
         val year = this.selectFirst(".card-year")?.text()?.trim()?.toIntOrNull()
 
         return when {
@@ -98,25 +69,12 @@ class DiziPal2 : MainAPI() {
         }
     }
 
-    /**
-     * episode-list-item elementini SearchResponse'a çevirir.
-     * HTML:
-     *   <a href="/bolum/..." class="episode-list-item">
-     *     <div class="episode-thumb"><img data-src="..."></div>
-     *     <div class="episode-meta">
-     *       <span class="ep-title">Series Name</span>
-     *       <span class="ep-info">1. Sezon 9. Bölüm</span>
-     *       <span class="ep-time">9 saat önce</span>
-     *     </div>
-     *   </a>
-     */
     private fun Element.toEpisodeSearchResponse(): SearchResponse? {
         val href = fixUrlNull(this.attr("href")) ?: return null
 
         val epTitle = this.selectFirst(".ep-title")?.text()?.trim() ?: return null
         val epInfo  = this.selectFirst(".ep-info")?.text()?.trim() ?: ""
 
-        // "Series - 1. Sezon 9. Bölüm" formatında birleştir
         val displayTitle = if (epInfo.isNotBlank()) "$epTitle - $epInfo" else epTitle
 
         val poster = fixUrlNull(
@@ -141,19 +99,16 @@ class DiziPal2 : MainAPI() {
 
         val items = mutableListOf<SearchResponse>()
 
-        // content-card (grid kartları)
         document.select("li.content-card a.card-link, a.card-link").forEach { el ->
             el.toSearchResponse()?.let { items.add(it) }
         }
 
-        // trending-item (trend slider)
         if (items.isEmpty()) {
             document.select("a.trending-item").forEach { el ->
                 el.toSearchResponse()?.let { items.add(it) }
             }
         }
 
-        // episode-list-item (son bölümler)
         document.select("a.episode-list-item").forEach { el ->
             el.toEpisodeSearchResponse()?.let { items.add(it) }
         }
@@ -170,7 +125,6 @@ class DiziPal2 : MainAPI() {
         val results = mutableListOf<SearchResponse>()
         val encoded = java.net.URLEncoder.encode(query, "UTF-8")
 
-        // 1. AJAX arama endpoint'i
         try {
             val apiUrl = "${mainUrl}/ajax-search?q=$encoded"
             val response = app.get(
@@ -210,7 +164,6 @@ class DiziPal2 : MainAPI() {
             Log.d("DPO2", "AJAX arama hatası » ${e.message}")
         }
 
-        // 2. HTML arama (fallback)
         if (results.isEmpty()) {
             try {
                 val searchUrl = "${mainUrl}/arama?q=$encoded"
@@ -236,20 +189,23 @@ class DiziPal2 : MainAPI() {
     // ==================== DETAY SAYFASI ====================
 
     override suspend fun load(url: String): LoadResponse? {
+        Log.e("DPO2", "===== load ÇAĞRILDI =====")
+        Log.e("DPO2", "url » $url")
+
         val document = app.get(url).document
 
         val jsonLd = document.select("script[type='application/ld+json']")
             .mapNotNull { it.data() }
             .firstOrNull { it.contains("\"TVSeries\"") || it.contains("\"Movie\"") }
 
-        // Başlık
         val title = document.selectFirst("h1.series-title")?.text()?.trim()
             ?: document.selectFirst("h1.movie-title")?.text()?.trim()
             ?: document.selectFirst("h1")?.text()?.replace(" izle", "")?.trim()
             ?: jsonLd?.let { Regex(""""name"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1) }
             ?: return null
 
-        // Poster
+        Log.e("DPO2", "title » $title")
+
         val poster = fixUrlNull(document.selectFirst("meta[property='og:image']")?.attr("content"))
             ?: fixUrlNull(
                 document.selectFirst(".series-hero")?.attr("style")
@@ -259,18 +215,15 @@ class DiziPal2 : MainAPI() {
                 Regex(""""image"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1)?.let { p -> fixUrl(p) }
             }
 
-        // Açıklama
         val description = document.selectFirst("meta[property='og:description']")?.attr("content")
             ?: document.selectFirst("p.series-description")?.text()?.trim()
             ?: document.selectFirst("p.movie-description")?.text()?.trim()
             ?: jsonLd?.let { Regex(""""description"\s*:\s*"([^"]+)"""").find(it)?.groupValues?.get(1) }
 
-        // Etiketler
         val tags = document.select(".info-value.categories a, .categories a, a[href*='/kategori/']")
             .map { it.text().trim() }
             .filter { it.isNotBlank() && it != "-" }
 
-        // Yıl
         val year = document.selectFirst(".info-row:contains(Yıl) .info-value")?.text()?.trim()?.toIntOrNull()
             ?: jsonLd?.let {
                 Regex(""""datePublished"\s*:\s*"?(\d{4})"?""").find(it)?.groupValues?.get(1)?.toIntOrNull()
@@ -279,6 +232,10 @@ class DiziPal2 : MainAPI() {
         return when {
             url.contains("/dizi/") || url.contains("/anime/") -> {
                 val episodes = parseEpisodes(document)
+                Log.e("DPO2", "TOPLAM BÖLÜM » ${episodes.size}")
+                episodes.take(3).forEachIndexed { i, ep ->
+                    Log.e("DPO2", "  EP#$i » name=${ep.name}, url=${ep.data}, s=${ep.season}, e=${ep.episode}")
+                }
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                     this.posterUrl = poster
                     this.plot = description
@@ -298,11 +255,7 @@ class DiziPal2 : MainAPI() {
     }
 
     /**
-     * Bölüm listesi:
-     *   <a href="/bolum/..." class="detail-episode-item">
-     *     <div class="detail-episode-title">Alıkara 1.Sezon 1.Bölüm</div>
-     *     <div class="detail-episode-subtitle">1. Sezon 1. Bölüm</div>
-     *   </a>
+     * Bölüm listesi parser — farklı seçicileri dener
      */
     private fun parseEpisodes(document: org.jsoup.nodes.Document): List<Episode> {
         data class EpData(
@@ -312,23 +265,47 @@ class DiziPal2 : MainAPI() {
             val episode: Int
         )
 
-        val epDataList = document.select(
-            "a.detail-episode-item, .detail-episode-list a[href*='/bolum/']"
-        ).mapNotNull { el ->
-            val href = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
+        // Farklı seçicileri dene
+        val selectors = listOf(
+            "a.detail-episode-item",
+            ".detail-episode-list a[href*='/bolum/']",
+            ".episode-item-wrap a[href*='/bolum/']",
+            "a.episode-item[href*='/bolum/']",
+            ".episode-grid-small a[href*='/bolum/']",
+            "a[href*='/bolum/']"
+        )
 
-            val subtitle = el.selectFirst(".detail-episode-subtitle")?.text()?.trim()
-                ?: el.text().trim()
+        val epDataList = mutableListOf<EpData>()
+        var usedSelector = ""
 
-            val season = Regex("""(\d+)\.\s*Sezon""").find(subtitle)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-            val episode = Regex("""(\d+)\.\s*Bölüm""").find(subtitle)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        for (selector in selectors) {
+            val elements = document.select(selector)
+            Log.e("DPO2", "Seçici » $selector → ${elements.size} element")
+            if (elements.isNotEmpty()) {
+                usedSelector = selector
+                elements.forEach { el ->
+                    val href = fixUrlNull(el.attr("href")) ?: return@forEach
 
-            val epName = el.selectFirst(".detail-episode-title")?.text()?.trim()
+                    val subtitle = el.selectFirst(".detail-episode-subtitle")?.text()?.trim()
+                        ?: el.selectFirst(".ep-label")?.text()?.trim()
+                        ?: el.text().trim()
 
-            EpData(href, epName, season, episode)
-        }.distinctBy { it.href }
+                    val season = Regex("""(\d+)\.\s*Sezon""").find(subtitle)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                    val episode = Regex("""(\d+)\.\s*Bölüm""").find(subtitle)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
-        return epDataList.map { data ->
+                    val epName = el.selectFirst(".detail-episode-title")?.text()?.trim()
+                        ?: subtitle
+
+                    epDataList.add(EpData(href, epName, season, episode))
+                }
+                break
+            }
+        }
+
+        Log.e("DPO2", "KULLANILAN SEÇİCİ » $usedSelector")
+        Log.e("DPO2", "BULUNAN BÖLÜM » ${epDataList.size}")
+
+        return epDataList.distinctBy { it.href }.map { data ->
             newEpisode(data.href) {
                 this.name = data.name
                 this.season = data.season
@@ -345,19 +322,26 @@ class DiziPal2 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DPO2", "data » $data")
+        Log.e("DPO2", "===== loadLinks ÇAĞRILDI =====")
+        Log.e("DPO2", "data » $data")
+        Log.e("DPO2", "isCasting » $isCasting")
 
         // 1. Dizipal kendi player'ı (AES şifreli config)
         try {
-            DizipalPlayer2().getUrl(data, "$mainUrl/", subtitleCallback, callback)
-            Log.d("DPO2", "DizipalPlayer2 çağrıldı.")
+            Log.e("DPO2", ">>> DizipalPlayer2 INSTANCE OLUŞTURULUYOR...")
+            val player = DizipalPlayer2()
+            Log.e("DPO2", ">>> DizipalPlayer2 INSTANCE HAZIR")
+            Log.e("DPO2", ">>> getUrl ÇAĞRILIYOR...")
+            player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
+            Log.e("DPO2", ">>> getUrl TAMAMLANDI")
             return true
         } catch (e: Exception) {
-            Log.d("DPO2", "DizipalPlayer2 hatası » ${e.message}")
+            Log.e("DPO2", "DizipalPlayer2 HATA » ${e.message}", e)
         }
 
-        // 2. Yedek: iframe / meta / video
+        // 2. Yedek: sayfadan iframe/video/meta bul
         try {
+            Log.e("DPO2", ">>> YEDEK yöntem deneniyor...")
             val document = app.get(data).document
 
             val embedUrl = document.selectFirst("iframe[src]")?.attr("src")
@@ -367,15 +351,16 @@ class DiziPal2 : MainAPI() {
 
             if (!embedUrl.isNullOrBlank()) {
                 val fixedUrl = fixUrl(embedUrl)
-                Log.d("DPO2", "Yedek embedUrl » $fixedUrl")
+                Log.e("DPO2", "Yedek embedUrl » $fixedUrl")
 
                 try {
                     if (loadExtractor(fixedUrl, data, subtitleCallback, callback)) {
-                        Log.d("DPO2", "loadExtractor başarılı.")
+                        Log.e("DPO2", "Yedek loadExtractor BAŞARILI")
                         return true
                     }
+                    Log.e("DPO2", "Yedek loadExtractor FALSE döndü")
                 } catch (e: Exception) {
-                    Log.d("DPO2", "loadExtractor hatası » ${e.message}")
+                    Log.e("DPO2", "Yedek loadExtractor hatası » ${e.message}")
                 }
             }
 
@@ -383,7 +368,7 @@ class DiziPal2 : MainAPI() {
                 ?: document.selectFirst("video source[src]")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
                 val fixedVideo = fixUrl(videoSrc)
-                Log.d("DPO2", "Doğrudan video » $fixedVideo")
+                Log.e("DPO2", "Doğrudan video » $fixedVideo")
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
@@ -399,9 +384,10 @@ class DiziPal2 : MainAPI() {
                 return true
             }
         } catch (e: Exception) {
-            Log.d("DPO2", "Yedek yöntem hatası » ${e.message}")
+            Log.e("DPO2", "Yedek yöntem hatası » ${e.message}")
         }
 
+        Log.e("DPO2", ">>> HİÇBİR YÖNTEM ÇALIŞMADI")
         return false
     }
 }
