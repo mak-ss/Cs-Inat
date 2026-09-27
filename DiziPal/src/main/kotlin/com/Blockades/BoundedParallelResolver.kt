@@ -2,8 +2,8 @@ package com.Blockades
 
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.Blockades.DiagnosticLogger
-import com.cloudstream.tr.core.diagnostics.DiagnosticStage
-import com.cloudstream.tr.core.diagnostics.DiagnosticCategory
+import com.Blockades.DiagnosticStage
+import com.Blockades.DiagnosticCategory
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
