@@ -1,6 +1,9 @@
 package com.Blockades
 
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.Blockades.DiagnosticLogger
+import com.cloudstream.tr.core.diagnostics.DiagnosticStage
+import com.cloudstream.tr.core.diagnostics.DiagnosticCategory
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -61,10 +64,10 @@ object BoundedParallelResolver {
                     } catch (_: CancellationException) {
                         // Coroutine cancelled cleanly
                     } catch (e: Exception) {
-                        com.cloudstream.tr.core.diagnostics.DiagnosticLogger.log(
+                        DiagnosticLogger.log(
                             provider = provider,
-                            stage = com.cloudstream.tr.core.diagnostics.DiagnosticStage.EXTRACTOR,
-                            category = com.cloudstream.tr.core.diagnostics.DiagnosticCategory.EXTRACTOR,
+                            stage = DiagnosticStage.EXTRACTOR,
+                            category = DiagnosticCategory.EXTRACTOR,
                             message = "Extractor resolution failed: ${e.message}",
                             throwable = e
                         )
