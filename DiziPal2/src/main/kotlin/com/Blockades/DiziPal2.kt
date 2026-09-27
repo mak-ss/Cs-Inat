@@ -5,7 +5,6 @@ package com.keyiflerolsun
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.App
 import org.jsoup.nodes.Element
 
 class DiziPal2 : MainAPI() {
