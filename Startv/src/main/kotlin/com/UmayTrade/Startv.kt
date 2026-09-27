@@ -3,6 +3,8 @@ package com.UmayTrade
 import org.jsoup.Jsoup
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.json.JSONObject
+import org.json.JSONArray
 
 class StarTv : MainAPI() {
     override var mainUrl = "https://www.startv.com.tr"
@@ -37,7 +39,7 @@ class StarTv : MainAPI() {
                 .ignoreContentType(true)
                 .get()
 
-            val dizilerList = dizilerDoc.select("div.poster-card, div.card-series, a.card, div.col-grid-item").mapNotNull { element ->
+            val dizilerList = dizilerDoc.select("div.swiper-slide, div.poster-card, div.card-series, a.card, div.col-grid-item").mapNotNull { element ->
                 val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
                 val imgEl = element.selectFirst("img")
                 
@@ -63,7 +65,7 @@ class StarTv : MainAPI() {
                 .ignoreContentType(true)
                 .get()
 
-            val programlarList = programlarDoc.select("div.poster-card, div.card-series, a.card, div.col-grid-item").mapNotNull { element ->
+            val programlarList = programlarDoc.select("div.swiper-slide, div.poster-card, div.card-series, a.card, div.col-grid-item").mapNotNull { element ->
                 val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
                 val imgEl = element.selectFirst("img")
 
@@ -92,11 +94,11 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        return doc.select("div.poster-card, div.card-series, div.search-result-item").mapNotNull { element ->
+        return doc.select("div.swiper-slide, div.poster-card, div.card-series, div.search-result-item").mapNotNull { element ->
             val linkEl = element.selectFirst("a")
             val imgEl = element.selectFirst("img")
 
-            val title = imgEl?.attr("alt")?.ifEmpty { element.select(".title").text() } ?: return@mapNotNull null
+            val title = imgEl?.attr("alt")?.ifEmpty { element.select(".title, h4").text() } ?: return@mapNotNull null
             val href = linkEl?.attr("href") ?: return@mapNotNull null
             val poster = imgEl.attr("src")
 
@@ -106,7 +108,7 @@ class StarTv : MainAPI() {
         }.distinctBy { it.url }
     }
 
-    // 3. DETAY VE BÖLÜM YÜKLEME (Çok Yakında Sorununu Çözen Kısım)
+    // 3. DETAY VE BÖLÜM YÜKLEME
     override suspend fun load(url: String): LoadResponse {
         if (url.contains("canli-yayin") || url.contains("daioncdn") || url.contains(".m3u8")) {
             return newLiveStreamLoadResponse(
@@ -123,42 +125,82 @@ class StarTv : MainAPI() {
             .ignoreContentType(true)
             .get()
 
-        val title = doc.select("h1.detail-title, h1.title, h1").first()?.text()?.trim() ?: "Star TV Dizisi"
-        val description = doc.select("div.detail-description, div.description, p.summary").text()
-        val poster = doc.select("div.detail-banner img, img.poster, meta[property=og:image]").attr("src").ifEmpty {
+        var title = doc.select("h1.detail-title, h1.title, h1").first()?.text()?.trim() ?: "Star TV Dizisi"
+        var description = doc.select("div.news-body-content, div.detail-description, div.description, p.summary").text()
+        var poster = doc.select("div.detail-banner img, img.poster, meta[property=og:image]").attr("src").ifEmpty {
             doc.select("meta[property=og:image]").attr("content")
         }
 
         val episodes = mutableListOf<Episode>()
 
-        // Alternatif 1: Bölümler alt sayfasından dene
-        val episodesUrl = if (url.endsWith("/bolumler")) url else "$url/bolumler"
-        runCatching {
-            val episodesDoc = Jsoup.connect(episodesUrl)
-                .userAgent(userAgent)
-                .ignoreContentType(true)
-                .get()
+        // 1. JSON-LD Taraması (Metin dosyasındaki schema.org verilerini yakalar)
+        val jsonLdElements = doc.select("script[type=application/ld+json]")
+        for (element in jsonLdElements) {
+            runCatching {
+                val jsonText = element.html().trim()
+                if (jsonText.startsWith("{")) {
+                    val jsonObj = JSONObject(jsonText)
+                    if (jsonObj.has("@graph")) {
+                        val graphArray = jsonObj.getJSONArray("@graph")
+                        for (i in 0 until graphArray.length()) {
+                            val item = graphArray.getJSONObject(i)
+                            
+                            // VideoObject (Bölüm Videosu) Yakalama
+                            if (item.optString("@type") == "VideoObject") {
+                                val epName = item.optString("name")
+                                val epUrl = item.optString("contentUrl").ifEmpty { item.optString("embedUrl") }
+                                val epDesc = item.optString("description")
+                                val thumbArray = item.optJSONArray("thumbnailUrl")
+                                val epPoster = if (thumbArray != null && thumbArray.length() > 0) thumbArray.getString(0) else poster
 
-            episodesDoc.select("div.episode-item, div.poster-card, div.card-series, a.card").forEachIndexed { index, element ->
+                                if (epUrl.isNotBlank()) {
+                                    val epNum = Regex("""(\d+)\.\s*Bölüm""").find(epName)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+                                    episodes.add(
+                                        newEpisode(fixUrl(epUrl)) {
+                                            this.name = epName
+                                            this.description = epDesc
+                                            this.season = 1
+                                            this.episode = epNum
+                                            this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. HTML Swiper Slide veya Kart Seçicileri Üzerinden Bölümleri Toplama
+        val episodesUrl = if (url.contains("/bolumler")) url else if (url.endsWith("/")) "${url}bolumler" else "$url/bolumler"
+        runCatching {
+            val episodesDoc = if (url.contains("/bolumler")) doc else Jsoup.connect(episodesUrl).userAgent(userAgent).ignoreContentType(true).get()
+
+            episodesDoc.select("div.swiper-slide, div.episode-item, div.poster-card, div.card-series, div.video-card").forEachIndexed { index, element ->
                 val linkEl = if (element.tagName() == "a") element else element.selectFirst("a")
                 val imgEl = element.selectFirst("img")
                 val epHref = linkEl?.attr("href") ?: return@forEachIndexed
 
-                val epTitle = imgEl?.attr("alt")?.ifEmpty { element.select(".title").text() }?.ifEmpty { "${index + 1}. Bölüm" } ?: "${index + 1}. Bölüm"
+                // Sadece bölüm linklerini al (fragmanları filtrele)
+                if (!epHref.contains("/bolumler/") || epHref.contains("fragman")) return@forEachIndexed
+
+                val epTitle = imgEl?.attr("alt")?.ifEmpty { element.select("h4, .video-card-title, .title").text() }?.ifEmpty { "${index + 1}. Bölüm" } ?: "${index + 1}. Bölüm"
                 val epPoster = imgEl?.attr("src")?.ifEmpty { imgEl.attr("data-src") }
+                val epNum = Regex("""(\d+)\.\s*Bölüm""").find(epTitle)?.groupValues?.get(1)?.toIntOrNull() ?: (index + 1)
 
                 episodes.add(
                     newEpisode(fixUrl(epHref)) {
                         this.name = epTitle.trim()
                         this.season = 1
-                        this.episode = index + 1
+                        this.episode = epNum
                         this.posterUrl = fixUrlNull(epPoster) ?: defaultPoster
                     }
                 )
             }
         }
 
-        // Alternatif 2: Bölümler listesi boşsa doğrudan tıklanan sayfanın kendisini tek bölüm/video olarak ekle
+        // 3. Bölüm hâlâ bulunamadıysa bulunulan ana sayfayı tek bölüm ekle
         if (episodes.isEmpty()) {
             episodes.add(
                 newEpisode(url) {
@@ -218,7 +260,7 @@ class StarTv : MainAPI() {
                 streamUrl = Regex("""(https?://[^\s"'<>]+?(?:\.m3u8|\.smil/?[^\s"'<>]*))""").find(iframeDoc.html())?.value ?: ""
             }
 
-            // 2. Doğrudan HTML içinden MNCDN / M3U8 yakalama
+            // 2. Doğrudan HTML içinden MNCDN / M3U8 veya DYG Player JS kodlarını yakalama
             if (streamUrl.isBlank()) {
                 streamUrl = Regex("""(https?://[^\s"'<>]+?(?:mncdn|daioncdn)[^\s"'<>]+)""").find(doc.html())?.value ?: ""
             }
@@ -227,7 +269,7 @@ class StarTv : MainAPI() {
                 streamUrl = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)"*""").find(doc.html())?.value ?: ""
             }
 
-            // 3. Uzantı düzenlemeleri
+            // 3. Uzantı düzenlemeleri (.ts / .smil -> .m3u8 dönüşümü)
             if (streamUrl.contains(".ts")) {
                 streamUrl = streamUrl.replace(Regex("""/media_b\d+_\d+\.ts"""), "/playlist.m3u8")
             } else if (streamUrl.contains(".smil") && !streamUrl.contains(".m3u8")) {
