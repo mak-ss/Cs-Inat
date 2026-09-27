@@ -5,14 +5,21 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import org.json.JSONObject
 
 /**
  * videoplays.cfd için özel extractor.
  *
- * Bu sağlayıcı "Playback domain is not allowed" hatası veriyor çünkü
- * sadece belirli alan adlarından (dizipal1432.com) gelen isteklere izin veriyor.
- * Bu extractor, doğru Referer ve Origin başlıklarını göndererek bu kontrolü aşar
- * ve embed sayfası içindeki m3u8/mp4 linkini çıkarır.
+ * Bu sağlayıcı, video oynatmak için bir token mekanizması kullanıyor.
+ * Token, şu API çağrısıyla alınıyor:
+ *   GET https://videoplays.cfd/api/videos/{videoId}/token?embed_referrer={referrer}
+ *
+ * Sunucu, embed_referrer'in izin verilen bir domain (dizipal1432.com) olduğunu
+ * doğruluyor. Doğru başlıklar (Referer, Origin) gönderilmezse
+ * "Playback domain is not allowed" hatası dönüyor.
+ *
+ * Token alındıktan sonra playlist URL'si şu formatta oluyor:
+ *   https://videoplays.cfd/api/videos/{videoId}/master.m3u8?token={token}
  */
 class VideoplaysCfd : ExtractorApi() {
     override var name = "VideoplaysCfd"
@@ -25,107 +32,98 @@ class VideoplaysCfd : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val fixedReferer = referer ?: "https://dizipal1432.com/"
+        // Referer'ı Dizipal ana sitesi olarak ayarla
+        val fixedReferer = referer
+            ?.takeIf { it.isNotBlank() && it.contains("dizipal") }
+            ?: "https://dizipal1432.com/"
         val origin = "https://dizipal1432.com"
 
-        val response = try {
+        // 1. Video ID'sini embed URL'den çıkar
+        val videoId = extractVideoId(url)
+        if (videoId.isNullOrBlank()) {
+            Log.d("VPCFD", "Video ID bulunamadı: $url")
+            return
+        }
+        Log.d("VPCFD", "videoId » $videoId")
+
+        // 2. Token API'sini çağır
+        val tokenUrl = "$mainUrl/api/videos/$videoId/token?embed_referrer=${fixedReferer}"
+        Log.d("VPCFD", "tokenUrl » $tokenUrl")
+
+        val tokenResponse = try {
             app.get(
-                url,
+                tokenUrl,
                 referer = fixedReferer,
                 headers = mapOf(
                     "Origin" to origin,
                     "User-Agent" to USER_AGENT,
-                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept" to "application/json, text/plain, */*",
                     "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8"
                 )
             ).text
         } catch (e: Exception) {
-            Log.d("VPCFD", "İstek hatası » ${e.message}")
+            Log.d("VPCFD", "Token isteği hatası » ${e.message}")
             return
         }
 
-        Log.d("VPCFD", "response length » ${response.length}")
+        Log.d("VPCFD", "tokenResponse » $tokenResponse")
 
-        // 1. Doğrudan m3u8/mp4 araması
-        val directUrl = Regex("""(https?://[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*)""")
-            .find(response)?.groupValues?.get(1)
+        // 3. Yanıtı parse et
+        var playlistUrl: String? = null
+        var token: String? = null
 
-        if (!directUrl.isNullOrBlank()) {
-            Log.d("VPCFD", "Doğrudan video URL bulundu » $directUrl")
-            sendLink(directUrl, url, callback)
+        try {
+            val json = JSONObject(tokenResponse)
+            playlistUrl = json.optString("playlist_url", "").takeIf { it.isNotBlank() }
+            token = json.optString("token", "").takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            Log.d("VPCFD", "JSON parse hatası » ${e.message}")
+        }
+
+        // 4. Playlist URL'sini oluştur
+        val finalUrl = playlistUrl
+            ?: token?.let { "$mainUrl/api/videos/$videoId/master.m3u8?token=$it" }
+
+        if (finalUrl.isNullOrBlank()) {
+            Log.d("VPCFD", "Playlist URL oluşturulamadı")
             return
         }
 
-        // 2. JavaScript içinde gizlenmiş kaynak araması (jwplayer/plyr setup)
-        val jsPatterns = listOf(
-            Regex("""file\s*:\s*["']([^"']+)["']"""),
-            Regex("""source\s*:\s*["']([^"']+)["']"""),
-            Regex("""["']src["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""(https?:\\?/\\?/[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*)""")
-        )
+        Log.d("VPCFD", "finalUrl » $finalUrl")
 
-        for (pattern in jsPatterns) {
-            val match = pattern.find(response)?.groupValues?.get(1)
-            if (!match.isNullOrBlank()) {
-                val cleaned = match
-                    .replace("\\/", "/")
-                    .replace("\\u0026", "&")
-                    .replace("\\", "")
-
-                if (cleaned.contains(".m3u8") || cleaned.contains(".mp4")) {
-                    Log.d("VPCFD", "JS içinden video URL bulundu » $cleaned")
-                    sendLink(cleaned, url, callback)
-                    return
-                }
-            }
-        }
-
-        // 3. P.A.C.K.E.R. ile obfuscate edilmiş JS'i unpack et
-        val packedRegex = Regex("""eval\(function\(p,a,c,k,e,[rd]\)[\s\S]*?</script>""")
-        val packedMatch = packedRegex.find(response)
-        if (packedMatch != null) {
-            Log.d("VPCFD", "Packed JS bulundu, unpack ediliyor...")
-            val unpacked = JsUnpacker(packedMatch.value).unpack()
-            if (unpacked != null) {
-                val unpackedUrl = Regex("""(https?://[^\s"'\\]+\.(?:m3u8|mp4)[^\s"'\\]*)""")
-                    .find(unpacked)?.groupValues?.get(1)
-                    ?: Regex("""file\s*:\s*["']([^"']+)["']""")
-                        .find(unpacked)?.groupValues?.get(1)
-
-                if (!unpackedUrl.isNullOrBlank()) {
-                    val cleaned = unpackedUrl
-                        .replace("\\/", "/")
-                        .replace("\\u0026", "&")
-                        .replace("\\", "")
-
-                    Log.d("VPCFD", "Unpack sonrası video URL bulundu » $cleaned")
-                    sendLink(cleaned, url, callback)
-                    return
-                }
-            }
-        }
-
-        // 4. Token hatası varsa log'a yaz
-        if (response.contains("Playback domain is not allowed")) {
-            Log.d("VPCFD", "Token hatası: Playback domain is not allowed")
-        }
-    }
-
-    private suspend fun sendLink(
-        videoUrl: String,
-        embedUrl: String,
-        callback: (ExtractorLink) -> Unit
-    ) {
         callback.invoke(
             newExtractorLink(
                 source = this.name,
                 name = this.name,
-                url = videoUrl,
-                type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                url = finalUrl,
+                type = ExtractorLinkType.M3U8
             ) {
-                this.referer = embedUrl
+                this.referer = fixedReferer
                 this.quality = Qualities.Unknown.value
+                this.headers = mapOf(
+                    "Origin" to origin,
+                    "Referer" to fixedReferer,
+                    "User-Agent" to USER_AGENT
+                )
             }
         )
+    }
+
+    /**
+     * Embed URL'den video ID'sini çıkarır.
+     * Örnek: https://videoplays.cfd/player.html?video=2440 → "2440"
+     */
+    private fun extractVideoId(url: String): String? {
+        // ?video=2440 veya /player.html?video=2440 formatı
+        val patterns = listOf(
+            Regex("""[?&]video=(\d+)"""),
+            Regex("""/videos?/(\d+)"""),
+            Regex("""/embed/(\d+)""")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(url)?.groupValues?.get(1)
+            if (!match.isNullOrBlank()) return match
+        }
+        return null
     }
 }
