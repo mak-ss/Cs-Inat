@@ -23,7 +23,6 @@ class DiziPal : MainAPI() {
         "${mainUrl}/diziler?sort=popular"        to "Popüler Diziler",
     )
 
-    // HTML'deki kart yapısını çözecek yardımcı fonksiyon
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = fixUrlNull(this.attr("href")) ?: return null
         val title = this.selectFirst("h3")?.text()?.trim()
@@ -42,9 +41,6 @@ class DiziPal : MainAPI() {
         val url = if (page > 1) "${request.data}${if (request.data.contains("?")) "&" else "?"}page=${page}" else request.data
         val document = app.get(url).document
 
-        // HTML'deki ana kart yapısına göre seçiciler güncellendi.
-        // Öne Çıkanlar bölümü için `div.flex-shrink-0` > `a.group` yapısı kullanılıyor.
-        // Diğer bölümler için `div.grid` > `a.group` yapısı kullanılıyor.
         val home = document.select("div.grid > a.group, div.flex-shrink-0 > a.group").mapNotNull { el ->
             el.toSearchResponse()
         }.distinctBy { it.url }
@@ -53,7 +49,6 @@ class DiziPal : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Arama URL'si ve seçicileri HTML yapısına göre güncellendi.
         val searchUrl = "${mainUrl}/arama?q=${query}"
         val document = app.get(searchUrl).document
 
@@ -71,23 +66,34 @@ class DiziPal : MainAPI() {
         val tags = document.select("a[href*='/tur/']").map { it.text().trim() }
 
         return if (url.contains("/diziler/")) {
-            // Dizi bölümlerini HTML yapısına göre ayıklama
-            val episodes = document.select("a[href*='/bolumler/']").mapNotNull { el ->
+            // Her bölüm için bir çift (href, name, season, episode) verisi topluyoruz
+            data class EpData(val href: String, val name: String?, val season: Int, val episode: Int?)
+
+            val epDataList = document.select("a[href*='/bolumler/']").mapNotNull { el ->
                 val epHref = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-                val epText = el.selectFirst("p.text-\\[12px\\]")?.text()?.trim() ?: el.text().trim()
+
+                // Bölüm başlığını bulmak için birden fazla seçici deniyoruz
+                val epText = el.selectFirst("p.text-\\[12px\\]")?.text()?.trim()
+                    ?: el.selectFirst("p.font-semibold")?.text()?.trim()
+                    ?: el.text().trim()
 
                 val season = Regex("""(\d+)\.\s*Sezon""").find(epText)?.groupValues?.get(1)?.toIntOrNull() ?: 1
                 val episode = Regex("""(\d+)\.\s*Bölüm""").find(epText)?.groupValues?.get(1)?.toIntOrNull()
-                
-                // Bölüm adı genellikle "1. Sezon 1. Bölüm" formatındadır, ayrı bir isim yoksa bu metni kullanırız.
-                val epName = el.selectFirst("p.text-\\[11px\\].text-\\[\\#aaa\\]")?.text()?.trim()
 
-                newEpisode(epHref) {
-                    this.name = epName
-                    this.season = season
-                    this.episode = episode
+                // Bölüm adını almak için deneme
+                val epName = el.selectFirst("p.text-\\[11px\\].text-\\[\\#aaa\\]")?.text()?.trim()
+                    ?: el.selectFirst("p.text-\\[\\#aaa\\]")?.text()?.trim()
+
+                EpData(epHref, epName, season, episode)
+            }.distinctBy { it.href }
+
+            val episodes = epDataList.map { data ->
+                newEpisode(data.href) {
+                    this.name = data.name
+                    this.season = data.season
+                    this.episode = data.episode
                 }
-            }.distinctBy { it.url }
+            }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
@@ -112,14 +118,12 @@ class DiziPal : MainAPI() {
         Log.d("DPO", "data » $data")
         val document = app.get(data).document
 
-        // Film/Dizi sayfasında iframe veya doğrudan video kaynağı arayalım.
         val iframeUrl = document.selectFirst("iframe[src]")?.attr("src")
             ?: document.selectFirst("meta[property='og:video']")?.attr("content")
             ?: document.selectFirst("meta[property='og:video:secure_url']")?.attr("content")
 
         if (iframeUrl.isNullOrBlank()) {
             Log.d("DPO", "iframe veya og:video bulunamadı.")
-            // Belki de doğrudan bir video etiketi vardır?
             val videoSrc = document.selectFirst("video source[src]")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
                  Log.d("DPO", "Doğrudan video kaynağı bulundu: $videoSrc")
@@ -142,7 +146,6 @@ class DiziPal : MainAPI() {
         val embedUrl = fixUrl(iframeUrl)
         Log.d("DPO", "embedUrl » $embedUrl")
 
-        // 1. Yöntem: Embed sayfasını çekip içindeki m3u8/mp4 linklerini regex ile bulma
         try {
             val embedResp = app.get(
                 embedUrl,
@@ -173,7 +176,6 @@ class DiziPal : MainAPI() {
             Log.d("DPO", "embed fetch hatası » ${e.message}")
         }
 
-        // 2. Yöntem: Eğer regex işe yaramazsa, harici bir extractor kullanmayı dene
         try {
             if (loadExtractor(embedUrl, "${mainUrl}/", subtitleCallback, callback)) {
                 Log.d("DPO", "loadExtractor başarılı.")
