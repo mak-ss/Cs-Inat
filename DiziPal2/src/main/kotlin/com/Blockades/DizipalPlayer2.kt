@@ -24,58 +24,61 @@ class DizipalPlayer2 : ExtractorApi() {
     ) {
         val fixedReferer = referer ?: "$mainUrl/"
         Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
-        Log.d("DPPLAYER2", "url » $url")
 
-        // 1) Bölüm sayfasını çek (session cookie'leri topla)
+        // 1. Bölüm sayfasını çek
         val document = try {
             app.get(url, referer = fixedReferer).document
         } catch (e: Exception) {
-            Log.e("DPPLAYER2", "Sayfa hatası » ${e.message}", e)
+            Log.e("DPPLAYER2", "Sayfa hatası » ${e.message}")
             return
         }
 
-        // 2) cfg'yi al
-        val videoContainer = document.selectFirst("#videoContainer")
-        if (videoContainer == null) {
-            Log.e("DPPLAYER2", "#videoContainer YOK")
-            return
-        }
+        // 2. cfg al
+        val cfg = document.selectFirst("#videoContainer")
+            ?.attr("data-cfg")
+            ?.takeIf { it.isNotBlank() }
 
-        val cfg = videoContainer.attr("data-cfg").takeIf { it.isNotBlank() }
         if (cfg.isNullOrBlank()) {
             Log.e("DPPLAYER2", "data-cfg YOK")
             return
         }
         Log.d("DPPLAYER2", "cfg » $cfg")
 
-        // 3) CSRF token (meta tag'den)
-        val csrfToken = document.selectFirst("meta[name='csrf-token']")?.attr("content") ?: ""
-        Log.d("DPPLAYER2", "csrf » $csrfToken")
+        // 3. TOKEN AL — /ajax-token endpoint
+        val token = getAjaxToken(url)
+        Log.d("DPPLAYER2", "token » $token")
 
-        // 4) POST /ajax-player-config
-        // ÖNEMLİ: referer=bölüm URL'si olmalı, cookie'ler otomatik gönderiliyor
+        if (token.isBlank()) {
+            Log.e("DPPLAYER2", "Token ALINAMADI!")
+            return
+        }
+
+        // 4. POST /ajax-player-config — token EKLENDİ
         val response = try {
             app.post(
                 "$mainUrl/ajax-player-config",
-                data = mapOf("cfg" to cfg),
-                referer = url,     // ← bölüm URL'si referer
+                data = mapOf(
+                    "cfg" to cfg,
+                    "token" to token,           // ← KRİTİK! Token eklendi
+                    "csrf_token" to token       // ← alternatif isim de deneyelim
+                ),
+                referer = url,
                 headers = mapOf(
                     "Origin" to mainUrl,
                     "X-Requested-With" to "XMLHttpRequest",
                     "User-Agent" to USER_AGENT,
                     "Accept" to "*/*",
-                    "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8",
                     "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                 )
             ).text
         } catch (e: Exception) {
-            Log.e("DPPLAYER2", "POST hatası » ${e.message}", e)
+            Log.e("DPPLAYER2", "POST hatası » ${e.message}")
             return
         }
 
-        Log.d("DPPLAYER2", "RAW RESPONSE » $response")
+        Log.d("DPPLAYER2", "RAW RESPONSE » ${response.take(600)}")
 
-        // 5) Parse
+        // 5. Decrypt
         val result = parseAndDecrypt(response)
         if (result == null) {
             Log.e("DPPLAYER2", "Decrypt BAŞARISIZ")
@@ -86,7 +89,7 @@ class DizipalPlayer2 : ExtractorApi() {
         Log.d("DPPLAYER2", ">>> videoUrl » $videoUrl")
         Log.d("DPPLAYER2", ">>> videoType » $videoType")
 
-        // 6) iframe
+        // 6. iframe ise loadExtractor
         if (videoType == "iframe") {
             val iframeUrl = Regex("""src=["']([^"']+)["']""")
                 .find(videoUrl)?.groupValues?.get(1)
@@ -101,7 +104,7 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
-        // 7) Direkt link
+        // 7. Direkt link
         val isM3u8 = videoType == "m3u8" || videoUrl.contains(".m3u8", true)
         callback.invoke(
             newExtractorLink(
@@ -119,33 +122,64 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             }
         )
-        Log.d("DPPLAYER2", "===== BİTİŞ =====")
+    }
+
+    /**
+     * main.js'teki _gt() fonksiyonunun birebir kopyası.
+     * 1. _ct cookie'sinden token al (varsa)
+     * 2. Yoksa /ajax-token endpoint'inden al
+     */
+    private suspend fun getAjaxToken(referer: String): String {
+        // 1. Yol: /ajax-token endpoint
+        try {
+            val resp = app.get(
+                "$mainUrl/ajax-token",
+                referer = referer,
+                headers = mapOf(
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "application/json, text/plain, */*"
+                )
+            ).text
+
+            Log.d("DPPLAYER2", "ajax-token yanıtı » $resp")
+
+            val json = JSONObject(resp)
+            val t = json.optString("t", "").takeIf { it.isNotBlank() }
+            if (t != null) {
+                Log.d("DPPLAYER2", "Token endpoint'ten alındı")
+                return t
+            }
+
+            // Bazen "token" ismiyle dönüyor olabilir
+            val t2 = json.optString("token", "").takeIf { it.isNotBlank() }
+            if (t2 != null) return t2
+        } catch (e: Exception) {
+            Log.e("DPPLAYER2", "ajax-token hatası » ${e.message}")
+        }
+
+        return ""
     }
 
     private fun parseAndDecrypt(response: String): Pair<String, String>? {
         try {
             val json = JSONObject(response)
 
-            // Önce "message" varsa logla
             if (json.has("message")) {
                 Log.e("DPPLAYER2", "SUNUCU MESAJI » ${json.optString("message")}")
             }
 
-            // enc alanını bul
             var enc = json.optJSONObject("enc")
             if (enc == null) {
                 enc = json.optJSONObject("config")?.optJSONObject("enc")
             }
 
-            // Direkt URL fallback
             if (enc == null) {
                 val config = json.optJSONObject("config")
                 val directV = config?.optString("v", "")?.takeIf { it.isNotBlank() }
-                if (directV != null) return directV to (config.optString("t", "m3u8"))
-
+                if (directV != null) return directV to config.optString("t", "m3u8")
                 val directUrl = json.optString("url", "").takeIf { it.isNotBlank() }
                 if (directUrl != null) return directUrl to detectType(directUrl)
-
                 Log.e("DPPLAYER2", "enc YOK. keys=${json.keys().asSequence().toList()}")
                 return null
             }
@@ -156,10 +190,7 @@ class DizipalPlayer2 : ExtractorApi() {
             val ctB64 = enc.optString("c", "")
 
             if (k1B64.isEmpty() || k2B64.isEmpty() ||
-                ivB64.isEmpty() || ctB64.isEmpty()) {
-                Log.e("DPPLAYER2", "enc alanlarından biri BOŞ")
-                return null
-            }
+                ivB64.isEmpty() || ctB64.isEmpty()) return null
 
             val k1 = decodeBase64(k1B64) ?: return null
             val k2 = decodeBase64(k2B64) ?: return null
@@ -172,20 +203,13 @@ class DizipalPlayer2 : ExtractorApi() {
                 key[i] = (k1[i].toInt() xor k2[i].toInt()).toByte()
             }
 
-            val decrypted = aesCbcDecrypt(key, iv, ct)
-            if (decrypted.isNullOrBlank()) {
-                Log.e("DPPLAYER2", "AES decrypt BOŞ")
-                return null
-            }
-
+            val decrypted = aesCbcDecrypt(key, iv, ct) ?: return null
             Log.d("DPPLAYER2", "DECRYPTED » $decrypted")
 
-            // JSON içerik
             if (decrypted.trim().startsWith("{")) {
                 try {
                     val inner = JSONObject(decrypted.trim())
-                    val u = inner.optString("url", "")
-                        .takeIf { it.isNotBlank() }
+                    val u = inner.optString("url", "").takeIf { it.isNotBlank() }
                         ?: inner.optString("v", "").takeIf { it.isNotBlank() }
                         ?: inner.optString("file", "").takeIf { it.isNotBlank() }
                     if (u != null) return u to detectType(u)
@@ -203,7 +227,7 @@ class DizipalPlayer2 : ExtractorApi() {
 
             return null
         } catch (e: Exception) {
-            Log.e("DPPLAYER2", "parseAndDecrypt HATA » ${e.message}", e)
+            Log.e("DPPLAYER2", "parseAndDecrypt HATA » ${e.message}")
             return null
         }
     }
