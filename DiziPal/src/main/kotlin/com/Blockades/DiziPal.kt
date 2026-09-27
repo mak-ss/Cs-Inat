@@ -45,7 +45,8 @@ class DiziPal : MainAPI() {
         }
 
         val doc = app.get(targetUrl).document
-        val items = doc.select("a[href*='/dizi/'], a[href*='/film/']").mapNotNull { el ->
+        // HTML yapısındaki a[href*='/diziler/'] ve a[href*='/filmler/'] linklerini çekiyoruz
+        val items = doc.select("a[href*='/diziler/'], a[href*='/filmler/'], a[href*='/dizi/'], a[href*='/film/']").mapNotNull { el ->
             parseSearchElement(el)
         }.distinctBy { it.url }
 
@@ -54,22 +55,27 @@ class DiziPal : MainAPI() {
 
     fun parseSearchElement(element: Element): SearchResponse? {
         val href = fixUrlNull(element.attr("href")) ?: return null
-        if (!href.contains("/dizi/") && !href.contains("/film/")) return null
+        
+        val isSeries = href.contains("/diziler/") || href.contains("/dizi/")
+        val isMovie = href.contains("/filmler/") || href.contains("/film/")
+        
+        if (!isSeries && !isMovie) return null
         if (href.endsWith("/diziler") || href.endsWith("/filmler")) return null
 
-        val title = element.attr("title").ifBlank {
-            element.selectFirst(".title, h2, h3, h4, span.title, div.name")?.text()?.trim()
-                ?: element.text().trim()
-        }
+        // HTML yapısındaki h3 veya img alt niteliğinden başlığı alıyoruz
+        val title = element.selectFirst("h3")?.text()?.trim()
+            ?: element.selectFirst("img")?.attr("alt")?.trim()
+            ?: element.attr("title").trim()
+
         if (title.isBlank() || title.equals("Diziler", ignoreCase = true) || title.equals("Filmler", ignoreCase = true)) return null
 
+        // Görsel src alma
         val imgEl = element.selectFirst("img")
         val poster = fixUrlNull(
-            imgEl?.attr("data-src")?.ifBlank { null }
-                ?: imgEl?.attr("src")?.ifBlank { null }
+            imgEl?.attr("src")?.ifBlank { null }
+                ?: imgEl?.attr("data-src")?.ifBlank { null }
         )
 
-        val isSeries = href.contains("/dizi/")
         val tvType = if (isSeries) TvType.TvSeries else TvType.Movie
 
         return if (isSeries) {
@@ -99,7 +105,7 @@ class DiziPal : MainAPI() {
             val title = res.title ?: return@mapNotNull null
             val slug = res.slug ?: return@mapNotNull null
             val isSeries = res.type == "series"
-            val href = if (isSeries) "${mainUrl}/dizi/${slug}" else "${mainUrl}/film/${slug}"
+            val href = if (isSeries) "${mainUrl}/diziler/${slug}" else "${mainUrl}/filmler/${slug}"
             val poster = fixUrlNull(res.poster)
             val tvType = if (isSeries) TvType.TvSeries else TvType.Movie
 
@@ -132,7 +138,7 @@ class DiziPal : MainAPI() {
 
         val poster = fixUrlNull(
             doc.selectFirst("meta[property='og:image']")?.attr("content")
-                ?: doc.selectFirst("div.cover img, div.poster img")?.attr("src")
+                ?: doc.selectFirst("div.cover img, div.poster img, img[src*='/storage/posters/']")?.attr("src")
         )
 
         val description = doc.selectFirst("div.summary, div.overview, p.description, meta[property='og:description']")?.let {
@@ -144,11 +150,12 @@ class DiziPal : MainAPI() {
 
         val tags = doc.select("a[href*='/tur/'], a[href*='/kategori/']").map { it.text().trim() }.filter { it.isNotBlank() }
 
-        val isSeries = url.contains("/dizi/")
+        val isSeries = url.contains("/diziler/") || url.contains("/dizi/")
 
         if (isSeries) {
-            val episodes = doc.select("a[href*='/bolum/']").mapNotNull { epEl ->
+            val episodes = doc.select("a[href*='/bolum/'], a[href*='/diziler/']").mapNotNull { epEl ->
                 val epHref = fixUrlNull(epEl.attr("href")) ?: return@mapNotNull null
+                if (!epHref.contains("/bolum/")) return@mapNotNull null
                 val epText = epEl.text().trim()
 
                 val seasonNum = Regex("(\\d+)\\.\\s*Sezon").find(epText)?.groupValues?.get(1)?.toIntOrNull()
@@ -248,7 +255,6 @@ class DiziPal : MainAPI() {
 
             val fullM3u = if (m3uPath.startsWith("http")) m3uPath else "https://videoplay.vip${m3uPath}"
 
-            // parse subtitles if available
             val tracksJson = Regex("const\\s+tracksData\\s*=\\s*(\\{.*?\\});").find(resp)?.groupValues?.get(1)
             if (tracksJson != null) {
                 val tracks = AppUtils.tryParseJson<VideoPlayTracks>(tracksJson)
@@ -283,6 +289,14 @@ class DiziPal : MainAPI() {
 
     data class DiziPalSearchRoot(
         @JsonProperty("results") val results: List<DiziPalSearchResult>? = null
+    )
+
+    data class DiziPalSearchItem(
+        @JsonProperty("id") val id: Int? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("type") val type: String? = null,
+        @JsonProperty("slug") val slug: String? = null,
+        @JsonProperty("poster") val poster: String? = null
     )
 
     data class DiziPalSearchResult(
