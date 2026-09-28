@@ -110,20 +110,28 @@ class BirAsyaDizi : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mainHeaders).document
 
-        val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim() ?: return null
+        val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim()
+            ?: document.selectFirst("title")?.text()?.substringBefore("|")?.trim()
+            ?: return null
+
         val img = document.selectFirst("div.dizi-bilgi .afis img")
         val poster = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
         val description = document.selectFirst("div.dizi-bilgi .aciklama")?.text()?.trim()
         val year = document.selectFirst("div.dizi-bilgi .detay li:contains(Yapım) a")?.text()?.trim()?.toIntOrNull()
         val tags = document.select("div.dizi-bilgi .detay li:contains(Tür) a").map { it.text() }
         val rating = document.selectFirst("div.dizi-bilgi #puandegistir")?.text()?.trim()
-        val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
+        val recommendations = document.select("div.sag-vliste li, div.frag-k").mapNotNull { it.toRecommendationResult() }
 
-        val episodes = document.select("li.szn").mapNotNull { bolum ->
-            val epName = bolum.selectFirst("div.baslik a")?.text()?.trim()
-            val epHref = fixUrlNull(bolum.selectFirst("div.resim a")?.attr("href")) ?: return@mapNotNull null
-            // Bölüm numarasını başlıktan ayıklamak daha güvenlidir.
-            val epEpisode = epName?.let { Regex("(\\d+)[.-]\\s*Bölüm").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+        // Bölüm seçicileri (HTML yapısına uygun alternatifler eklendi)
+        val episodeElements = document.select("li.szn, div.video-k, div.bolum-listesi li")
+
+        val episodes = episodeElements.mapNotNull { bolum ->
+            val epName = bolum.selectFirst("div.baslik a, a.baslik, div.baslik")?.text()?.trim()
+            val epHref = fixUrlNull(bolum.selectFirst("div.resim a, a")?.attr("href")) ?: return@mapNotNull null
+            
+            // Bölüm numarasını başlıktan veya URL'den çıkarma
+            val epEpisode = epName?.let { Regex("(\\d+)[.-]\\s*Bölüm", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)?.toIntOrNull() }
+                ?: Regex("-(\\d+)-bolum").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
 
             newEpisode(epHref) {
                 this.episode = epEpisode
@@ -153,9 +161,11 @@ class BirAsyaDizi : MainAPI() {
     }
 
     private fun Element.toRecommendationResult(): SearchResponse? {
-        val title     = this.selectFirst("span.baslik")?.text() ?: return null
+        val title     = this.selectFirst("span.baslik, a")?.attr("title")?.ifEmpty { null } 
+            ?: this.selectFirst("span.baslik")?.text() 
+            ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val img       = this.selectFirst("a img")
+        val img       = this.selectFirst("a img, img")
         val posterUrl = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
 
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
@@ -170,46 +180,43 @@ class BirAsyaDizi : MainAPI() {
         Log.d("BirAsyaDizi_DEBUG", "loadLinks çağrıldı. data: $data")
         val document = app.get(data, headers = mainHeaders).document
 
-        // Birincil seçici
-        var iframe = document.selectFirst("div#vast iframe#Vidpplayera")
-        Log.d("BirAsyaDizi_DEBUG", "Birincil seçici ('div#vast iframe#Vidpplayera') sonucu: $iframe")
-
-        // Yedek seçici
-        if (iframe == null) {
-            iframe = document.selectFirst("iframe")
-            Log.d("BirAsyaDizi_DEBUG", "Yedek seçici ('iframe') sonucu: $iframe")
-        }
-
-        if (iframe == null) {
+        // Iframe veya video kaynak seçicileri
+        val iframes = document.select("div#vast iframe#Vidpplayera, iframe[src], iframe[vdo-src], iframe[data-src]")
+        
+        if (iframes.isEmpty()) {
             Log.e("BirAsyaDizi_DEBUG", "HATA: Sayfada hiç iframe bulunamadı!")
             return false
         }
 
-        Log.d("BirAsyaDizi_DEBUG", "Kullanılacak iframe HTML: ${iframe.outerHtml()}")
+        var foundAnyLink = false
 
-        val iframeVid = fixUrlNull(
-            iframe.attr("vdo-src").ifEmpty {
-                iframe.attr("src").ifEmpty {
-                    iframe.attr("data-src")
+        for (iframe in iframes) {
+            Log.d("BirAsyaDizi_DEBUG", "İncelenen iframe HTML: ${iframe.outerHtml()}")
+
+            val iframeVid = fixUrlNull(
+                iframe.attr("vdo-src").ifEmpty {
+                    iframe.attr("src").ifEmpty {
+                        iframe.attr("data-src")
+                    }
                 }
+            )
+
+            if (iframeVid.isNullOrBlank()) continue
+
+            Log.d("BirAsyaDizi_DEBUG", "Çıkarılan video URL'si: $iframeVid")
+
+            // Odnoklassniki URL'si kontrolü
+            if (iframeVid.contains("odnoklassniki.ru") || iframeVid.contains("ok.ru")) {
+                Log.d("BirAsyaDizi_DEBUG", "Odnoklassniki URL'si tespit edildi, extractor çağrılıyor.")
+                OdnoklassnikiExtractor().getUrl(iframeVid, "$mainUrl/", subtitleCallback, callback)
+                foundAnyLink = true
+            } else {
+                val result = loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
+                if (result) foundAnyLink = true
+                Log.d("BirAsyaDizi_DEBUG", "loadExtractor çağrı sonucu: $result")
             }
-        ) ?: run {
-            Log.e("BirAsyaDizi_DEBUG", "HATA: iframe içinde vdo-src, src veya data-src attribute'u bulunamadı!")
-            return false
         }
 
-        Log.d("BirAsyaDizi_DEBUG", "Çıkarılan video URL'si: $iframeVid")
-
-        // Odnoklassniki URL'si ise doğrudan extractor'ı çağır
-        if (iframeVid.contains("odnoklassniki.ru") || iframeVid.contains("ok.ru")) {
-            Log.d("BirAsyaDizi_DEBUG", "Odnoklassniki URL'si tespit edildi, extractor çağrılıyor.")
-            OdnoklassnikiExtractor().getUrl(iframeVid, "$mainUrl/", subtitleCallback, callback)
-            return true
-        }
-
-        // Diğer durumlar için loadExtractor kullan
-        val result = loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
-        Log.d("BirAsyaDizi_DEBUG", "loadExtractor çağrı sonucu: $result")
-        return result
+        return foundAnyLink
     }
 }
