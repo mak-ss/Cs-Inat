@@ -123,7 +123,7 @@ class BirAsyaDizi : MainAPI() {
             val epName = bolum.selectFirst("div.baslik a")?.text()?.trim()
             val epHref = fixUrlNull(bolum.selectFirst("div.resim a")?.attr("href")) ?: return@mapNotNull null
             // Bölüm numarasını başlıktan ayıklamak daha güvenlidir.
-            val epEpisode = epName?.let { Regex("(\\d+)\\. Bölüm").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+            val epEpisode = epName?.let { Regex("(\\d+)[.-]\\s*Bölüm").find(it)?.groupValues?.get(1)?.toIntOrNull() }
 
             newEpisode(epHref) {
                 this.episode = epEpisode
@@ -162,30 +162,35 @@ class BirAsyaDizi : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, 
-        isCasting: Boolean, 
-        subtitleCallback: (SubtitleFile) -> Unit, 
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("BirAsyaDizi_DEBUG", "loadLinks çağrıldı. data: $data")
         val document = app.get(data, headers = mainHeaders).document
 
         // Birincil seçici
-        val iframe = document.selectFirst("div#vast iframe#Vidpplayera")
+        var iframe = document.selectFirst("div#vast iframe#Vidpplayera")
         Log.d("BirAsyaDizi_DEBUG", "Birincil seçici ('div#vast iframe#Vidpplayera') sonucu: $iframe")
 
         // Yedek seçici
-        val targetIframe = iframe ?: document.selectFirst("iframe")
-        if (targetIframe == null) {
+        if (iframe == null) {
+            iframe = document.selectFirst("iframe")
+            Log.d("BirAsyaDizi_DEBUG", "Yedek seçici ('iframe') sonucu: $iframe")
+        }
+
+        if (iframe == null) {
             Log.e("BirAsyaDizi_DEBUG", "HATA: Sayfada hiç iframe bulunamadı!")
             return false
         }
-        Log.d("BirAsyaDizi_DEBUG", "Kullanılacak iframe HTML: ${targetIframe.outerHtml()}")
+
+        Log.d("BirAsyaDizi_DEBUG", "Kullanılacak iframe HTML: ${iframe.outerHtml()}")
 
         val iframeVid = fixUrlNull(
-            targetIframe.attr("vdo-src").ifEmpty {
-                targetIframe.attr("src").ifEmpty {
-                    targetIframe.attr("data-src")
+            iframe.attr("vdo-src").ifEmpty {
+                iframe.attr("src").ifEmpty {
+                    iframe.attr("data-src")
                 }
             }
         ) ?: run {
