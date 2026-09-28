@@ -1,5 +1,5 @@
-// ! Bu araç @Kraptor123 tarafından | @kekikanime için yazılmıştır.
-package com.kraptor   // <-- DEĞİŞTİ: com.Blockades yerine com.kraptor
+
+package com.Blockades   
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
