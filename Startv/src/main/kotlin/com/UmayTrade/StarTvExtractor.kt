@@ -22,13 +22,22 @@ class StarTvExtractor {
     private val daionInitUrl = "https://dogus.daioncdn.net/options/init"
     private val daionBaseUrl = "https://dogus.daioncdn.net/startv"
 
+    // mncdn.com tabanlı SMIL CDN base URL'si (loglardan çıkarıldı)
+    private val mncdnBaseUrl = "https://startv-p3.mncdn.com/smil:"
+
     private val daionM3u8Regex = Regex("""(https?://dogus[a-z-]*\.daioncdn\.net/startv/[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val mp4Regex = Regex("""(https?://[^\s"'<>]+?\.mp4[^\s"'<>]*)""")
     private val sidRegex = Regex("""["']?sid["']?\s*[:=]\s*["']?([a-z0-9]+)["']?""")
 
+    // DİZİ için: sayfadaki videoId, referenceId ve filename'i yakala
     private val videoIdRegex = Regex(""""videoId"\s*:\s*"(\d+)"""")
     private val referenceIdRegex = Regex(""""referenceId"\s*:\s*"([a-f0-9]+)"""")
+    // filename örneği: "filename":"tuzlu_kahve_s1b01_dd.mp4"
+    private val filenameRegex = Regex(""""filename"\s*:\s*"([^"]+\.mp4)"""")
+
+    // Doğrudan sayfada SMIL linki varsa (bazı sayfalarda olabilir)
+    private val mncdnSmilRegex = Regex("""(https?://startv-p\d+\.mncdn\.com/smil:[^\s"'<>\\]+?\.smil[^\s"'<>\\]*)""")
 
     private fun log(msg: String) = Log.d("StarTvDebug", msg)
 
@@ -46,7 +55,6 @@ class StarTvExtractor {
             }
         } catch (e: Exception) {
             log("getUrl EXCEPTION: ${e.message}")
-            e.printStackTrace()
             false
         }
     }
@@ -151,8 +159,20 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DİZİ BÖLÜMÜ (LOG EKLENDİ)
+    // DİZİ BÖLÜMÜ (YENİ YÖNTEM - filename'den SMIL URL üretimi)
     // ============================================================
+    /**
+     * Star TV dizi bölümleri şu şekilde çalışır:
+     *
+     * 1. Bölüm sayfasında JSON içinde "filename":"tuzlu_kahve_s1b01_dd.mp4" gömülüdür.
+     * 2. Bu dosya adından SMIL URL'si türetilir:
+     *    - Uzantı (.mp4) atılır
+     *    - Sonuna "_smil.smil" eklenir
+     *    - mncdn base URL'si ile birleştirilir
+     * 3. Sonuç: https://startv-p3.mncdn.com/smil:tuzlu_kahve_s1b01_dd_smil.smil/playlist.m3u8
+     *
+     * Bu SMIL URL'si doğrudan M3U8 olarak oynatılabilir.
+     */
     private suspend fun extractEpisodeStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             log("=== extractEpisodeStream START ===")
@@ -162,62 +182,42 @@ class StarTvExtractor {
             val pageHtml = doc.html()
             log("Page HTML length: ${pageHtml.length}")
 
-            val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
-            val referenceId = referenceIdRegex.find(pageHtml)?.groupValues?.get(1)
-            log("videoId=$videoId, referenceId=$referenceId")
+            // 1. Sayfadan filename'i çek (en güvenilir yöntem)
+            val filename = filenameRegex.find(pageHtml)?.groupValues?.get(1)
+            log("filename=$filename")
 
             var streamUrl: String? = null
 
-            if (!videoId.isNullOrBlank() && !referenceId.isNullOrBlank()) {
-                log("Calling fetchStreamFromDygApi...")
-                streamUrl = fetchStreamFromDygApi(videoId, referenceId, url)
-                log("fetchStreamFromDygApi returned: $streamUrl")
+            // 2. filename'den SMIL URL'si üret
+            if (!filename.isNullOrBlank()) {
+                val smilUrl = buildSmilUrl(filename)
+                log("Generated SMIL URL: $smilUrl")
+                streamUrl = smilUrl
             }
 
+            // 3. Sayfada zaten gömülü bir SMIL linki varsa onu kullan (fallback)
             if (streamUrl.isNullOrBlank()) {
-                log("Falling back to findStreamUrl...")
-                streamUrl = findStreamUrl(doc)
-                log("findStreamUrl returned: $streamUrl")
+                val embeddedSmil = mncdnSmilRegex.find(pageHtml)?.value
+                log("Embedded SMIL: $embeddedSmil")
+                if (!embeddedSmil.isNullOrBlank()) {
+                    streamUrl = embeddedSmil
+                }
             }
 
+            // 4. Hala bulunamadıysa sayfadan videoId/referenceId ile API dene (son çare)
             if (streamUrl.isNullOrBlank()) {
-                log("Trying iframe...")
-                val iframeSrc = doc.select(
-                    "iframe[src*=player], iframe[src*=video], iframe[src*=embed], iframe[src*=dyg]"
-                ).firstOrNull()?.attr("src")
-                log("iframeSrc=$iframeSrc")
+                val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
+                val referenceId = referenceIdRegex.find(pageHtml)?.groupValues?.get(1)
+                log("Fallback IDs: videoId=$videoId, refId=$referenceId")
 
-                if (!iframeSrc.isNullOrBlank()) {
-                    val iframeDoc = app.get(fixUrl(iframeSrc), headers = mapOf(
-                        "User-Agent" to userAgent,
-                        "Referer" to url
-                    )).document
-                    val iframeHtml = iframeDoc.html()
-                    log("iframe HTML length: ${iframeHtml.length}")
-
-                    val iframeVideoId = videoIdRegex.find(iframeHtml)?.groupValues?.get(1)
-                    val iframeRefId = referenceIdRegex.find(iframeHtml)?.groupValues?.get(1)
-                    log("iframe videoId=$iframeVideoId, refId=$iframeRefId")
-
-                    if (!iframeVideoId.isNullOrBlank() && !iframeRefId.isNullOrBlank()) {
-                        streamUrl = fetchStreamFromDygApi(iframeVideoId, iframeRefId, url)
-                        log("iframe fetchStreamFromDygApi returned: $streamUrl")
-                    }
-                    if (streamUrl.isNullOrBlank()) {
-                        streamUrl = findStreamUrl(iframeDoc)
-                        log("iframe findStreamUrl returned: $streamUrl")
-                    }
+                if (!videoId.isNullOrBlank() && !referenceId.isNullOrBlank()) {
+                    streamUrl = fetchStreamFromDygApi(videoId, referenceId, url)
+                    log("API returned: $streamUrl")
                 }
             }
 
             if (streamUrl.isNullOrBlank()) {
-                log("=== FAILED: no stream URL found ===")
-                return false
-            }
-
-            if (streamUrl.contains("startv.com.tr/dizi/") ||
-                streamUrl.contains("startv.com.tr/canli-yayin")) {
-                log("Rejected invalid stream URL: $streamUrl")
+                log("=== FAILED: no stream URL ===")
                 return false
             }
 
@@ -241,14 +241,29 @@ class StarTvExtractor {
             true
         } catch (e: Exception) {
             log("extractEpisodeStream EXCEPTION: ${e.message}")
-            e.printStackTrace()
             false
         }
     }
 
     /**
-     * DYG Digital player API'sinden video stream linkini alır.
-     * Her endpoint denemesini loglar.
+     * filename'den mncdn SMIL URL'sini üretir.
+     *
+     * Örnek:
+     *   Input:  "tuzlu_kahve_s1b01_dd.mp4"
+     *   Output: "https://startv-p3.mncdn.com/smil:tuzlu_kahve_s1b01_dd_smil.smil/playlist.m3u8"
+     *
+     * Eğer filename zaten "_smil.smil" içeriyorsa sadece base URL ekler.
+     */
+    private fun buildSmilUrl(filename: String): String {
+        // Uzantıyı at
+        val baseName = filename.substringBeforeLast(".")
+        // _smil.smil uzantısını ekle
+        val smilName = "${baseName}_smil.smil"
+        return "$mncdnBaseUrl$smilName/playlist.m3u8"
+    }
+
+    /**
+     * DYG Digital player API'sinden video stream linkini alır (fallback).
      */
     private suspend fun fetchStreamFromDygApi(
         videoId: String,
@@ -257,9 +272,7 @@ class StarTvExtractor {
     ): String? {
         val endpoints = listOf(
             "https://www.startv.com.tr/api/video/$videoId?referenceId=$referenceId",
-            "https://www.startv.com.tr/api/video/$videoId",
-            "https://player.dygdigital.com/api/video/$videoId?ref=$referenceId",
-            "https://dygdigital.com/api/video/$videoId?ref=$referenceId"
+            "https://www.startv.com.tr/api/video/$videoId"
         )
 
         for (endpoint in endpoints) {
@@ -275,114 +288,44 @@ class StarTvExtractor {
                     )
                 ).text
 
-                log("Response length: ${response.length}")
-                log("Response preview: ${response.take(300)}")
-
                 if (response.isBlank()) continue
-
                 if (response.trim().startsWith("{")) {
                     val json = JSONObject(response)
-                    val possibleKeys = listOf(
-                        "videoUrl", "url", "contentUrl", "hlsUrl",
-                        "streamUrl", "src", "file", "mediaUrl"
-                    )
-
-                    for (key in possibleKeys) {
+                    for (key in listOf("videoUrl", "url", "contentUrl", "hlsUrl", "streamUrl")) {
                         val value = json.optString(key)
-                        if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil") || value.contains(".mp4"))) {
-                            log("Found stream in key '$key': $value")
+                        if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil"))) {
                             return value
                         }
                     }
-
-                    val dataObj = json.optJSONObject("data")
-                    if (dataObj != null) {
-                        for (key in possibleKeys) {
-                            val value = dataObj.optString(key)
-                            if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil") || value.contains(".mp4"))) {
-                                log("Found stream in data.$key: $value")
-                                return value
-                            }
-                        }
-                    }
-
-                    val videoObj = json.optJSONObject("video")
-                    if (videoObj != null) {
-                        for (key in possibleKeys) {
-                            val value = videoObj.optString(key)
-                            if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil") || value.contains(".mp4"))) {
-                                log("Found stream in video.$key: $value")
-                                return value
-                            }
-                        }
-                    }
-
-                    daionM3u8Regex.find(response)?.value?.let {
-                        log("Found via daionM3u8Regex: $it")
-                        return it
-                    }
-                    m3u8Regex.find(response)?.value?.let {
-                        log("Found via m3u8Regex: $it")
-                        return it
-                    }
-                } else {
-                    daionM3u8Regex.find(response)?.value?.let {
-                        log("Found in plain text via daionM3u8Regex: $it")
-                        return it
-                    }
-                    m3u8Regex.find(response)?.value?.let {
-                        log("Found in plain text via m3u8Regex: $it")
-                        return it
-                    }
+                    mncdnSmilRegex.find(response)?.value?.let { return it }
+                    m3u8Regex.find(response)?.value?.let { return it }
                 }
             } catch (e: Exception) {
-                log("Endpoint FAILED: $endpoint -> ${e.message}")
                 continue
             }
         }
-
         return null
     }
 
     private fun findStreamUrl(doc: Document): String? {
         val html = doc.html()
 
-        val mncdnSmilRegex = Regex("""(https?://startv-p\d+\.mncdn\.com/smil:[^\s"'<>\\]+?\.smil[^\s"'<>\\]*)""")
-        mncdnSmilRegex.find(html)?.value?.let {
-            log("findStreamUrl mncdnSmil: $it")
-            return it
-        }
+        mncdnSmilRegex.find(html)?.value?.let { return it }
 
         val mncdnM3u8Regex = Regex("""(https?://startv-p\d+\.mncdn\.com/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*)""")
-        mncdnM3u8Regex.find(html)?.value?.let {
-            log("findStreamUrl mncdnM3u8: $it")
-            return it
-        }
+        mncdnM3u8Regex.find(html)?.value?.let { return it }
 
         daionM3u8Regex.find(html)?.value?.let { url ->
-            if (!url.contains(".ts")) {
-                log("findStreamUrl daion: $url")
-                return url
-            }
+            if (!url.contains(".ts")) return url
         }
 
         m3u8Regex.find(html)?.value?.let { url ->
             if (!url.contains("startv.com.tr/dizi") &&
                 !url.contains("startv.com.tr/canli-yayin") &&
                 !url.contains(".ts")) {
-                log("findStreamUrl generic m3u8: $url")
                 return url
             }
         }
-
-        mp4Regex.find(html)?.value?.let { url ->
-            if (!url.contains("startv.com.tr/dizi")) {
-                log("findStreamUrl mp4: $url")
-                return url
-            }
-        }
-
-        log("findStreamUrl: nothing found")
         return null
     }
 
