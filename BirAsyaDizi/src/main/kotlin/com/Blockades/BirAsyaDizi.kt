@@ -1,6 +1,6 @@
 // ! Bu araç @Kraptor123 tarafından | @kekikanime için yazılmıştır.
 
-package com.kraptor
+package com.Blockades
 
 import android.util.Log
 import org.jsoup.nodes.Element
