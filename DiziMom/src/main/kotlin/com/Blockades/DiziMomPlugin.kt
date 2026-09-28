@@ -9,5 +9,6 @@ class DiziMomPlugin: Plugin() {
     override fun load(context: Context) {
         registerMainAPI(DiziMom())
         registerExtractorAPI(HdPlayerExtractor())
+        registerExtractorAPI(PeacemakerExtractor())
     }
 }
