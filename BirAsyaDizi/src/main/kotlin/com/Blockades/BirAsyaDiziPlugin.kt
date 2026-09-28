@@ -8,6 +8,9 @@ import android.content.Context
 @CloudstreamPlugin
 class BirAsyaDiziPlugin: Plugin() {
     override fun load(context: Context) {
+        // Ana API'yi kaydet
         registerMainAPI(BirAsyaDizi())
+        // Odnoklassniki video oynatıcısını kaydet
+        registerExtractor(OdnoklassnikiExtractor())
     }
 }
