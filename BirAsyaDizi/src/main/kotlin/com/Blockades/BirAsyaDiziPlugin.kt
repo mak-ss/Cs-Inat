@@ -1,5 +1,5 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-package com.Blockades
+// ! Bu araç @Kraptor123 tarafından | @kekikanime için yazılmıştır.
+package com.kraptor   // <-- DEĞİŞTİ: com.Blockades yerine com.kraptor
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
@@ -8,7 +8,6 @@ import android.content.Context
 @CloudstreamPlugin
 class BirAsyaDiziPlugin: Plugin() {
     override fun load(context: Context) {
-        // Ana API'yi kaydet
         registerMainAPI(BirAsyaDizi())
     }
 }
