@@ -61,7 +61,7 @@ open class HdPlayerExtractor : ExtractorApi() {
             Log.e(name, "Embed sayfası alınırken hata: ${e.message}")
         }
 
-        // POST URL'sini gelen URL'in domaininden türet
+        // POST URL'sini gelen URL'in domaininden türet (hardcoded değil)
         val urlObj = java.net.URL(cleanUrl)
         val host = "${urlObj.protocol}://${urlObj.host}"
         val postUrl = "$host/player/index.php?data=$dataParam&do=getVideo"
