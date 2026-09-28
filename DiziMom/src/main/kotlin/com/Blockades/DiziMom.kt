@@ -172,63 +172,23 @@ class DiziMom : MainAPI() {
                 ?: document.selectFirst("div.category_image img")?.attr("src")
         )
 
-        // Bu sayfa bir BÖLÜM mü yoksa DİZİ ana sayfası mı?
-        val isEpisodePage = document.selectFirst("div.inepisode") != null ||
-                            document.selectFirst("div.otherepisodes") != null
-        val isSeriesPage = document.selectFirst("div.category_image") != null ||
-                           document.selectFirst("#myBtnContainer") != null
+        // ===== SAYFA TİPİ TESPİTİ =====
+        // 1) Dizi ANA SAYFASI: div.category_image veya #myBtnContainer
+        val isSeriesMainPage = document.selectFirst("div.category_image") != null ||
+                               document.selectFirst("#myBtnContainer") != null
 
-        // ================= BÖLÜM SAYFASI =================
-        if (isEpisodePage && !isSeriesPage) {
-            val description = document.selectFirst("div#bolumbilgi .infoelem")?.text()?.trim()
-                ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+        // 2) Dizi BÖLÜM SAYFASI: div.otherepisodes veya #benzerli a[rel=category tag]
+        val isSeriesEpisodePage = document.selectFirst("div.otherepisodes") != null ||
+                                  document.selectFirst("div#benzerli a[rel='category tag']") != null
 
-            val seriesUrl = fixUrlNull(
-                document.selectFirst("div#benzerli a[rel='category tag']")?.attr("href")
-            )
-            Log.d(name, "load - Bölüm sayfası, ana dizi URL: $seriesUrl")
+        // 3) FİLM SAYFASI: div.info_move + div.info_content
+        val isMoviePage = document.selectFirst("div.info_move") != null &&
+                          document.selectFirst("div.info_content") != null
 
-            val episodes = mutableListOf<Episode>()
-            document.select("div.otherepisodes").forEach { epBox ->
-                val link = epBox.selectFirst("a[href]") ?: return@forEach
-                val epHref = fixUrlNull(link.attr("href")) ?: return@forEach
-                val epName = epBox.selectFirst("div.epidosename")?.text()?.trim()
-                    ?: link.text()?.trim() ?: return@forEach
-                val season = Regex("""(\d+)\.Sezon""").find(epName)?.groupValues?.get(1)?.toIntOrNull()
-                val episode = Regex("""(\d+)\.Bölüm""").find(epName)?.groupValues?.get(1)?.toIntOrNull()
-                episodes.add(
-                    newEpisode(epHref) {
-                        this.name = epName
-                        if (season != null) this.season = season
-                        if (episode != null) this.episode = episode
-                    }
-                )
-            }
-
-            val currentSeason = Regex("""(\d+)\.Sezon""").find(title)?.groupValues?.get(1)?.toIntOrNull()
-            val currentEpisode = Regex("""(\d+)\.Bölüm""").find(title)?.groupValues?.get(1)?.toIntOrNull()
-            if (currentSeason != null && currentEpisode != null &&
-                episodes.none { it.season == currentSeason && it.episode == currentEpisode }) {
-                episodes.add(
-                    newEpisode(url) {
-                        this.name = title
-                        this.season = currentSeason
-                        this.episode = currentEpisode
-                    }
-                )
-            }
-
-            val sorted = episodes.distinctBy { "${it.season}-${it.episode}" }
-                .sortedWith(compareBy({ it.season }, { it.episode }))
-
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
-                this.posterUrl = poster
-                this.plot = description
-            }
-        }
+        Log.d(name, "load - isSeriesMain=$isSeriesMainPage isEpisode=$isSeriesEpisodePage isMovie=$isMoviePage")
 
         // ================= DİZİ ANA SAYFASI =================
-        if (isSeriesPage) {
+        if (isSeriesMainPage && !isSeriesEpisodePage) {
             val year = document.select("div.dizimeta:contains(Yapım Yılı)")
                 .firstOrNull()?.parent()?.ownText()?.trim()?.toIntOrNull()
             val description = document.selectFirst("div.category_desc")?.text()?.trim()
@@ -283,7 +243,66 @@ class DiziMom : MainAPI() {
             }
         }
 
+        // ================= DİZİ BÖLÜM SAYFASI =================
+        if (isSeriesEpisodePage && !isSeriesMainPage) {
+            val description = document.selectFirst("div#bolumbilgi .infoelem")?.text()?.trim()
+                ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+            val seriesUrl = fixUrlNull(
+                document.selectFirst("div#benzerli a[rel='category tag']")?.attr("href")
+            )
+            Log.d(name, "load - Bölüm sayfası, ana dizi URL: $seriesUrl")
+
+            val episodes = mutableListOf<Episode>()
+            document.select("div.otherepisodes").forEach { epBox ->
+                val link = epBox.selectFirst("a[href]") ?: return@forEach
+                val epHref = fixUrlNull(link.attr("href")) ?: return@forEach
+                val epName = epBox.selectFirst("div.epidosename")?.text()?.trim()
+                    ?: link.text()?.trim() ?: return@forEach
+                val season = Regex("""(\d+)\.Sezon""").find(epName)?.groupValues?.get(1)?.toIntOrNull()
+                val episode = Regex("""(\d+)\.Bölüm""").find(epName)?.groupValues?.get(1)?.toIntOrNull()
+                episodes.add(
+                    newEpisode(epHref) {
+                        this.name = epName
+                        if (season != null) this.season = season
+                        if (episode != null) this.episode = episode
+                    }
+                )
+            }
+
+            val currentSeason = Regex("""(\d+)\.Sezon""").find(title)?.groupValues?.get(1)?.toIntOrNull()
+            val currentEpisode = Regex("""(\d+)\.Bölüm""").find(title)?.groupValues?.get(1)?.toIntOrNull()
+            if (currentSeason != null && currentEpisode != null &&
+                episodes.none { it.season == currentSeason && it.episode == currentEpisode }) {
+                episodes.add(
+                    newEpisode(url) {
+                        this.name = title
+                        this.season = currentSeason
+                        this.episode = currentEpisode
+                    }
+                )
+            }
+
+            val sorted = episodes.distinctBy { "${it.season}-${it.episode}" }
+                .sortedWith(compareBy({ it.season }, { it.episode }))
+
+            // Tek bölüm varsa (kendisi) → Movie olarak dön, böylece doğrudan oynatılır
+            if (sorted.size <= 1) {
+                return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                    this.posterUrl = poster
+                    this.plot = description
+                }
+            }
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
+                this.posterUrl = poster
+                this.plot = description
+            }
+        }
+
         // ================= FİLM SAYFASI =================
+        Log.d(name, "load - Film sayfası olarak işleniyor")
+
         val year = document.select("div.info_content .detail .center span")
             .firstOrNull { it.selectFirst("small")?.text()?.contains("Çıkış Yılı") == true }
             ?.text()?.let { Regex("""\d{4}""").find(it)?.value?.toIntOrNull() }
@@ -342,7 +361,7 @@ class DiziMom : MainAPI() {
 
         val embedUrls = mutableListOf<String>()
 
-        // 1) iframe
+        // 1) iframe (data-src öncelikli, src fallback)
         document.selectFirst("div.video-container iframe")?.let { iframe ->
             val src = iframe.attr("data-src").ifBlank { iframe.attr("src") }
             if (src.isNotBlank() && src != "about:blank") embedUrls.add(src)
