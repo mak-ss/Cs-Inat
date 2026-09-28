@@ -10,14 +10,6 @@ open class HdPlayerExtractor : ExtractorApi() {
     override val mainUrl         = "https://hdplayersystem.com"
     override val requiresReferer = true
 
-    // Desteklenen domainler (hdplayer varyantları)
-    private val supportedHosts = listOf(
-        "hdplayersystem.com",
-        "peacemakerst.com",
-        "hdmomplayer.com",
-        "hdplayer.com"
-    )
-
     override suspend fun getUrl(
         url: String,
         referer: String?,
@@ -69,7 +61,7 @@ open class HdPlayerExtractor : ExtractorApi() {
             Log.e(name, "Embed sayfası alınırken hata: ${e.message}")
         }
 
-        // POST URL'sini oluştur - gelen URL'in domainini kullan!
+        // POST URL'sini gelen URL'in domaininden türet
         val urlObj = java.net.URL(cleanUrl)
         val host = "${urlObj.protocol}://${urlObj.host}"
         val postUrl = "$host/player/index.php?data=$dataParam&do=getVideo"
