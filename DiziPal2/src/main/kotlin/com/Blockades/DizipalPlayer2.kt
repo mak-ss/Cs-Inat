@@ -3,8 +3,6 @@ package com.Blockades
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.json.JSONObject
 import java.util.Base64
 import javax.crypto.Cipher
@@ -22,28 +20,28 @@ class DizipalPlayer2 : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.e("DPPLAYER2", "===== BAŞLANGIÇ =====")
-        Log.e("DPPLAYER2", "url » $url")
+        Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
+        Log.d("DPPLAYER2", "url » $url")
 
-        // 1. Bölüm sayfasını çek ve çerezleri topla
+        // 1. Bölüm/Film sayfasını çek ve oturum çerezlerini sakla
         val pageResp = try {
             app.get(url, referer = "$mainUrl/")
         } catch (e: Exception) {
-            Log.e("DPPLAYER2", "Sayfa hatası » ${e.message}")
+            Log.e("DPPLAYER2", "Sayfa çekme hatası » ${e.message}")
             return
         }
         val document = pageResp.document
         val cookieMap: Map<String, String> = pageResp.cookies
 
-        // 2. data-cfg özniteliğini al
+        // 2. data-cfg parametresini al
         val cfg = document.selectFirst("#videoContainer")
             ?.attr("data-cfg")?.takeIf { it.isNotBlank() }
         if (cfg.isNullOrBlank()) {
-            Log.e("DPPLAYER2", "cfg YOK")
+            Log.e("DPPLAYER2", "cfg özniteliği bulunamadı")
             return
         }
 
-        // 3. POST /ajax-player-config
+        // 3. POST /ajax-player-config isteği
         val response = try {
             app.post(
                 "$mainUrl/ajax-player-config",
@@ -60,60 +58,46 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             ).text
         } catch (e: Exception) {
-            Log.e("DPPLAYER2", "POST hatası » ${e.message}")
+            Log.e("DPPLAYER2", "POST isteği başarısız » ${e.message}")
             return
         }
 
-        // 4. Decrypt işlemi
+        // 4. Yanıtı Çöz (AES CBC Decrypt)
         val result = parseAndDecrypt(response)
         if (result == null) {
-            Log.e("DPPLAYER2", "Decrypt BAŞARISIZ")
+            Log.e("DPPLAYER2", "Decryption işlemi başarısız")
             return
         }
 
         val (videoUrl, videoType) = result
 
-        // 5. iframe Tespiti, Otomatik Çözme ve FALLBACK
+        // 5. Iframe/Embed İşleme
         if (videoType == "iframe" || videoUrl.contains("<iframe", true) || videoUrl.contains(".html", true)) {
             val iframeUrl = Regex("""src=["']([^"']+)["']""")
                 .find(videoUrl)?.groupValues?.get(1)
                 ?: videoUrl.takeIf { it.startsWith("http") }
 
             if (!iframeUrl.isNullOrBlank()) {
-                val fixed = fixUrl(iframeUrl)
-                Log.e("DPPLAYER2", "iframe tespit edildi » $fixed")
+                val fixedUrl = fixUrl(iframeUrl)
+                Log.d("DPPLAYER2", "Iframe adresi işleniyor » $fixedUrl")
 
-                // Öncelik 1: Cloudstream'in dahili extractor'leri çözebiliyor mu kontrol et
+                // Öncelik 1: Cloudstream dahili extractor'ları ile dene
                 val extracted = try {
-                    loadExtractor(fixed, url, subtitleCallback, callback)
+                    loadExtractor(fixedUrl, url, subtitleCallback, callback)
                 } catch (e: Exception) {
                     false
                 }
 
-                // Öncelik 2: Eğer dahili extractor çözemediyse (FALSE döndüyse), URL'yi doğrudan oynatıcıya pasla
+                // Öncelik 2: Tanımlı değilse doğrudan FormationFeedExtractor'a yönlendir
                 if (!extracted) {
-                    Log.e("DPPLAYER2", "loadExtractor tanımadı, doğrudan oynatıcıya ExtractorLink olarak gönderiliyor")
-                    callback.invoke(
-                        newExtractorLink(
-                            source = this.name,
-                            name = "${this.name} (Embed)",
-                            url = fixed,
-                            type = ExtractorLinkType.VIDEO
-                        ) {
-                            this.referer = fixed
-                            this.quality = Qualities.Unknown.value
-                            this.headers = mapOf(
-                                "User-Agent" to USER_AGENT,
-                                "Referer" to fixed
-                            )
-                        }
-                    )
+                    Log.d("DPPLAYER2", "Dahili extractor bulunamadı, özel Extractor çağrılıyor")
+                    FormationFeedExtractor().getUrl(fixedUrl, url, subtitleCallback, callback)
                 }
             }
             return
         }
 
-        // 6. Doğrudan m3u8 veya mp4 bağlantısı gelirse
+        // 6. Doğrudan Video Adresi Dönmüşse (m3u8 veya mp4)
         val isM3u8 = videoUrl.contains(".m3u8", true)
         callback.invoke(
             newExtractorLink(
@@ -187,11 +171,11 @@ class DizipalPlayer2 : ExtractorApi() {
 
             if (decrypted.contains("<iframe")) return decrypted to "iframe"
 
-            Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\<>]*)""").find(decrypted)?.groupValues?.get(1)?.let {
+            Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""").find(decrypted)?.groupValues?.get(1)?.let {
                 return it to "m3u8"
             }
 
-            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\<>]*)""").find(decrypted)?.groupValues?.get(1)?.let {
+            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\>]*)""").find(decrypted)?.groupValues?.get(1)?.let {
                 return it to "mp4"
             }
 
