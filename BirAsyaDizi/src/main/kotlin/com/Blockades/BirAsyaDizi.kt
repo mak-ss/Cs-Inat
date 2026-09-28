@@ -200,6 +200,14 @@ class BirAsyaDizi : MainAPI() {
 
         Log.d("BirAsyaDizi_DEBUG", "Çıkarılan video URL'si: $iframeVid")
 
+        // Odnoklassniki URL'si ise doğrudan extractor'ı çağır
+        if (iframeVid.contains("odnoklassniki.ru") || iframeVid.contains("ok.ru")) {
+            Log.d("BirAsyaDizi_DEBUG", "Odnoklassniki URL'si tespit edildi, extractor çağrılıyor.")
+            OdnoklassnikiExtractor().getUrl(iframeVid, "$mainUrl/", subtitleCallback, callback)
+            return true
+        }
+
+        // Diğer durumlar için loadExtractor kullan
         val result = loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
         Log.d("BirAsyaDizi_DEBUG", "loadExtractor çağrı sonucu: $result")
         return result
