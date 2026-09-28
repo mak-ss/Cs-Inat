@@ -7,6 +7,7 @@ import org.json.JSONObject
 
 class OdnoklassnikiExtractor {
 
+    @JvmOverloads
     suspend fun getUrl(
         responseBody: String,
         url: String? = null,
@@ -15,6 +16,7 @@ class OdnoklassnikiExtractor {
     ): String? {
         val trimmedBody = responseBody.trim()
 
+        // Sunucudan JSON yerine HTML (404/500, Cloudflare, Captcha vb.) dönüp dönmediğini kontrol et
         if (trimmedBody.startsWith("<!DOCTYPE", ignoreCase = true) || 
             trimmedBody.startsWith("<html", ignoreCase = true)
         ) {
@@ -37,23 +39,5 @@ class OdnoklassnikiExtractor {
             println("JSON Parse Hatası: ${e.message}")
             null
         }
-    }
-
-    // Overloaded metodlar (BirAsyaDizi.kt içindeki farklı parametre sıralamaları için)
-    suspend fun getUrl(
-        responseBody: String,
-        url: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): String? {
-        return getUrl(responseBody, url as String?, subtitleCallback, callback)
-    }
-
-    suspend fun getUrl(
-        responseBody: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): String? {
-        return getUrl(responseBody, null, subtitleCallback, callback)
     }
 }
