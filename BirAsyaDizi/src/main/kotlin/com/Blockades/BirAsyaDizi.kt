@@ -122,14 +122,12 @@ class BirAsyaDizi : MainAPI() {
         val rating = document.selectFirst("div.dizi-bilgi #puandegistir")?.text()?.trim()
         val recommendations = document.select("div.sag-vliste li, div.frag-k").mapNotNull { it.toRecommendationResult() }
 
-        // Bölüm seçicileri (HTML yapısına uygun alternatifler eklendi)
         val episodeElements = document.select("li.szn, div.video-k, div.bolum-listesi li")
 
         val episodes = episodeElements.mapNotNull { bolum ->
             val epName = bolum.selectFirst("div.baslik a, a.baslik, div.baslik")?.text()?.trim()
             val epHref = fixUrlNull(bolum.selectFirst("div.resim a, a")?.attr("href")) ?: return@mapNotNull null
             
-            // Bölüm numarasını başlıktan veya URL'den çıkarma
             val epEpisode = epName?.let { Regex("(\\d+)[.-]\\s*Bölüm", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)?.toIntOrNull() }
                 ?: Regex("-(\\d+)-bolum").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
 
@@ -180,7 +178,6 @@ class BirAsyaDizi : MainAPI() {
         Log.d("BirAsyaDizi_DEBUG", "loadLinks çağrıldı. data: $data")
         val document = app.get(data, headers = mainHeaders).document
 
-        // Iframe veya video kaynak seçicileri
         val iframes = document.select("div#vast iframe#Vidpplayera, iframe[src], iframe[vdo-src], iframe[data-src]")
         
         if (iframes.isEmpty()) {
@@ -205,7 +202,6 @@ class BirAsyaDizi : MainAPI() {
 
             Log.d("BirAsyaDizi_DEBUG", "Çıkarılan video URL'si: $iframeVid")
 
-            // Odnoklassniki URL'si kontrolü
             if (iframeVid.contains("odnoklassniki.ru") || iframeVid.contains("ok.ru")) {
                 Log.d("BirAsyaDizi_DEBUG", "Odnoklassniki URL'si tespit edildi, extractor çağrılıyor.")
                 OdnoklassnikiExtractor().getUrl(iframeVid, "$mainUrl/", subtitleCallback, callback)
