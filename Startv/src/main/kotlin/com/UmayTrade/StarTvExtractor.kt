@@ -2,20 +2,20 @@ package com.UmayTrade
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 
 /**
  * Star TV için özel extractor.
  * Hem canlı yayın hem de dizi bölümleri için m3u8 linklerini çıkarır.
  */
-class StarTvExtractor : ExtractorApi() {
-    override val name = "Star TV"
-    override val mainUrl = "https://www.startv.com.tr"
-    override val requiresReferer = true
+class StarTvExtractor {
+
+    private val extractorName = "Star TV"
+    private val mainUrl = "https://www.startv.com.tr"
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -28,9 +28,8 @@ class StarTvExtractor : ExtractorApi() {
     // MP4 yakalayıcı
     private val mp4Regex = Regex("""(https?://[^\s"'<>]+?\.mp4[^\s"'<>]*)""")
 
-    override suspend fun getUrl(
+    suspend fun getUrl(
         url: String,
-        referer: String?,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
@@ -73,15 +72,15 @@ class StarTvExtractor : ExtractorApi() {
             if (!streamUrl.isNullOrBlank()) {
                 callback(
                     newExtractorLink(
-                        source = this.name,
+                        source = extractorName,
                         name = "Star TV Canlı HD",
                         url = streamUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = this@StarTvExtractor.mainUrl
+                        this.referer = mainUrl
                         this.headers = mapOf(
                             "User-Agent" to userAgent,
-                            "Origin" to this@StarTvExtractor.mainUrl
+                            "Origin" to mainUrl
                         )
                         this.quality = Qualities.P720.value
                     }
@@ -128,15 +127,15 @@ class StarTvExtractor : ExtractorApi() {
             if (!streamUrl.isNullOrBlank()) {
                 callback(
                     newExtractorLink(
-                        source = this.name,
+                        source = extractorName,
                         name = "Star TV",
                         url = streamUrl,
-                        type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.MP4
+                        type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.M3U8
                     ) {
-                        this.referer = this@StarTvExtractor.mainUrl
+                        this.referer = mainUrl
                         this.headers = mapOf(
                             "User-Agent" to userAgent,
-                            "Origin" to this@StarTvExtractor.mainUrl
+                            "Origin" to mainUrl
                         )
                         this.quality = Qualities.P1080.value
                     }
@@ -168,9 +167,9 @@ class StarTvExtractor : ExtractorApi() {
     private fun fixUrl(url: String): String {
         if (url.startsWith("http")) return url
         return if (url.startsWith("/")) {
-            "${this.mainUrl}$url"
+            "${mainUrl}$url"
         } else {
-            "${this.mainUrl}/$url"
+            "${mainUrl}/$url"
         }
     }
 }
