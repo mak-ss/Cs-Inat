@@ -2,7 +2,6 @@ package com.Blockades
 
 import com.fasterxml.jackson.annotation.JsonProperty
 
-
 data class DizipalSearchData(
     @JsonProperty("success") val success: Boolean?,
     @JsonProperty("results") val results: List<DizipalSearchResult>?
