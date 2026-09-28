@@ -183,13 +183,11 @@ class DiziMom : MainAPI() {
             val description = document.selectFirst("div#bolumbilgi .infoelem")?.text()?.trim()
                 ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-            // Dizinin kendi sayfası (sadece log için)
             val seriesUrl = fixUrlNull(
                 document.selectFirst("div#benzerli a[rel='category tag']")?.attr("href")
             )
             Log.d(name, "load - Bölüm sayfası, ana dizi URL: $seriesUrl")
 
-            // Aynı sezonun diğer bölümleri
             val episodes = mutableListOf<Episode>()
             document.select("div.otherepisodes").forEach { epBox ->
                 val link = epBox.selectFirst("a[href]") ?: return@forEach
@@ -207,7 +205,6 @@ class DiziMom : MainAPI() {
                 )
             }
 
-            // Bu bölümün kendisini de listeye ekle
             val currentSeason = Regex("""(\d+)\.Sezon""").find(title)?.groupValues?.get(1)?.toIntOrNull()
             val currentEpisode = Regex("""(\d+)\.Bölüm""").find(title)?.groupValues?.get(1)?.toIntOrNull()
             if (currentSeason != null && currentEpisode != null &&
@@ -343,28 +340,46 @@ class DiziMom : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // 1) iframe (data-src veya src)
-        var embedUrl = document.selectFirst("div.video-container iframe")?.attr("data-src")
-            ?: document.selectFirst("div.video-container iframe")?.attr("src")
-            ?: document.selectFirst("iframe")?.attr("data-src")
-            ?: document.selectFirst("iframe")?.attr("src")
+        val embedUrls = mutableListOf<String>()
 
-        // 2) JSON-LD'deki embedUrl
-        if (embedUrl.isNullOrBlank()) {
-            document.select("script[type='application/ld+json']").forEach { script ->
-                if (!embedUrl.isNullOrBlank()) return@forEach
-                val txt = script.data()
-                if (txt.contains("\"VideoObject\"")) {
-                    val m = Regex(""""embedUrl"\s*:\s*"([^"]+)"""").find(txt)
-                    if (m != null) embedUrl = m.groupValues[1]
+        // 1) iframe
+        document.selectFirst("div.video-container iframe")?.let { iframe ->
+            val src = iframe.attr("data-src").ifBlank { iframe.attr("src") }
+            if (src.isNotBlank() && src != "about:blank") embedUrls.add(src)
+        }
+
+        // 2) JSON-LD VideoObject.embedUrl
+        document.select("script[type='application/ld+json']").forEach { script ->
+            val txt = script.data()
+            if (txt.contains("\"VideoObject\"")) {
+                Regex(""""embedUrl"\s*:\s*"([^"]+)"""").find(txt)?.let {
+                    embedUrls.add(it.groupValues[1].replace("\\/", "/"))
                 }
             }
         }
 
-        if (embedUrl.isNullOrBlank()) return false
-        if (embedUrl.startsWith("//")) embedUrl = "https:$embedUrl"
+        if (embedUrls.isEmpty()) {
+            Log.e(name, "loadLinks - Embed URL bulunamadı")
+            return false
+        }
 
-        loadExtractor(embedUrl, data, subtitleCallback, callback)
-        return true
+        var anySuccess = false
+        embedUrls.distinct().forEach { raw ->
+            var u = raw
+            if (u.startsWith("//")) u = "https:$u"
+            // YouTube fragmanları atla
+            if (u.contains("youtube.com") || u.contains("youtu.be")) return@forEach
+
+            Log.d(name, "loadLinks - Denenen embed: $u")
+            try {
+                loadExtractor(u, data, subtitleCallback) { link ->
+                    anySuccess = true
+                    callback.invoke(link)
+                }
+            } catch (e: Exception) {
+                Log.e(name, "loadLinks hata ($u): ${e.message}")
+            }
+        }
+        return anySuccess
     }
 }
