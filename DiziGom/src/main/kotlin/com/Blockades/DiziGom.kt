@@ -1,4 +1,4 @@
-package com.Blockades
+package com.nikyokki
 
 import android.util.Log
 import com.lagradost.cloudstream3.Actor
@@ -26,8 +26,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class DiziGom : MainAPI() {
-    // RemoteConfig'ten domaini al, yoksa varsayılanı kullan
-    override var mainUrl = RemoteConfig.getDomain("dizigom", "https://www.dizigom.icu")
+    override var mainUrl = "https://www.dizigom.icu"
     override var name = "DiziGom"
     override val hasMainPage = true
     override var lang = "tr"
@@ -57,81 +56,106 @@ class DiziGom : MainAPI() {
         ?.let { fixUrlNull(it) }
 
     /**
-     * Lazy-load placeholder'ları filtrele:
-     *  - "lazy", "placeholder", "blank", "loading" içeren URL'ler
-     *  - .gif uzantılı (1px tracking pixel)
+     * SADECE kesin placeholder URL'lerini filtrele.
+     * Gerçek poster URL'lerini (webp, jpg, jpeg, png) ASLA elemez.
      */
     private fun isPlaceholderImage(url: String?): Boolean {
         if (url.isNullOrBlank()) return true
-        val lower = url.lowercase()
-        return lower.contains("lazy") ||
-                lower.contains("placeholder") ||
-                lower.contains("blank") ||
-                lower.contains("loading") ||
-                lower.contains("spinner") ||
-                lower.endsWith(".gif") ||
-                lower.contains("data:image")
+        val lower = url.lowercase().trim()
+
+        if (lower.startsWith("data:image")) return true
+
+        // Dosya adı kontrolü
+        val fileName = lower.substringAfterLast("/").substringBefore("?")
+
+        if (fileName == "lazy.png" || fileName == "lazy.gif" || fileName == "lazy.jpg") return true
+        if (fileName == "blank.gif" || fileName == "blank.png") return true
+        if (fileName == "placeholder.png" || fileName == "placeholder.jpg") return true
+        if (fileName == "loading.gif" || fileName == "spinner.gif") return true
+
+        // Yol kontrolü
+        if (lower.contains("/images/lazy")) return true
+        if (lower.contains("/images/blank")) return true
+        if (lower.contains("/images/placeholder")) return true
+        if (lower.contains("/images/loading")) return true
+
+        // Gerçek poster uzantıları → kesinlikle geçerli
+        if (lower.endsWith(".webp") || lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") || lower.endsWith(".png")) {
+            return false
+        }
+
+        return false
     }
 
     private fun Element.backgroundUrl(): String? {
         val style = attr("style")
-        val match = Regex("url\\((?:\\\"|')?([^\\\"')]+)", RegexOption.IGNORE_CASE).find(style)
+        if (style.isBlank()) return null
+        val match = Regex("url\\(['\"]?([^'\"\\)]+)", RegexOption.IGNORE_CASE).find(style)
         return cleanUrl(match?.groupValues?.getOrNull(1))
     }
 
     /**
-     * Poster URL'sini al. Öncelik sırası:
-     *  1. Element'in kendi data-* attribute'ları (data-poster, data-bg, ...)
-     *  2. img[data-src] (lazy load asıl URL)
-     *  3. img[data-lazy-src], img[data-original]
-     *  4. img[data-srcset], img[srcset] (ilk URL)
-     *  5. img[src] (lazy placeholder değilse)
-     *  6. Element'in CSS background-image'ı
-     *  7. Alt elementlerin background-image'ları
+     * Poster URL'sini al. Sitenin gerçek yapısına göre öncelik:
+     *  1. img[data-src]     → lazy-load asıl URL (Son Eklenen Bölümler)
+     *  2. img[data-lazy-src], img[data-original], img[data-image]
+     *  3. img[srcset] / img[data-srcset] ilk URL
+     *  4. img[src]          → direkt URL (Son Eklenen Diziler)
+     *  5. Element data-* attribute'ları
+     *  6. CSS background-image
      */
     private fun Element.posterUrl(): String? {
         val img = selectFirst("img")
 
-        val candidates = sequenceOf(
-            attr("data-poster"),
-            attr("data-bg"),
-            attr("data-background"),
-            attr("data-image"),
-            img?.attr("data-src"),                // ← Lazy load birincil kaynak
+        // Sıralama önemli: lazy-load attribute'ları ÖNCE, src SONRA
+        val imgCandidates = listOfNotNull(
+            img?.attr("data-src"),
             img?.attr("data-lazy-src"),
             img?.attr("data-original"),
             img?.attr("data-image"),
             img?.attr("data-srcset")?.substringBefore(",")?.substringBefore(" ")?.trim(),
             img?.attr("srcset")?.substringBefore(",")?.substringBefore(" ")?.trim(),
-            img?.attr("src"),                     // En sona koy, placeholder filtrelenecek
-            backgroundUrl()
+            img?.attr("src")
         )
 
-        // Alt elementlerdeki background-image'ları da dene
+        val elementCandidates = listOfNotNull(
+            attr("data-poster"),
+            attr("data-bg"),
+            attr("data-background"),
+            attr("data-image")
+        )
+
+        val bgCandidates = listOfNotNull(backgroundUrl())
+
         val descendantBackgrounds = select("[style]").asSequence()
             .mapNotNull { it.backgroundUrl() }
+            .toList()
 
-        return (candidates + descendantBackgrounds)
-            .mapNotNull { raw ->
-                raw?.substringBefore(",")?.trim()?.substringBefore(" ")?.trim()
-            }
+        val allCandidates = imgCandidates + elementCandidates + bgCandidates + descendantBackgrounds
+
+        return allCandidates
+            .mapNotNull { raw -> raw?.substringBefore(",")?.trim()?.substringBefore(" ")?.trim() }
             .mapNotNull { cleanUrl(it) }
             .firstOrNull { !isPlaceholderImage(it) }
     }
 
     private fun Element.findCard(): Element {
-        if (hasClass("episode-box") || hasClass("single-item") || hasClass("list-series")) return this
+        if (hasClass("episode-box") || hasClass("single-item") ||
+            hasClass("list-series") || hasClass("list-episodes")) {
+            return this
+        }
         return generateSequence(this as Element?) { it.parent() }
-            .take(12)
+            .take(8)
             .firstOrNull {
-                it.hasClass("episode-box") || it.hasClass("single-item") || it.hasClass("list-series")
-            }
-            ?: this
+                it.hasClass("episode-box") || it.hasClass("single-item") ||
+                        it.hasClass("list-series") || it.hasClass("list-episodes")
+            } ?: this
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
         val card = findCard()
 
+        // Başlık: card.text() KALDIRILDI, çok geniş metin yakalıyordu
         val title = sequenceOf(
             card.selectFirst("div.serie-name a")?.text(),
             card.selectFirst(".serie-name a")?.text(),
@@ -141,7 +165,7 @@ class DiziGom : MainAPI() {
             card.selectFirst("img")?.attr("title"),
             card.attr("title"),
             if (tagName() == "a") text() else null
-        ).mapNotNull { it?.trim()?.takeIf { value -> value.isNotBlank() } }.firstOrNull() ?: return null
+        ).mapNotNull { it?.trim()?.takeIf { v -> v.isNotBlank() } }.firstOrNull() ?: return null
 
         val href = sequenceOf(
             card.selectFirst("div.serie-name a[href*='/diziler/']")?.attr("href"),
@@ -165,8 +189,10 @@ class DiziGom : MainAPI() {
         val document = runCatching { app.get(pageUrl, referer = "$mainUrl/").document }.getOrNull()
             ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
-        val results = (document.select("div.episode-box, div.single-item, div.list-series, a[href*='/diziler/'], a[href*='/dizi/']")
-            .mapNotNull { it.toMainPageResult() })
+        // SADECE kart konteynerlarını seç.
+        // a[href*=...] seçicileri alfabetik liste linklerini de yakalıyordu → poster=null
+        val results = document.select("div.list-series, div.list-episodes, div.episode-box, div.single-item")
+            .mapNotNull { it.toMainPageResult() }
             .distinctBy { it.url }
 
         Log.d("DiziGom", "${request.name}: page=$page count=${results.size} url=$pageUrl")
@@ -178,7 +204,9 @@ class DiziGom : MainAPI() {
             "$mainUrl/?s=${query.trim().replace(" ", "+")}",
             referer = "$mainUrl/"
         ).document
-        return document.select("div.episode-box, div.single-item, div.list-series, a[href*='/diziler/'], a[href*='/dizi/']")
+
+        // Arama sonuçlarında episode-box veya single-item kullanılıyor
+        return document.select("div.episode-box, div.single-item")
             .mapNotNull { it.toMainPageResult() }
             .distinctBy { it.url }
     }
@@ -194,7 +222,6 @@ class DiziGom : MainAPI() {
         val title = document.firstText("div.serieTitle h1", ".serieTitle h1", "h1.entry-title", "article h1", "h1")
             ?: return null
 
-        // Poster: önce div.seriePoster, sonra og:image
         val poster = document.selectFirst("div.seriePoster")?.posterUrl()
             ?: document.selectFirst("div.seriePoster img")?.posterUrl()
             ?: document.selectFirst("meta[property='og:image']")?.attr("content")?.let { cleanUrl(it) }
@@ -252,11 +279,7 @@ class DiziGom : MainAPI() {
     private fun extractPlayerUrl(document: Document): String? {
         return document.select("iframe[src], frame[src]")
             .mapNotNull { cleanUrl(it.attr("src")) }
-            .firstOrNull {
-                it.contains("s.php", true) ||
-                        it.contains("pilayerplay", true) ||
-                        it.contains("pilavyerplay", true)
-            }
+            .firstOrNull { it.contains("s.php", true) || it.contains("pilayerplay", true) }
             ?: Regex("https?://[^\\\"'\\s<>]+/s\\.php\\?[^\\\"'\\s<>]+", RegexOption.IGNORE_CASE)
                 .find(document.html())?.value?.let { cleanUrl(it) }
     }
@@ -281,29 +304,21 @@ class DiziGom : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("DiziGom", "Resolving episode: $data")
-        val document = runCatching { app.get(data, referer = "$mainUrl/").document }.getOrNull()
-            ?: run {
-                Log.e("DiziGom", "Bölüm sayfası yüklenemedi: $data")
-                return false
-            }
+        val document = runCatching { app.get(data, referer = "$mainUrl/").document }.getOrNull() ?: return false
 
-        // 1. Yöntem: iframe içindeki player URL'sini bul ve WebView ile çöz
         val playerUrl = extractPlayerUrl(document)
         if (!playerUrl.isNullOrBlank()) {
-            Log.d("DiziGom", "Player URL bulundu: $playerUrl")
-
-            // Önce doğrudan HTTP isteğiyle stream aramayı dene
             val playerResponse = runCatching { app.get(playerUrl, referer = data) }.getOrNull()
             val playerHtml = playerResponse?.text.orEmpty()
-            val directStream = extractPlayerStream(playerHtml)
+            val streamUrl = extractPlayerStream(playerHtml)
 
-            if (!directStream.isNullOrBlank()) {
-                Log.d("DiziGom", "Doğrudan stream bulundu: $directStream")
+            if (!streamUrl.isNullOrBlank()) {
+                Log.d("DiziGom", "PilayerPlay stream bulundu")
                 callback(
                     newExtractorLink(
                         source = name,
                         name = "DiziGom 1080p",
-                        url = directStream,
+                        url = streamUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         referer = playerUrl
@@ -313,46 +328,37 @@ class DiziGom : MainAPI() {
                 return true
             }
 
-            // Doğrudan bulunamazsa WebView ile çözmeyi dene
-            val context = DiziGomPlugin.pluginContext
-            if (context != null) {
-                Log.d("DiziGom", "WebView extractor başlatılıyor: $playerUrl")
-                return try {
-                    val extractor = DiziGomWebViewExtractor(context, name)
-                    extractor.getUrl(playerUrl, data, subtitleCallback, callback)
-                    true
-                } catch (e: Exception) {
-                    Log.e("DiziGom", "WebView extractor hatası: ${e.message}", e)
-                    false
-                }
-            } else {
-                Log.e("DiziGom", "Plugin context null, WebView kullanılamıyor!")
+            val directPlayerUrl = Regex(
+                "https?://[^\\\"'\\s<>]+(?:\\.m3u8(?:\\?[^\\\"'\\s<>]*)?|\\.mp4(?:\\?[^\\\"'\\s<>]*)?)",
+                RegexOption.IGNORE_CASE
+            ).findAll(playerHtml).map { cleanUrl(it.value) }.filterNotNull().distinct().toList()
+
+            for (stream in directPlayerUrl) {
+                callback(
+                    newExtractorLink(source = name, name = "DiziGom", url = stream,
+                        type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+                        referer = playerUrl
+                        quality = getQualityFromName(stream)
+                    }
+                )
             }
+            if (directPlayerUrl.isNotEmpty()) return true
         }
 
-        // 2. Yöntem: Sayfa HTML'inde doğrudan .m3u8 veya .mp4 URL'lerini ara
         val directUrls = Regex(
             "https?://[^\\\"'\\s<>]+(?:\\.m3u8(?:\\?[^\\\"'\\s<>]*)?|\\.mp4(?:\\?[^\\\"'\\s<>]*)?)",
             RegexOption.IGNORE_CASE
         ).findAll(document.html()).map { cleanUrl(it.value) }.filterNotNull().distinct().toList()
 
         for (stream in directUrls) {
-            Log.d("DiziGom", "Doğrudan URL bulundu: $stream")
             callback(
-                newExtractorLink(
-                    source = name,
-                    name = "DiziGom",
-                    url = stream,
-                    type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                ) {
+                newExtractorLink(source = name, name = "DiziGom", url = stream,
+                    type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
                     referer = data
                     quality = getQualityFromName(stream)
                 }
             )
         }
-        if (directUrls.isNotEmpty()) return true
-
-        Log.e("DiziGom", "Hiçbir video kaynağı bulunamadı: $data")
-        return false
+        return directUrls.isNotEmpty()
     }
 }
