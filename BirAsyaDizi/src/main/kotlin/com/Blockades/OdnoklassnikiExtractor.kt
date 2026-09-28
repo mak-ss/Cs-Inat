@@ -6,19 +6,26 @@ import org.json.JSONObject
 class OdnoklassnikiExtractor {
 
     fun getUrl(responseBody: String): String? {
-        // Yanıtın HTML veya geçersiz bir format olup olmadığını kontrol et
         val trimmedBody = responseBody.trim()
-        if (trimmedBody.startsWith("<!DOCTYPE", ignoreCase = true) || trimmedBody.startsWith("<html", ignoreCase = true)) {
+
+        // Sunucudan JSON yerine HTML (404/500, Cloudflare, Captcha vb.) dönüp dönmediğini kontrol et
+        if (trimmedBody.startsWith("<!DOCTYPE", ignoreCase = true) || 
+            trimmedBody.startsWith("<html", ignoreCase = true)
+        ) {
             println("HATA: Sunucudan JSON yerine HTML yanıtı döndü (Captcha, Bot Koruması veya 404/500 Sayfası).")
             return null
         }
 
         return try {
             val jsonObject = JSONObject(trimmedBody)
-            // JSON verisinden URL ayıklama mantığınız
+            
+            // Beklenen URL anahtarının varlığını kontrol et
             if (jsonObject.has("url")) {
                 jsonObject.getString("url")
+            } else if (jsonObject.has("play")) { // Alternatif JSON alanı kontrolü
+                jsonObject.getString("play")
             } else {
+                println("HATA: JSON yanıtı içinde geçerli bir URL anahtarı bulunamadı.")
                 null
             }
         } catch (e: JSONException) {
