@@ -17,21 +17,21 @@ class StarTvExtractor {
     private val userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    // CANLI YAYIN için (dokunulmadı)
+    // CANLI YAYIN için (değiştirilmedi)
     private val starTvAppId = "a20ac41e-bdc3-4aa1-934d-26b484480ac9"
     private val daionInitUrl = "https://dogus.daioncdn.net/options/init"
     private val daionBaseUrl = "https://dogus.daioncdn.net/startv"
 
-    // DİZİ BÖLÜMLERİ İÇİN YENİ: DYG Video API
+    // DİZİ BÖLÜMLERİ için DYG Video API (DOĞRULANDI!)
     private val dygVideoApiUrl = "https://dygvideo.dygdigital.com/api/video_info"
     private val dygSecretKey = "NtvApiSecret2014*"
-    private val dygPublisherId = "1"   // Star TV için (Ntv için de aynı olabilir)
+    private val dygPublisherId = "1"   // ✅ Doğrulandı: "main_publisher_id":1
 
     private val daionM3u8Regex = Regex("""(https?://dogus[a-z-]*\.daioncdn\.net/startv/[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val sidRegex = Regex("""["']?sid["']?\s*[:=]\s*["']?([a-z0-9]+)["']?""")
 
-    // DİZİ için sayfadaki referenceId
+    // Sayfadaki ID'ler
     private val referenceIdRegex = Regex(""""referenceId"\s*:\s*"([a-f0-9]+)"""")
     private val videoIdRegex = Regex(""""videoId"\s*:\s*"(\d+)"""")
 
@@ -131,24 +131,18 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DİZİ BÖLÜMÜ (YENİ: DYG VIDEO API KULLANARAK)
+    // DİZİ BÖLÜMÜ (KESİN ÇÖZÜM - DYG Video API doğrulandı)
     // ============================================================
-    /**
-     * Star TV dizi bölümleri için:
-     * 1. Sayfadan referenceId ve videoId çekilir
-     * 2. DYG Video API'ye istek atılır (PublisherId + ReferenceId + SecretKey)
-     * 3. API, token'lı mncdn.com playlist URL'sini döner
-     * 4. Bu URL doğrudan oynatıcıya verilir
-     */
     private suspend fun extractEpisodeStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             log("=== extractEpisodeStream START ===")
+            log("Episode URL: $url")
+
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
             val pageHtml = doc.html()
 
             val referenceId = referenceIdRegex.find(pageHtml)?.groupValues?.get(1)
-            val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
-            log("referenceId=$referenceId, videoId=$videoId")
+            log("referenceId=$referenceId")
 
             if (referenceId.isNullOrBlank()) {
                 log("FAILED: referenceId not found")
@@ -160,7 +154,7 @@ class StarTvExtractor {
             log("DYG API returned: $streamUrl")
 
             if (streamUrl.isNullOrBlank()) {
-                log("FAILED: no stream URL from DYG API")
+                log("FAILED: no stream URL")
                 return false
             }
 
@@ -189,7 +183,7 @@ class StarTvExtractor {
     /**
      * DYG Video API'den token'lı m3u8 URL'sini alır.
      * Endpoint: https://dygvideo.dygdigital.com/api/video_info
-     * Parametreler: akamai, PublisherId, ReferenceId, SecretKey
+     * Yanıt: {"data":{"flavors":{"hls":"https://startv-p3.mncdn.com/...?st=...&e=...&r=16"}}}
      */
     private suspend fun fetchFromDygVideoApi(referenceId: String, refererUrl: String): String? {
         val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$referenceId&SecretKey=$dygSecretKey"
@@ -204,71 +198,47 @@ class StarTvExtractor {
             )).text
 
             log("DYG API response length: ${response.length}")
-            log("DYG API response preview: ${response.take(500)}")
 
             if (response.isBlank()) return null
 
-            if (response.trim().startsWith("{")) {
-                val json = JSONObject(response)
-                log("JSON keys: ${json.keys().asSequence().toList()}")
+            val json = JSONObject(response)
 
-                // Olası alan isimleri
-                val keys = listOf("videoUrl", "url", "contentUrl", "hlsUrl", "streamUrl",
-                    "src", "file", "mediaUrl", "playlistUrl", "hls", "m3u8")
-
-                for (key in keys) {
-                    val value = json.optString(key)
-                    if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil"))) {
-                        log("Found stream in '$key': $value")
-                        return value
-                    }
-                }
-
-                // Nested objeleri dene
-                for (objKey in listOf("data", "video", "flavors", "hls")) {
-                    val obj = json.optJSONObject(objKey)
-                    if (obj != null) {
-                        log("Checking nested object: $objKey")
-                        for (key in keys) {
-                            val value = obj.optString(key)
-                            if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil"))) {
-                                log("Found stream in '$objKey.$key': $value")
-                                return value
-                            }
-                        }
-                        // flavors.hls gibi iki seviye
-                        val hlsObj = obj.optJSONObject("hls")
-                        if (hlsObj != null) {
-                            for (key in keys) {
-                                val value = hlsObj.optString(key)
-                                if (value.isNotBlank() && (value.contains(".m3u8") || value.contains(".smil"))) {
-                                    log("Found stream in '$objKey.hls.$key': $value")
-                                    return value
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // flavors.hls direkt string olabilir
-                val flavorsObj = json.optJSONObject("flavors")
+            // Önce data.flavors.hls yolunu dene (ASIL YOL)
+            val dataObj = json.optJSONObject("data")
+            if (dataObj != null) {
+                val flavorsObj = dataObj.optJSONObject("flavors")
                 if (flavorsObj != null) {
-                    val hlsValue = flavorsObj.optString("hls")
-                    if (hlsValue.isNotBlank() && hlsValue.contains(".m3u8")) {
-                        log("Found flavors.hls: $hlsValue")
-                        return hlsValue
+                    // flavors.hls
+                    val hls = flavorsObj.optString("hls")
+                    if (hls.isNotBlank() && hls.contains(".m3u8")) {
+                        log("✅ Found flavors.hls: $hls")
+                        return hls
+                    }
+
+                    // flavors.hds (fallback - bazı eski içeriklerde)
+                    val hds = flavorsObj.optString("hds")
+                    if (hds.isNotBlank() && hds.contains(".m3u8")) {
+                        log("Found flavors.hds (fallback): $hds")
+                        return hds
+                    }
+
+                    // flavors."0".file_url_1 (bazı içeriklerde)
+                    val zeroObj = flavorsObj.optJSONObject("0")
+                    if (zeroObj != null) {
+                        val fileUrl = zeroObj.optString("file_url_1")
+                        if (fileUrl.isNotBlank() && fileUrl.contains(".m3u8")) {
+                            log("Found flavors.0.file_url_1: $fileUrl")
+                            return fileUrl
+                        }
                     }
                 }
-
-                // Regex fallback
-                daionM3u8Regex.find(response)?.value?.let { return it }
-                m3u8Regex.find(response)?.value?.let { return it }
             }
 
-            // Plain text ise regex dene
+            // Fallback: Regex ile tüm JSON'dan mncdn linki çek
             daionM3u8Regex.find(response)?.value?.let { return it }
             m3u8Regex.find(response)?.value?.let { return it }
 
+            log("No stream URL found in response")
             null
         } catch (e: Exception) {
             log("DYG API EXCEPTION: ${e.message}")
