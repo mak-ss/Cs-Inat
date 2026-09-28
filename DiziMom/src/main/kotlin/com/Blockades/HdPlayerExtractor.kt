@@ -7,7 +7,7 @@ import org.json.JSONObject
 
 open class HdPlayerExtractor : ExtractorApi() {
     override val name            = "HdPlayer"
-    override val mainUrl         = "https://hdplayersystem.com"
+    override val mainUrl = "https://hdplayersystem.com"  // ✓ DOĞRU
     override val requiresReferer = true
 
     override suspend fun getUrl(
