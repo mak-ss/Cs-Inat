@@ -18,9 +18,9 @@ class StarTvExtractor {
     // SADECE gerçek m3u8 linklerini yakala (sayfa URL'si değil!)
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val mp4Regex = Regex("""(https?://[^\s"'<>]+?\.mp4[^\s"'<>]*)""")
-    
+
     // Sayfa içindeki JSON'da video objesini bul
-    private val videoJsonRegex = Regex(""""video"\s*:\s*\{[^}]*"contentUrl"\s*:\s*"([^"]+)"""")
+    private val videoJsonRegex = Regex(""""contentUrl"\s*:\s*"([^"]+)"""")
     private val filenameRegex = Regex(""""filename"\s*:\s*"([^"]+)"""")
 
     suspend fun getUrl(
@@ -40,30 +40,27 @@ class StarTvExtractor {
 
     /**
      * Canlı yayın - Star TV canlı yayını iframe içinde geliyor.
-     * Sayfada player iframe'ini bulup oradan m3u8 çekiyoruz.
      */
     private suspend fun extractLiveStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
-            // 1. Sayfadaki iframe'leri kontrol et
+            // 1. Sayfadaki iframe'leri kontrol et (DÜZELTİLDİ)
             val iframeSrc = doc.select(
                 "iframe[src*=player], iframe[src*=canli], iframe[src*=live], iframe[src*=daion], iframe[src*=dogus]"
-            ).attr("src").firstOrNull()
+            ).firstOrNull()?.attr("src")
 
             if (!iframeSrc.isNullOrBlank()) {
                 val fullIframeUrl = fixUrl(iframeSrc)
-                
-                // Iframe içeriğini çek
+
                 val iframeDoc = app.get(fullIframeUrl, headers = mapOf(
                     "User-Agent" to userAgent,
                     "Referer" to url
                 )).document
 
-                // Iframe içinden m3u8 çek
                 var streamUrl = findStreamUrl(iframeDoc)
-                
-                // Iframe içinde başka bir script/iframe varsa oraya da bak
+
+                // Iframe içinde başka bir iframe varsa
                 if (streamUrl.isNullOrBlank()) {
                     val innerIframe = iframeDoc.selectFirst("iframe[src]")?.attr("src")
                     if (!innerIframe.isNullOrBlank()) {
@@ -136,12 +133,15 @@ class StarTvExtractor {
 
             var streamUrl: String? = null
 
-            // 1. Sayfadaki script'lerde video URL'si ara (contentUrl, m3u8, filename)
+            // 1. Sayfadaki script'lerde video URL'si ara
             streamUrl = extractFromScripts(doc)
 
             // 2. Iframe varsa içeriğini çek
             if (streamUrl.isNullOrBlank()) {
-                val iframeSrc = doc.selectFirst("iframe[src*=player], iframe[src*=video], iframe[src*=embed], iframe[src*=daion]")?.attr("src")
+                val iframeSrc = doc.select(
+                    "iframe[src*=player], iframe[src*=video], iframe[src*=embed], iframe[src*=daion]"
+                ).firstOrNull()?.attr("src")
+
                 if (!iframeSrc.isNullOrBlank()) {
                     val iframeDoc = app.get(fixUrl(iframeSrc), headers = mapOf(
                         "User-Agent" to userAgent,
@@ -161,7 +161,7 @@ class StarTvExtractor {
                 if (streamUrl.contains("startv.com.tr/dizi/")) {
                     return false
                 }
-                
+
                 callback(
                     newExtractorLink(
                         source = extractorName,
@@ -188,10 +188,8 @@ class StarTvExtractor {
 
     /**
      * Sayfadaki tüm script tag'lerini tarayıp video URL'sini bulur.
-     * Öncelik: contentUrl -> filename -> m3u8 -> mp4
      */
     private fun extractFromScripts(doc: Document): String? {
-        // Sayfadaki tüm script'leri topla (inline + __NEXT_DATA__ + JSON-LD)
         val allScripts = buildString {
             doc.select("script").forEach { script ->
                 append(script.html())
@@ -199,14 +197,14 @@ class StarTvExtractor {
             }
         }
 
-        // 1. contentUrl (JSON içinde)
+        // 1. contentUrl
         videoJsonRegex.find(allScripts)?.groupValues?.get(1)?.let { url ->
             if (url.contains(".m3u8") || url.contains(".mp4")) {
                 return url
             }
         }
 
-        // 2. filename -> bir CDN URL'si olabilir, genelde mp4
+        // 2. filename
         filenameRegex.find(allScripts)?.groupValues?.get(1)?.let { filename ->
             if (filename.contains(".mp4") && filename.startsWith("http")) {
                 return filename
@@ -234,7 +232,6 @@ class StarTvExtractor {
 
     /**
      * Sayfa HTML'inde stream URL'si arar (script dışı).
-     * ÖNEMLİ: Sayfa URL'sini yakalamamak için filtre uygular.
      */
     private fun findStreamUrl(doc: Document): String? {
         val html = doc.html()
