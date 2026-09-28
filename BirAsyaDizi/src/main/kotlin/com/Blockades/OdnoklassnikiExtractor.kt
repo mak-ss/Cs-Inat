@@ -38,7 +38,7 @@ class OdnoklassnikiExtractor : ExtractorApi() {
             return
         }
         Log.d("Odnoklassniki_DEBUG", "Yanıt uzunluğu: ${response.length}")
-        Log.d("Odnoklassniki_DEBUG", "Yanıt başı (ilk 3000 karakter): ${response.take(3000)}")
+        // Log.d("Odnoklassniki_DEBUG", "Yanıt başı (ilk 3000 karakter): ${response.take(3000)}")
 
         // ---- VİDEO AYIKLAMA ----
         // Farklı formatları yakalamak için birden fazla regex deniyoruz
@@ -48,7 +48,9 @@ class OdnoklassnikiExtractor : ExtractorApi() {
             // Format 2: {"url":"https://...","name":"HD"}
             Regex(""""url"\s*:\s*"([^"]+)"\s*,\s*"name"\s*:\s*"([^"]+)""""),
             // Format 3: Basit URL yakalama (mp4/m3u8 ile biten)
-            Regex(""""(https?://[^"]+\.(?:mp4|m3u8)[^"]*)"""")
+            Regex(""""(https?://[^"]+\.(?:mp4|m3u8)[^"]*)""""),
+            // Format 4: videoUrl veya video_url değişkenleri
+            Regex("""(?:videoUrl|video_url|src)\s*[:=]\s*['"](https?://[^'"]+\.(?:mp4|m3u8)[^'"]*)['"]""")
         )
 
         var foundVideos = 0
@@ -62,13 +64,16 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                 val videoUrl: String
                 val qualityName: String
 
-                if (index == 1 && groups.size >= 3) {
+                if (index == 1 && groups.size >= 3) { // Format 2
                     videoUrl = groups[1]
                     qualityName = groups[2]
-                } else if (index == 2 && groups.size >= 2) {
+                } else if (index == 2 && groups.size >= 2) { // Format 3
                     videoUrl = groups[1]
                     qualityName = ""
-                } else if (groups.size >= 3) {
+                } else if (index == 3 && groups.size >= 2) { // Format 4
+                    videoUrl = groups[1]
+                    qualityName = ""
+                } else if (groups.size >= 3) { // Format 1
                     qualityName = groups[1]
                     videoUrl = groups[2]
                 } else {
