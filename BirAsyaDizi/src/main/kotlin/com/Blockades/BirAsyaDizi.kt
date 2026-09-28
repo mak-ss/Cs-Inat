@@ -110,22 +110,20 @@ class BirAsyaDizi : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mainHeaders).document
 
-        val title = document.selectFirst("div.tab-icerik img")?.attr("title") ?: return null
-        val img = document.selectFirst("div.tab-icerik img")
+        val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim() ?: return null
+        val img = document.selectFirst("div.dizi-bilgi .afis img")
         val poster = fixUrlNull(img?.attr("data-src")?.ifEmpty { img.attr("src") })
-        val description = document.selectFirst("div.aciklama div.scroll-liste")?.text()?.trim()
-        val year = document.selectFirst("div.extra span.C a")?.text()?.trim()?.toIntOrNull()
-        val tags = document.select("ol.gizli li a").map { it.text() }
-        val rating = document.selectFirst("span.tum-gor")?.text()?.trim()
+        val description = document.selectFirst("div.dizi-bilgi .aciklama")?.text()?.trim()
+        val year = document.selectFirst("div.dizi-bilgi .detay li:contains(Yapım) a")?.text()?.trim()?.toIntOrNull()
+        val tags = document.select("div.dizi-bilgi .detay li:contains(Tür) a").map { it.text() }
+        val rating = document.selectFirst("div.dizi-bilgi #puandegistir")?.text()?.trim()
         val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
 
         val episodes = document.select("li.szn").mapNotNull { bolum ->
             val epName = bolum.selectFirst("div.baslik a")?.text()?.trim()
             val epHref = fixUrlNull(bolum.selectFirst("div.resim a")?.attr("href")) ?: return@mapNotNull null
-            val epEpisode = epHref
-                .substringBeforeLast("-bolum")
-                .substringAfterLast("-")
-                .toIntOrNull()
+            // Bölüm numarasını başlıktan ayıklamak daha güvenlidir.
+            val epEpisode = epName?.let { Regex("(\\d+)\\. Bölüm").find(it)?.groupValues?.get(1)?.toIntOrNull() }
 
             newEpisode(epHref) {
                 this.episode = epEpisode
@@ -170,7 +168,8 @@ class BirAsyaDizi : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data, headers = mainHeaders).document
-        val iframe = document.selectFirst("iframe") ?: return false
+        // Oynatıcı iframe'i artık daha spesifik bir seçici ile bulunuyor.
+        val iframe = document.selectFirst("div#vast iframe#Vidpplayera") ?: return false
 
         val iframeVid = fixUrlNull(
             iframe.attr("vdo-src").ifEmpty { 
@@ -182,6 +181,7 @@ class BirAsyaDizi : MainAPI() {
 
         Log.d("kraptor_$name", "iframeVid -> $iframeVid")
 
+        // Burada OdnoklassnikiExtractor'ın devreye girmesi için URL'yi loadExtractor'a gönderiyoruz.
         return loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
     }
 }
