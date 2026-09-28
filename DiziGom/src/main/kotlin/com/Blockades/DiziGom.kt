@@ -45,7 +45,7 @@ class DiziGom : MainAPI() {
 
     override val mainPage = mainPageOf(
         "${mainUrl}/tur/aile/" to "Aile",
-        "${mainUrl}/tur/aksiyon/" to "Aksiyon",
+        "${mainUrl}/dizi-izle/?filtrele=imdb&sirala=DESC&yil=&imdb=&kelime=&tur=Aksiyon/" to "Aksiyon",
         "${mainUrl}/tur/animasyon/" to "Animasyon",
         "${mainUrl}/tur/belgesel/" to "Belgesel",
         "${mainUrl}/tur/bilim-kurgu/" to "Bilim Kurgu",
