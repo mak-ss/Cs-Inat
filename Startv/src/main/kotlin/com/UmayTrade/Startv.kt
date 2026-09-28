@@ -25,7 +25,6 @@ class StarTv : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val homeCategories = mutableListOf<HomePageList>()
 
-        // Canlı Yayın
         homeCategories.add(
             HomePageList(
                 "Canlı TV",
@@ -41,7 +40,6 @@ class StarTv : MainAPI() {
             )
         )
 
-        // Güncel Diziler (/dizi sayfasından)
         runCatching {
             val dizilerDoc = app.get("$mainUrl/dizi", headers = headers).document
             val dizilerList = dizilerDoc.select("div.poster-card > a[href*=/dizi/]").mapNotNull { linkElement ->
@@ -64,7 +62,7 @@ class StarTv : MainAPI() {
         return newHomePageResponse(homeCategories)
     }
 
-    // 2. ARAMA MOTORU
+    // 2. ARAMA
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/arama?q=$query"
         return runCatching {
@@ -83,9 +81,8 @@ class StarTv : MainAPI() {
         }.getOrElse { emptyList() }
     }
 
-    // 3. DETAY SAYFASI VE BÖLÜMLER
+    // 3. DETAY
     override suspend fun load(url: String): LoadResponse? {
-        // Canlı yayın kontrolü
         if (url.contains("canli-yayin")) {
             return newLiveStreamLoadResponse(
                 name = "Star TV Canlı",
@@ -98,7 +95,6 @@ class StarTv : MainAPI() {
 
         val doc = app.get(url, headers = headers).document
 
-        // JSON-LD parse
         val jsonLdScript = doc.selectFirst("script[type=application/ld+json]")?.html()
         var title = doc.selectFirst("h1")?.text()?.trim() ?: "Star TV Dizisi"
         var description = doc.selectFirst("meta[name=description]")?.attr("content") ?: ""
@@ -122,7 +118,6 @@ class StarTv : MainAPI() {
             }
         }
 
-        // Bölümleri topla
         val episodes = mutableListOf<Episode>()
         val episodesPageUrl = "$url/bolumler"
         val episodesDoc = app.get(episodesPageUrl, headers = headers).document
@@ -169,13 +164,13 @@ class StarTv : MainAPI() {
         }
     }
 
-    // 4. VİDEO ÇÖZÜMLEME
+    // 4. VİDEO ÇÖZÜMLEME  ← BURASI DÜZELTİLDİ
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        return StarTvExtractor().getUrl(data, this.mainUrl, subtitleCallback, callback)
+        return StarTvExtractor().getUrl(data, subtitleCallback, callback)
     }
 }
