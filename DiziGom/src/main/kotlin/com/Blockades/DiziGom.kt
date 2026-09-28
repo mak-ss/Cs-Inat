@@ -56,51 +56,95 @@ class DiziGom : MainAPI() {
         ?.takeIf { it.isNotBlank() }
         ?.let { fixUrlNull(it) }
 
+    /**
+     * Lazy-load placeholder'ları filtrele:
+     *  - "lazy", "placeholder", "blank", "loading" içeren URL'ler
+     *  - .gif uzantılı (1px tracking pixel)
+     */
+    private fun isPlaceholderImage(url: String?): Boolean {
+        if (url.isNullOrBlank()) return true
+        val lower = url.lowercase()
+        return lower.contains("lazy") ||
+                lower.contains("placeholder") ||
+                lower.contains("blank") ||
+                lower.contains("loading") ||
+                lower.contains("spinner") ||
+                lower.endsWith(".gif") ||
+                lower.contains("data:image")
+    }
+
     private fun Element.backgroundUrl(): String? {
         val style = attr("style")
         val match = Regex("url\\((?:\\\"|')?([^\\\"')]+)", RegexOption.IGNORE_CASE).find(style)
         return cleanUrl(match?.groupValues?.getOrNull(1))
     }
 
+    /**
+     * Poster URL'sini al. Öncelik sırası:
+     *  1. Element'in kendi data-* attribute'ları (data-poster, data-bg, ...)
+     *  2. img[data-src] (lazy load asıl URL)
+     *  3. img[data-lazy-src], img[data-original]
+     *  4. img[data-srcset], img[srcset] (ilk URL)
+     *  5. img[src] (lazy placeholder değilse)
+     *  6. Element'in CSS background-image'ı
+     *  7. Alt elementlerin background-image'ları
+     */
     private fun Element.posterUrl(): String? {
         val img = selectFirst("img")
-        val candidates = sequenceOf(
-            attr("data-poster"), attr("data-bg"), attr("data-background"), attr("data-image"),
-            img?.attr("data-src"), img?.attr("data-lazy-src"), img?.attr("data-original"),
-            img?.attr("data-image"), img?.attr("src"), backgroundUrl()
-        )
-        val descendantBackground = select("[style]").asSequence()
-            .mapNotNull { it.backgroundUrl() }
-            .firstOrNull()
 
-        return (candidates + sequenceOf(descendantBackground))
-            .mapNotNull { it?.substringBefore(",")?.trim()?.substringBefore(" ") }
+        val candidates = sequenceOf(
+            attr("data-poster"),
+            attr("data-bg"),
+            attr("data-background"),
+            attr("data-image"),
+            img?.attr("data-src"),                // ← Lazy load birincil kaynak
+            img?.attr("data-lazy-src"),
+            img?.attr("data-original"),
+            img?.attr("data-image"),
+            img?.attr("data-srcset")?.substringBefore(",")?.substringBefore(" ")?.trim(),
+            img?.attr("srcset")?.substringBefore(",")?.substringBefore(" ")?.trim(),
+            img?.attr("src"),                     // En sona koy, placeholder filtrelenecek
+            backgroundUrl()
+        )
+
+        // Alt elementlerdeki background-image'ları da dene
+        val descendantBackgrounds = select("[style]").asSequence()
+            .mapNotNull { it.backgroundUrl() }
+
+        return (candidates + descendantBackgrounds)
+            .mapNotNull { raw ->
+                raw?.substringBefore(",")?.trim()?.substringBefore(" ")?.trim()
+            }
             .mapNotNull { cleanUrl(it) }
-            .firstOrNull()
+            .firstOrNull { !isPlaceholderImage(it) }
     }
 
     private fun Element.findCard(): Element {
-        if (hasClass("episode-box") || hasClass("single-item")) return this
+        if (hasClass("episode-box") || hasClass("single-item") || hasClass("list-series")) return this
         return generateSequence(this as Element?) { it.parent() }
             .take(12)
-            .firstOrNull { it.hasClass("episode-box") || it.hasClass("single-item") }
+            .firstOrNull {
+                it.hasClass("episode-box") || it.hasClass("single-item") || it.hasClass("list-series")
+            }
             ?: this
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
         val card = findCard()
+
         val title = sequenceOf(
             card.selectFirst("div.serie-name a")?.text(),
+            card.selectFirst(".serie-name a")?.text(),
             card.selectFirst(".serie-name")?.text(),
             card.selectFirst("a[title]")?.attr("title"),
             card.selectFirst("img")?.attr("alt"),
             card.selectFirst("img")?.attr("title"),
             card.attr("title"),
-            if (tagName() == "a") text() else null,
-            card.text()
+            if (tagName() == "a") text() else null
         ).mapNotNull { it?.trim()?.takeIf { value -> value.isNotBlank() } }.firstOrNull() ?: return null
 
         val href = sequenceOf(
+            card.selectFirst("div.serie-name a[href*='/diziler/']")?.attr("href"),
             card.selectFirst("a[href*='/diziler/']")?.attr("href"),
             card.selectFirst("a[href*='/dizi/']")?.attr("href"),
             if (tagName() == "a") attr("href") else null,
@@ -108,8 +152,11 @@ class DiziGom : MainAPI() {
             attr("href")
         ).mapNotNull { cleanUrl(it) }.firstOrNull() ?: return null
 
+        val poster = card.posterUrl()
+        Log.d("DiziGom", "Card: title='$title' poster='$poster'")
+
         return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-            posterUrl = card.posterUrl()
+            posterUrl = poster
         }
     }
 
@@ -118,7 +165,7 @@ class DiziGom : MainAPI() {
         val document = runCatching { app.get(pageUrl, referer = "$mainUrl/").document }.getOrNull()
             ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
-        val results = (document.select("div.episode-box, div.single-item, a[href*='/diziler/'], a[href*='/dizi/']")
+        val results = (document.select("div.episode-box, div.single-item, div.list-series, a[href*='/diziler/'], a[href*='/dizi/']")
             .mapNotNull { it.toMainPageResult() })
             .distinctBy { it.url }
 
@@ -131,7 +178,7 @@ class DiziGom : MainAPI() {
             "$mainUrl/?s=${query.trim().replace(" ", "+")}",
             referer = "$mainUrl/"
         ).document
-        return document.select("div.episode-box, div.single-item, a[href*='/diziler/'], a[href*='/dizi/']")
+        return document.select("div.episode-box, div.single-item, div.list-series, a[href*='/diziler/'], a[href*='/dizi/']")
             .mapNotNull { it.toMainPageResult() }
             .distinctBy { it.url }
     }
@@ -147,6 +194,7 @@ class DiziGom : MainAPI() {
         val title = document.firstText("div.serieTitle h1", ".serieTitle h1", "h1.entry-title", "article h1", "h1")
             ?: return null
 
+        // Poster: önce div.seriePoster, sonra og:image
         val poster = document.selectFirst("div.seriePoster")?.posterUrl()
             ?: document.selectFirst("div.seriePoster img")?.posterUrl()
             ?: document.selectFirst("meta[property='og:image']")?.attr("content")?.let { cleanUrl(it) }
@@ -189,6 +237,8 @@ class DiziGom : MainAPI() {
             }.distinctBy { it.data }
             .sortedWith(compareBy({ it.season ?: 0 }, { it.episode ?: 0 }))
 
+        Log.d("DiziGom", "Load: '$title' poster='$poster' episodes=${episodes.size}")
+
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             posterUrl = poster
             this.year = year
@@ -202,7 +252,11 @@ class DiziGom : MainAPI() {
     private fun extractPlayerUrl(document: Document): String? {
         return document.select("iframe[src], frame[src]")
             .mapNotNull { cleanUrl(it.attr("src")) }
-            .firstOrNull { it.contains("s.php", true) || it.contains("pilayerplay", true) || it.contains("pilavyerplay", true) }
+            .firstOrNull {
+                it.contains("s.php", true) ||
+                        it.contains("pilayerplay", true) ||
+                        it.contains("pilavyerplay", true)
+            }
             ?: Regex("https?://[^\\\"'\\s<>]+/s\\.php\\?[^\\\"'\\s<>]+", RegexOption.IGNORE_CASE)
                 .find(document.html())?.value?.let { cleanUrl(it) }
     }
