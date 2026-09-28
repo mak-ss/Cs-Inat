@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class OdnoklassnikiExtractor : ExtractorApi() {
     override var name = "Odnoklassniki"
-    override var mainUrl = "https://odnoklassniki.ru"
+    override var mainUrl = "https://ok.ru"
     override val requiresReferer = true
 
     override suspend fun getUrl(
@@ -22,8 +22,13 @@ class OdnoklassnikiExtractor : ExtractorApi() {
     ) {
         Log.d("Odnoklassniki_DEBUG", "getUrl çağrıldı. url: $url")
 
-        // URL'yi normalize et (//odnoklassniki.ru/... gibi başlıyorsa https: ekle)
-        val normalizedUrl = if (url.startsWith("//")) "https:$url" else url
+        // URL'yi normalize et
+        val normalizedUrl = when {
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("http://") -> url.replace("http://", "https://")
+            url.startsWith("https://") -> url
+            else -> "https://$url"
+        }
         Log.d("Odnoklassniki_DEBUG", "Normalize edilmiş URL: $normalizedUrl")
 
         val response = try {
@@ -33,27 +38,58 @@ class OdnoklassnikiExtractor : ExtractorApi() {
             return
         }
         Log.d("Odnoklassniki_DEBUG", "Yanıt uzunluğu: ${response.length}")
-
-        // Yanıtın video içeren kısmını loglayalım (çok uzun olabilir, sadece ilk 3000 karakter)
         Log.d("Odnoklassniki_DEBUG", "Yanıt başı (ilk 3000 karakter): ${response.take(3000)}")
 
-        // videoRegex - iki farklı sıralama için iki alternatif
-        val videoRegex = Regex("""\{\"name\":\"(.*?)\",\"url\":\"(.*?)\"|\{\"url\":\"(.*?)\",\"name\":\"(.*?)\"""")
-        val videoMatches = videoRegex.findAll(response).toList()
-        Log.d("Odnoklassniki_DEBUG", "Video regex eşleşme sayısı: ${videoMatches.size}")
+        // ---- VİDEO AYIKLAMA ----
+        // Farklı formatları yakalamak için birden fazla regex deniyoruz
+        val videoRegexes = listOf(
+            // Format 1: {"name":"HD","url":"https://..."}
+            Regex(""""name"\s*:\s*"([^"]+)"\s*,\s*"url"\s*:\s*"([^"]+)""""),
+            // Format 2: {"url":"https://...","name":"HD"}
+            Regex(""""url"\s*:\s*"([^"]+)"\s*,\s*"name"\s*:\s*"([^"]+)""""),
+            // Format 3: Basit URL yakalama (mp4/m3u8 ile biten)
+            Regex(""""(https?://[^"]+\.(?:mp4|m3u8)[^"]*)"""")
+        )
 
-        if (videoMatches.isEmpty()) {
-            // Alternatif regex deneyelim: OK.ru'nun yeni formatı için
-            Log.d("Odnoklassniki_DEBUG", "Birincil regex eşleşme bulamadı, alternatif regex deneniyor...")
-            val altRegex = Regex(""""url":"(https?://[^"]+\.(?:mp4|m3u8)[^"]*)"""")
-            val altMatches = altRegex.findAll(response).toList()
-            Log.d("Odnoklassniki_DEBUG", "Alternatif regex eşleşme sayısı: ${altMatches.size}")
+        var foundVideos = 0
+        for ((index, regex) in videoRegexes.withIndex()) {
+            val matches = regex.findAll(response).toList()
+            Log.d("Odnoklassniki_DEBUG", "Regex #$index eşleşme sayısı: ${matches.size}")
 
-            altMatches.forEachIndexed { index, matchResult ->
-                val videoUrl = matchResult.groupValues[1]
-                Log.d("Odnoklassniki_DEBUG", "Alternatif Video #$index - URL: $videoUrl")
-                if (videoUrl.isNotBlank()) {
+            matches.forEach { matchResult ->
+                val groups = matchResult.groupValues
+                // Regex #2'de URL 1., isim 2. grupta; diğerlerinde tam tersi
+                val videoUrl: String
+                val qualityName: String
+
+                if (index == 1 && groups.size >= 3) {
+                    videoUrl = groups[1]
+                    qualityName = groups[2]
+                } else if (index == 2 && groups.size >= 2) {
+                    videoUrl = groups[1]
+                    qualityName = ""
+                } else if (groups.size >= 3) {
+                    qualityName = groups[1]
+                    videoUrl = groups[2]
+                } else {
+                    return@forEach
+                }
+
+                Log.d("Odnoklassniki_DEBUG", "Video bulundu -> Kalite: '$qualityName' URL: '$videoUrl'")
+
+                if (videoUrl.isNotBlank() && (videoUrl.contains(".mp4") || videoUrl.contains("m3u8"))) {
+                    val quality = when {
+                        qualityName.contains("1080", true) -> Qualities.P1080.value
+                        qualityName.contains("720", true) -> Qualities.P720.value
+                        qualityName.contains("480", true) -> Qualities.P480.value
+                        qualityName.contains("360", true) -> Qualities.P360.value
+                        qualityName.contains("240", true) -> Qualities.P240.value
+                        qualityName.contains("144", true) -> Qualities.P144.value
+                        else -> Qualities.Unknown.value
+                    }
                     val linkType = if (videoUrl.contains("m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
+                    Log.d("Odnoklassniki_DEBUG", "Callback'e video gönderiliyor: ${videoUrl.replace("\\/", "/")} - Kalite: $quality")
                     callback.invoke(
                         newExtractorLink(
                             name = this.name,
@@ -62,58 +98,33 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                             type = linkType
                         ) {
                             this.referer = referer ?: normalizedUrl
-                            this.quality = Qualities.Unknown.value
+                            this.quality = quality
                         }
                     )
+                    foundVideos++
                 }
             }
+            // Eğer bir regex video bulduysa diğerlerini denemeye gerek yok
+            if (foundVideos > 0) break
         }
 
-        videoMatches.forEachIndexed { index, matchResult ->
-            val qualityName = matchResult.groupValues[1].ifEmpty { matchResult.groupValues[4] }
-            val videoUrl = matchResult.groupValues[2].ifEmpty { matchResult.groupValues[3] }
-            Log.d("Odnoklassniki_DEBUG", "Video #$index - Kalite: '$qualityName', URL: '$videoUrl'")
-
-            if (videoUrl.isNotBlank() && (videoUrl.contains(".mp4") || videoUrl.contains("m3u8"))) {
-                val quality = when {
-                    qualityName.contains("1080", true) -> Qualities.P1080.value
-                    qualityName.contains("720", true) -> Qualities.P720.value
-                    qualityName.contains("480", true) -> Qualities.P480.value
-                    qualityName.contains("360", true) -> Qualities.P360.value
-                    else -> Qualities.Unknown.value
-                }
-                val linkType = if (videoUrl.contains("m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-
-                Log.d("Odnoklassniki_DEBUG", "Callback'e video gönderiliyor: ${videoUrl.replace("\\/", "/")} - Kalite: $quality")
-                callback.invoke(
-                    newExtractorLink(
-                        name = this.name,
-                        source = this.name,
-                        url = videoUrl.replace("\\/", "/"),
-                        type = linkType
-                    ) {
-                        this.referer = referer ?: normalizedUrl
-                        this.quality = quality
-                    }
-                )
-            }
+        if (foundVideos == 0) {
+            Log.e("Odnoklassniki_DEBUG", "HATA: Hiçbir video URL'si ayıklanamadı!")
         }
 
-        // Altyazıları bulmak için regex
-        val subtitleRegex = Regex("""\{\"url\":\"(.*?)\",\"lang\":\"(.*?)\"""")
-        val subMatches = subtitleRegex.findAll(response).toList()
-        Log.d("Odnoklassniki_DEBUG", "Altyazı regex eşleşme sayısı: ${subMatches.size}")
+        // ---- ALTYAZI AYIKLAMA ----
+        val subRegex = Regex(""""url"\s*:\s*"([^"]+\.(?:vtt|srt))"[^}]*?"lang"\s*:\s*"([^"]+)"""")
+        val subMatches = subRegex.findAll(response).toList()
+        Log.d("Odnoklassniki_DEBUG", "Altyazı eşleşme sayısı: ${subMatches.size}")
         subMatches.forEach { matchResult ->
             val subUrl = matchResult.groupValues[1]
             val lang = matchResult.groupValues[2]
-            Log.d("Odnoklassniki_DEBUG", "Altyazı - Dil: $lang, URL: $subUrl")
-            if (subUrl.isNotBlank() && (subUrl.endsWith(".vtt") || subUrl.endsWith(".srt"))) {
-                subtitleCallback.invoke(
-                    SubtitleFile(lang, subUrl.replace("\\/", "/"))
-                )
-            }
+            Log.d("Odnoklassniki_DEBUG", "Altyazı bulundu -> Dil: $lang URL: $subUrl")
+            subtitleCallback.invoke(
+                SubtitleFile(lang, subUrl.replace("\\/", "/"))
+            )
         }
 
-        Log.d("Odnoklassniki_DEBUG", "getUrl tamamlandı.")
+        Log.d("Odnoklassniki_DEBUG", "getUrl tamamlandı. Toplam video: $foundVideos")
     }
 }
