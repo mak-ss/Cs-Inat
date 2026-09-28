@@ -178,29 +178,44 @@ class BirAsyaDizi : MainAPI() {
         Log.d("BirAsyaDizi_DEBUG", "loadLinks çağrıldı. data: $data")
         val document = app.get(data, headers = mainHeaders).document
 
-        val iframes = document.select("div#vast iframe#Vidpplayera, iframe[src], iframe[vdo-src], iframe[data-src]")
-        
-        if (iframes.isEmpty()) {
-            Log.e("BirAsyaDizi_DEBUG", "HATA: Sayfada hiç iframe bulunamadı!")
+        val videoUrls = mutableListOf<String>()
+
+        // 1. İframe ve alternatif nitelikler üzerinden video adreslerini topla
+        val iframeElements = document.select("iframe[src], iframe[vdo-src], iframe[data-src], iframe[data-lazy-src]")
+        for (iframe in iframeElements) {
+            val src = iframe.attr("vdo-src").ifEmpty {
+                iframe.attr("src").ifEmpty {
+                    iframe.attr("data-src").ifEmpty {
+                        iframe.attr("data-lazy-src")
+                    }
+                }
+            }
+            if (src.isNotBlank()) {
+                fixUrlNull(src)?.let { videoUrls.add(it) }
+            }
+        }
+
+        // 2. Eğer iframe bulunamadıysa script ve player div'lerini analiz et
+        if (videoUrls.isEmpty()) {
+            val scriptTags = document.select("script").map { it.html() }
+            val regex = Regex("""https?://[^\s"'<>]+?(?:ok\.ru|odnoklassniki|embed|player)[^\s"'<>]*""", RegexOption.IGNORE_CASE)
+            
+            for (script in scriptTags) {
+                regex.findAll(script).forEach { match ->
+                    fixUrlNull(match.value)?.let { videoUrls.add(it) }
+                }
+            }
+        }
+
+        if (videoUrls.isEmpty()) {
+            Log.e("BirAsyaDizi_DEBUG", "HATA: Sayfada video veya iframe bağlantısı bulunamadı!")
             return false
         }
 
         var foundAnyLink = false
 
-        for (iframe in iframes) {
-            Log.d("BirAsyaDizi_DEBUG", "İncelenen iframe HTML: ${iframe.outerHtml()}")
-
-            val iframeVid = fixUrlNull(
-                iframe.attr("vdo-src").ifEmpty {
-                    iframe.attr("src").ifEmpty {
-                        iframe.attr("data-src")
-                    }
-                }
-            )
-
-            if (iframeVid.isNullOrBlank()) continue
-
-            Log.d("BirAsyaDizi_DEBUG", "Çıkarılan video URL'si: $iframeVid")
+        for (iframeVid in videoUrls.distinct()) {
+            Log.d("BirAsyaDizi_DEBUG", "İncelenen Video URL: $iframeVid")
 
             if (iframeVid.contains("odnoklassniki.ru") || iframeVid.contains("ok.ru")) {
                 Log.d("BirAsyaDizi_DEBUG", "Odnoklassniki URL'si tespit edildi, extractor çağrılıyor.")
