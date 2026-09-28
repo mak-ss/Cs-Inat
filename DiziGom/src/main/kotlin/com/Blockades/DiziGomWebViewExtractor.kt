@@ -1,4 +1,3 @@
-
 package com.Blockades
 
 import android.annotation.SuppressLint
@@ -23,7 +22,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
-class DiziGomWebViewExtractor(private val context: Context, private val pluginName: String) : ExtractorApi() {
+class DiziGomWebViewExtractor(
+    private val context: Context,
+    private val pluginName: String
+) : ExtractorApi() {
     override val name = "DiziGom WebView"
     override val mainUrl = "https://www.dizigom.icu"
     override val requiresReferer = true
@@ -39,7 +41,11 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
     ) {
         Log.d("DiziGomWebView", "WEBVIEW_EXTRACTOR_START=$url")
         val foundStream = AtomicBoolean(false)
-        val targetUrl = if (url.contains("?")) "$url&autoplay=1&muted=1&playsinline=1" else "$url?autoplay=1&muted=1&playsinline=1"
+        val targetUrl = if (url.contains("?")) {
+            "$url&autoplay=1&muted=1&playsinline=1"
+        } else {
+            "$url?autoplay=1&muted=1&playsinline=1"
+        }
 
         withContext(Dispatchers.Main) {
             webView = WebView(context).apply {
@@ -50,18 +56,28 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     loadWithOverviewMode = true
                     useWideViewPort = true
-                    userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    userAgentString =
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                 }
 
                 addJavascriptInterface(object : Any() {
                     @JavascriptInterface
                     fun onStreamFound(body: String, reqUrl: String) {
                         Log.d("DiziGomWebView", "BRIDGE_FOUND: $reqUrl")
-                        val m3u8 = Regex("https?://[^\"'\\s<>]+(?:\\.m3u8|playlist|manifest|hls|stream)[^\"'\\s<>]*", RegexOption.IGNORE_CASE).find(body)?.value 
-                            ?: Regex("https?://[^\"'\\s<>]+(?:\\.m3u8|playlist|manifest|hls|stream)[^\"'\\s<>]*", RegexOption.IGNORE_CASE).find(reqUrl)?.value
+                        val m3u8 = Regex(
+                            "https?://[^\"'\\s<>]+(?:\\.m3u8|playlist|manifest|hls|stream)[^\"'\\s<>]*",
+                            RegexOption.IGNORE_CASE
+                        ).find(body)?.value
+                            ?: Regex(
+                                "https?://[^\"'\\s<>]+(?:\\.m3u8|playlist|manifest|hls|stream)[^\"'\\s<>]*",
+                                RegexOption.IGNORE_CASE
+                            ).find(reqUrl)?.value
                             ?: reqUrl
 
-                        if ((m3u8.contains("m3u8", true) || m3u8.contains("playlist", true) || m3u8.contains("manifest", true) || m3u8.contains("hls", true) || m3u8.contains("stream", true)) && !foundStream.getAndSet(true)) {
+                        if ((m3u8.contains("m3u8", true) || m3u8.contains("playlist", true) ||
+                                    m3u8.contains("manifest", true) || m3u8.contains("hls", true) ||
+                                    m3u8.contains("stream", true)) && !foundStream.getAndSet(true)
+                        ) {
                             Log.d("DiziGomWebView", "EMITTING_STREAM=$m3u8")
                             GlobalScope.launch(Dispatchers.IO) {
                                 callback.invoke(
@@ -69,10 +85,16 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
                                         source = pluginName,
                                         name = pluginName,
                                         url = m3u8,
-                                        type = if (m3u8.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                        type = if (m3u8.contains(".m3u8", true))
+                                            ExtractorLinkType.M3U8
+                                        else
+                                            ExtractorLinkType.VIDEO
                                     ) {
                                         this.quality = Qualities.P1080.value
-                                        this.headers = mapOf("Referer" to targetUrl, "Origin" to "https://pilavyerplay.top")
+                                        this.headers = mapOf(
+                                            "Referer" to targetUrl,
+                                            "Origin" to "https://pilavyerplay.top"
+                                        )
                                     }
                                 )
                             }
@@ -106,7 +128,7 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
                                     } catch(e) {}
                                     return response;
                                 };
-                                
+
                                 const originalXHR = window.XMLHttpRequest.prototype.open;
                                 window.XMLHttpRequest.prototype.open = function(method, url, ...args) {
                                     this.addEventListener('load', function() {
@@ -140,11 +162,18 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
                         request: WebResourceRequest?
                     ): WebResourceResponse? {
                         val reqUrl = request?.url?.toString() ?: ""
-                        if (reqUrl.contains("ads", true) || reqUrl.contains("analytics", true) || reqUrl.contains("vast", true) || reqUrl.contains("banner", true) || reqUrl.contains("popunder", true) || reqUrl.contains("tracker", true) || reqUrl.contains("pixel", true) || reqUrl.contains("googletagmanager", true)) {
+                        if (reqUrl.contains("ads", true) || reqUrl.contains("analytics", true) ||
+                            reqUrl.contains("vast", true) || reqUrl.contains("banner", true) ||
+                            reqUrl.contains("popunder", true) || reqUrl.contains("tracker", true) ||
+                            reqUrl.contains("pixel", true) || reqUrl.contains("googletagmanager", true)
+                        ) {
                             return WebResourceResponse("text/plain", "UTF-8", null)
                         }
 
-                        if (reqUrl.contains(".m3u8", true) || reqUrl.contains("playlist", true) || reqUrl.contains("manifest", true) || reqUrl.contains("hls", true) || reqUrl.contains("stream", true)) {
+                        if (reqUrl.contains(".m3u8", true) || reqUrl.contains("playlist", true) ||
+                            reqUrl.contains("manifest", true) || reqUrl.contains("hls", true) ||
+                            reqUrl.contains("stream", true)
+                        ) {
                             Log.d("DiziGomWebView", "INTERCEPTED_REQ=$reqUrl")
                             if (!foundStream.getAndSet(true)) {
                                 GlobalScope.launch(Dispatchers.IO) {
@@ -153,10 +182,16 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
                                             source = pluginName,
                                             name = pluginName,
                                             url = reqUrl,
-                                            type = if (reqUrl.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                            type = if (reqUrl.contains(".m3u8", true))
+                                                ExtractorLinkType.M3U8
+                                            else
+                                                ExtractorLinkType.VIDEO
                                         ) {
                                             this.quality = Qualities.P1080.value
-                                            this.headers = mapOf("Referer" to targetUrl, "Origin" to "https://pilavyerplay.top")
+                                            this.headers = mapOf(
+                                                "Referer" to targetUrl,
+                                                "Origin" to "https://pilavyerplay.top"
+                                            )
                                         }
                                     )
                                 }
@@ -171,13 +206,14 @@ class DiziGomWebViewExtractor(private val context: Context, private val pluginNa
         }
 
         var elapsed = 0L
-        while (!foundStream.get() && elapsed < 8000L) {
+        while (!foundStream.get() && elapsed < 10000L) {
             delay(200L)
             elapsed += 200L
         }
 
         withContext(Dispatchers.Main) {
             try {
+                webView?.stopLoading()
                 webView?.destroy()
                 webView = null
                 Log.d("DiziGomWebView", "WEBVIEW_EXTRACTOR_DESTROYED")
