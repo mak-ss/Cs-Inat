@@ -7,8 +7,16 @@ import org.json.JSONObject
 
 open class HdPlayerExtractor : ExtractorApi() {
     override val name            = "HdPlayer"
-    override val mainUrl = "https://hdplayersystem.com"  // ✓ DOĞRU
+    override val mainUrl         = "https://hdplayersystem.com"
     override val requiresReferer = true
+
+    // Desteklenen domainler (hdplayer varyantları)
+    private val supportedHosts = listOf(
+        "hdplayersystem.com",
+        "peacemakerst.com",
+        "hdmomplayer.com",
+        "hdplayer.com"
+    )
 
     override suspend fun getUrl(
         url: String,
@@ -24,6 +32,7 @@ open class HdPlayerExtractor : ExtractorApi() {
         Log.d(name, "Dil: $lang, Temiz URL: $cleanUrl")
 
         // Embed linkten data parametresini çıkar
+        // Hem "/video/<hash>" hem "/tv/video/<hash>" formatını destekler
         val dataParam = cleanUrl.substringAfterLast("/")
         if (dataParam.isBlank()) {
             Log.e(name, "Data parametresi çıkarılamadı")
@@ -43,7 +52,6 @@ open class HdPlayerExtractor : ExtractorApi() {
                 val subtitleValue = subtitleMatch.groupValues[1]
                 Log.d(name, "playerjsSubtitle değeri: $subtitleValue")
 
-                // Format: [Dil]URL
                 val regex = Regex("""^\[([^\]]+)\](.*)$""")
                 val parsed = regex.find(subtitleValue)
                 if (parsed != null) {
@@ -56,29 +64,23 @@ open class HdPlayerExtractor : ExtractorApi() {
                 } else {
                     Log.w(name, "Subtitle formatı beklenmeyen yapıda: $subtitleValue")
                 }
-            } else {
-                Log.d(name, "playerjsSubtitle bulunamadı")
             }
         } catch (e: Exception) {
             Log.e(name, "Embed sayfası alınırken hata: ${e.message}")
         }
 
-        // POST URL'sini oluştur
-        val postUrl = "$mainUrl/player/index.php?data=$dataParam&do=getVideo"
+        // POST URL'sini oluştur - gelen URL'in domainini kullan!
+        val urlObj = java.net.URL(cleanUrl)
+        val host = "${urlObj.protocol}://${urlObj.host}"
+        val postUrl = "$host/player/index.php?data=$dataParam&do=getVideo"
         Log.d(name, "POST URL: $postUrl")
 
-        // Referer değerini belirle
         val extRef = referer ?: ""
-        Log.d(name, "Kullanılan referer: $extRef")
-
-        // POST isteği gövdesini oluştur
         val postBody = mapOf(
             "hash" to dataParam,
             "r" to extRef
         )
-        Log.d(name, "POST gövdesi: $postBody")
 
-        // POST isteğini gönder
         val response = app.post(
             url = postUrl,
             data = postBody,
@@ -93,7 +95,6 @@ open class HdPlayerExtractor : ExtractorApi() {
         val responseText = response.text
         Log.d(name, "Yanıt içeriği (ilk 500 karakter): ${responseText.take(500)}")
 
-        // JSON parse et
         val json = try {
             JSONObject(responseText)
         } catch (e: Exception) {
@@ -101,28 +102,19 @@ open class HdPlayerExtractor : ExtractorApi() {
             throw ErrorLoadingException("JSON parse hatası")
         }
 
-        // Önce securedLink'i al (gerçek .m3u8), boşsa videoSource'a düş
         val securedLink = json.optString("securedLink", "")
         val videoSource = json.optString("videoSource", "")
-        val videoUrl = if (securedLink.isNotBlank()) {
-            Log.d(name, "securedLink kullanılacak: $securedLink")
-            securedLink
-        } else {
-            Log.d(name, "videoSource kullanılacak: $videoSource")
-            videoSource
-        }
+        val videoUrl = if (securedLink.isNotBlank()) securedLink else videoSource
 
         if (videoUrl.isBlank()) {
             Log.e(name, "Video URL bulunamadı")
             throw ErrorLoadingException("Video linki bulunamadı")
         }
 
-        // Uzantıya göre link tipini belirle (query parametrelerini yok say)
         val videoPath = videoUrl.substringBefore("?")
         val isHls = videoPath.endsWith(".m3u8")
 
         if (isHls) {
-            Log.d(name, "Video HLS (.m3u8) olarak algılandı, ExtractorLinkType.M3U8 kullanılıyor")
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
@@ -135,7 +127,6 @@ open class HdPlayerExtractor : ExtractorApi() {
                 }
             )
         } else {
-            Log.d(name, "Video HLS değil, ExtractorLinkType.VIDEO kullanılıyor")
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
