@@ -1,15 +1,14 @@
 package com.Blockades
 
 import android.content.Context
-import coil.ImageLoader
-import coil.disk.DiskCache
-import coil.memory.MemoryCache
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
 class RealImageLoader(private val context: Context) {
 
-    private val okHttpClient: OkHttpClient by lazy {
+    val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
@@ -17,21 +16,20 @@ class RealImageLoader(private val context: Context) {
             .build()
     }
 
-    val imageLoader: ImageLoader by lazy {
-        ImageLoader.Builder(context)
-            .okHttpClient(okHttpClient)
-            .memoryCache {
-                MemoryCache.Builder(context)
-                    .maxSizePercent(0.25)
-                    .build()
+    fun fetchImageStream(url: String): InputStream? {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .build()
+            val response = okHttpClient.newCall(request).execute()
+            if (response.isSuccessful) {
+                response.body?.byteStream()
+            } else {
+                null
             }
-            .diskCache {
-                DiskCache.Builder()
-                    .directory(context.cacheDir.resolve("image_cache"))
-                    .maxSizePercent(0.02)
-                    .build()
-            }
-            .respectCacheHeaders(false) // Cache politikalarını esnek tut
-            .build()
+        } catch (e: Exception) {
+            println("Görsel yükleme hatası: ${e.message}")
+            null
+        }
     }
 }
