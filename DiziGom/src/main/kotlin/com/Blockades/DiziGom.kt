@@ -33,7 +33,8 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
 
 class DiziGom : MainAPI() {
-    override var mainUrl = "https://www.dizigom.icu"
+    // RemoteConfig'ten domaini al, yoksa varsayılanı kullan
+    override var mainUrl = RemoteConfig.getDomain("dizigom", "https://www.dizigom.icu")
     override var name = "DiziGom"
     override val hasMainPage = true
     override var lang = "tr"
@@ -85,8 +86,6 @@ class DiziGom : MainAPI() {
             val home = document.select("div.episode-box").mapNotNull { it.toMainPageResult() }
             return newHomePageResponse(request.name, home)
         }
-
-
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
@@ -97,7 +96,7 @@ class DiziGom : MainAPI() {
 
         return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
             this.posterUrl = posterUrl
-            this.score     = Score.from10(score)
+            this.score = Score.from10(score)
         }
     }
 
@@ -136,7 +135,6 @@ class DiziGom : MainAPI() {
             .last()?.text()?.split(" ")?.first()?.trim()?.toIntOrNull()
         val actors = document.select("div.owl-stage a")
             .map { Actor(it.text(), it.selectFirst("img")?.attr("href")) }
-        //val trailer         = Regex("""embed\/(.*)\?rel""").find(document.html())?.groupValues?.get(1)?.let { "https://www.youtube.com/embed/$it" }
 
         val episodeses = mutableListOf<Episode>()
 
@@ -166,7 +164,6 @@ class DiziGom : MainAPI() {
             this.score = Score.from10(rating)
             addActors(actors)
         }
-
     }
 
     private fun Element.toRecommendationResult(): SearchResponse? {
@@ -184,26 +181,49 @@ class DiziGom : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val objectMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-        objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        Log.d("DZG", "data » ${data}")
+        objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        Log.d("DZG", "data » $data")
         val document = app.get(data, referer = "$mainUrl/").document
         Log.d("Docum", document.toString())
         val embed = document.selectFirst("div#content")?.selectFirst("script")?.data()
-        val contentJson: Gof = objectMapper.readValue(embed!!)
+        if (embed == null) {
+            Log.e("DZG", "Embed script bulunamadı!")
+            return false
+        }
+        val contentJson: Gof = try {
+            objectMapper.readValue(embed)
+        } catch (e: Exception) {
+            Log.e("DZG", "JSON parse hatası: ${e.message}")
+            return false
+        }
         Log.d("DZG", "iframe » ${contentJson.contentUrl}")
-        val iframeDocument = app.get(
-            contentJson.contentUrl.replace("https://", "https://play."),
-            referer = "$mainUrl/"
-        ).document
+        // contentUrl'i play. alt alan adına yönlendir
+        val iframeUrl = contentJson.contentUrl.replace("https://", "https://play.")
+        val iframeDocument = app.get(iframeUrl, referer = "$mainUrl/").document
         val script =
             iframeDocument.select("script").find { it.data().contains("eval(function(p,a,c,k,e") }
                 ?.data()
                 ?: ""
+        if (script.isEmpty()) {
+            Log.e("DZG", "Iframe içinde eval script bulunamadı!")
+            return false
+        }
         val unpack = JsUnpacker(script).unpack()
         val sourceJ = unpack?.substringAfter("sources:[")?.substringBefore("]")?.replace("\\/", "/")
         Log.d("DZG", "sourceJ » ${sourceJ}")
 
-        val source: Go = objectMapper.readValue(sourceJ!!)
+        if (sourceJ.isNullOrBlank()) {
+            Log.e("DZG", "Unpack sonrası sourceJ boş!")
+            return false
+        }
+
+        val source: Go = try {
+            objectMapper.readValue(sourceJ)
+        } catch (e: Exception) {
+            Log.e("DZG", "Source JSON parse hatası: ${e.message}")
+            return false
+        }
+
         callback.invoke(
             newExtractorLink(
                 source = this.name,
