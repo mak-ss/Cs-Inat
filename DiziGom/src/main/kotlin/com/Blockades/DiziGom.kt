@@ -26,7 +26,8 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class DiziGom : MainAPI() {
-    override var mainUrl = "https://www.dizigom.icu"
+    // RemoteConfig'ten domaini al, yoksa varsayılanı kullan
+    override var mainUrl = RemoteConfig.getDomain("dizigom", "https://www.dizigom.icu")
     override var name = "DiziGom"
     override val hasMainPage = true
     override var lang = "tr"
@@ -201,7 +202,7 @@ class DiziGom : MainAPI() {
     private fun extractPlayerUrl(document: Document): String? {
         return document.select("iframe[src], frame[src]")
             .mapNotNull { cleanUrl(it.attr("src")) }
-            .firstOrNull { it.contains("s.php", true) || it.contains("pilayerplay", true) }
+            .firstOrNull { it.contains("s.php", true) || it.contains("pilayerplay", true) || it.contains("pilavyerplay", true) }
             ?: Regex("https?://[^\\\"'\\s<>]+/s\\.php\\?[^\\\"'\\s<>]+", RegexOption.IGNORE_CASE)
                 .find(document.html())?.value?.let { cleanUrl(it) }
     }
@@ -226,21 +227,29 @@ class DiziGom : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("DiziGom", "Resolving episode: $data")
-        val document = runCatching { app.get(data, referer = "$mainUrl/").document }.getOrNull() ?: return false
+        val document = runCatching { app.get(data, referer = "$mainUrl/").document }.getOrNull()
+            ?: run {
+                Log.e("DiziGom", "Bölüm sayfası yüklenemedi: $data")
+                return false
+            }
 
+        // 1. Yöntem: iframe içindeki player URL'sini bul ve WebView ile çöz
         val playerUrl = extractPlayerUrl(document)
         if (!playerUrl.isNullOrBlank()) {
+            Log.d("DiziGom", "Player URL bulundu: $playerUrl")
+
+            // Önce doğrudan HTTP isteğiyle stream aramayı dene
             val playerResponse = runCatching { app.get(playerUrl, referer = data) }.getOrNull()
             val playerHtml = playerResponse?.text.orEmpty()
-            val streamUrl = extractPlayerStream(playerHtml)
+            val directStream = extractPlayerStream(playerHtml)
 
-            if (!streamUrl.isNullOrBlank()) {
-                Log.d("DiziGom", "PilayerPlay stream bulundu")
+            if (!directStream.isNullOrBlank()) {
+                Log.d("DiziGom", "Doğrudan stream bulundu: $directStream")
                 callback(
                     newExtractorLink(
                         source = name,
                         name = "DiziGom 1080p",
-                        url = streamUrl,
+                        url = directStream,
                         type = ExtractorLinkType.M3U8
                     ) {
                         referer = playerUrl
@@ -250,37 +259,46 @@ class DiziGom : MainAPI() {
                 return true
             }
 
-            val directPlayerUrl = Regex(
-                "https?://[^\\\"'\\s<>]+(?:\\.m3u8(?:\\?[^\\\"'\\s<>]*)?|\\.mp4(?:\\?[^\\\"'\\s<>]*)?)",
-                RegexOption.IGNORE_CASE
-            ).findAll(playerHtml).map { cleanUrl(it.value) }.filterNotNull().distinct().toList()
-
-            for (stream in directPlayerUrl) {
-                callback(
-                    newExtractorLink(source = name, name = "DiziGom", url = stream,
-                        type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
-                        referer = playerUrl
-                        quality = getQualityFromName(stream)
-                    }
-                )
+            // Doğrudan bulunamazsa WebView ile çözmeyi dene
+            val context = DiziGomPlugin.pluginContext
+            if (context != null) {
+                Log.d("DiziGom", "WebView extractor başlatılıyor: $playerUrl")
+                return try {
+                    val extractor = DiziGomWebViewExtractor(context, name)
+                    extractor.getUrl(playerUrl, data, subtitleCallback, callback)
+                    true
+                } catch (e: Exception) {
+                    Log.e("DiziGom", "WebView extractor hatası: ${e.message}", e)
+                    false
+                }
+            } else {
+                Log.e("DiziGom", "Plugin context null, WebView kullanılamıyor!")
             }
-            if (directPlayerUrl.isNotEmpty()) return true
         }
 
+        // 2. Yöntem: Sayfa HTML'inde doğrudan .m3u8 veya .mp4 URL'lerini ara
         val directUrls = Regex(
             "https?://[^\\\"'\\s<>]+(?:\\.m3u8(?:\\?[^\\\"'\\s<>]*)?|\\.mp4(?:\\?[^\\\"'\\s<>]*)?)",
             RegexOption.IGNORE_CASE
         ).findAll(document.html()).map { cleanUrl(it.value) }.filterNotNull().distinct().toList()
 
         for (stream in directUrls) {
+            Log.d("DiziGom", "Doğrudan URL bulundu: $stream")
             callback(
-                newExtractorLink(source = name, name = "DiziGom", url = stream,
-                    type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO) {
+                newExtractorLink(
+                    source = name,
+                    name = "DiziGom",
+                    url = stream,
+                    type = if (stream.contains(".m3u8", true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                ) {
                     referer = data
                     quality = getQualityFromName(stream)
                 }
             )
         }
-        return directUrls.isNotEmpty()
+        if (directUrls.isNotEmpty()) return true
+
+        Log.e("DiziGom", "Hiçbir video kaynağı bulunamadı: $data")
+        return false
     }
 }
