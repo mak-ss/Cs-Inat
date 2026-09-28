@@ -50,7 +50,7 @@ class DiziMom : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        // Dizi kartı (div.single-item) — listede önce bunu dene
+        // Dizi kartı (div.single-item)
         var titleElement = this.selectFirst("div.categorytitle a")
         var title = titleElement?.text()?.trim()
         var href = titleElement?.attr("href")
@@ -179,15 +179,15 @@ class DiziMom : MainAPI() {
                            document.selectFirst("#myBtnContainer") != null
 
         // ================= BÖLÜM SAYFASI =================
-        // (Star Trek örneği: tek bölüm + sezonun diğer bölümleri listesi)
         if (isEpisodePage && !isSeriesPage) {
             val description = document.selectFirst("div#bolumbilgi .infoelem")?.text()?.trim()
                 ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-            // Dizinin kendi sayfası
+            // Dizinin kendi sayfası (sadece log için)
             val seriesUrl = fixUrlNull(
                 document.selectFirst("div#benzerli a[rel='category tag']")?.attr("href")
             )
+            Log.d(name, "load - Bölüm sayfası, ana dizi URL: $seriesUrl")
 
             // Aynı sezonun diğer bölümleri
             val episodes = mutableListOf<Episode>()
@@ -207,7 +207,7 @@ class DiziMom : MainAPI() {
                 )
             }
 
-            // Bu bölümün kendisini de listeye ekle (aynı sezon içinde)
+            // Bu bölümün kendisini de listeye ekle
             val currentSeason = Regex("""(\d+)\.Sezon""").find(title)?.groupValues?.get(1)?.toIntOrNull()
             val currentEpisode = Regex("""(\d+)\.Bölüm""").find(title)?.groupValues?.get(1)?.toIntOrNull()
             if (currentSeason != null && currentEpisode != null &&
@@ -227,7 +227,6 @@ class DiziMom : MainAPI() {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
                 this.posterUrl = poster
                 this.plot = description
-                if (seriesUrl != null) this.recommendations = listOf(seriesUrl)
             }
         }
 
