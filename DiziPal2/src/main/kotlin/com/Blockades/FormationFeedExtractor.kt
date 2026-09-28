@@ -1,10 +1,11 @@
 package com.Blockades
 
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.USER_AGENT
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 
@@ -19,17 +20,19 @@ class FormationFeedExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        // Embed sayfasının HTML içeriğini çek
-        val response = app.get(
-            url,
-            referer = referer ?: "$mainUrl/",
-            headers = mapOf(
-                "User-Agent" to USER_AGENT,
-                "Accept" to "*/*"
-            )
-        ).text
+        val response = try {
+            app.get(
+                url,
+                referer = referer ?: "$mainUrl/",
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Accept" to "*/*"
+                )
+            ).text
+        } catch (e: Exception) {
+            return
+        }
 
-        // Sayfa içerisindeki .m3u8 veya .mp4 URL'sini Regex ile yakala
         val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
         val match = m3u8Regex.find(response)?.groupValues?.get(1)
 
