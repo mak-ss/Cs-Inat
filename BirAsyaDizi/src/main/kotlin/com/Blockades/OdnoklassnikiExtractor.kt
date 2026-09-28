@@ -9,12 +9,24 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
-import java.net.URLDecoder
 
 class OdnoklassnikiExtractor : ExtractorApi() {
     override var name = "Odnoklassniki"
     override var mainUrl = "https://ok.ru"
     override val requiresReferer = true
+
+    private val browserHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language" to "en-US,en;q=0.9,tr;q=0.8"
+    )
+
+    private val apiHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept" to "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language" to "en-US,en;q=0.9,tr;q=0.8",
+        "X-Requested-With" to "XMLHttpRequest"
+    )
 
     override suspend fun getUrl(
         url: String,
@@ -24,7 +36,7 @@ class OdnoklassnikiExtractor : ExtractorApi() {
     ) {
         Log.d("Odnoklassniki_DEBUG", "getUrl çağrıldı. url: $url")
 
-        // Video ID'sini çıkar (videoembed/123456 veya video/123456 formatından)
+        // Video ID'sini çıkar
         val videoId = Regex("""(?:videoembed|video|live)/(\d+)""")
             .find(url)?.groupValues?.get(1)
             ?: run {
@@ -34,57 +46,112 @@ class OdnoklassnikiExtractor : ExtractorApi() {
 
         Log.d("Odnoklassniki_DEBUG", "Video ID: $videoId")
 
-        // videoPlayerMetadata API'sine istek at
-        // Bu API bazen farklı bir domain isteyebilir, bu yüzden deneme yapıyoruz.
-        val apiUrls = listOf(
-            "https://odnoklassniki.ru/dk?cmd=videoPlayerMetadata&mid=$videoId",
-            "https://ok.ru/dk?cmd=videoPlayerMetadata&mid=$videoId"
-        )
+        val embedReferer = "https://ok.ru/videoembed/$videoId"
 
-        var response: String? = null
-        for (apiUrl in apiUrls) {
-            Log.d("Odnoklassniki_DEBUG", "API URL deniyor: $apiUrl")
-            try {
-                // API bazen mobil bir User-Agent isteyebilir.
-                val apiResponse = app.get(
-                    apiUrl,
-                    referer = referer ?: "https://ok.ru/",
-                    headers = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    )
-                ).text
-                if (apiResponse.contains("videos")) {
-                    response = apiResponse
-                    Log.d("Odnoklassniki_DEBUG", "Başarılı API yanıtı alındı.")
-                    break
-                }
-            } catch (e: Exception) {
-                Log.e("Odnoklassniki_DEBUG", "API isteği başarısız: $apiUrl", e)
+        // ---- 1. ADIM: videoembed sayfasını çek ve data-options içinden JSON çıkar ----
+        val embedPage = try {
+            app.get(embedReferer, referer = "https://ok.ru/", headers = browserHeaders).text
+        } catch (e: Exception) {
+            Log.e("Odnoklassniki_DEBUG", "videoembed sayfası çekilemedi!", e)
+            ""
+        }
+
+        Log.d("Odnoklassniki_DEBUG", "videoembed sayfa uzunluğu: ${embedPage.length}")
+
+        var jsonString: String? = null
+
+        // data-options attribute'unu bul (OKVideo modülü)
+        val dataOptionsRegex = Regex("""data-options="([^"]+)"""")
+        val dataOptionsMatch = dataOptionsRegex.find(embedPage)
+        if (dataOptionsMatch != null) {
+            val raw = dataOptionsMatch.groupValues[1]
+            // HTML entity'lerini çöz
+            val decoded = raw
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("&#39;", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+            Log.d("Odnoklassniki_DEBUG", "data-options bulundu (ilk 300 karakter): ${decoded.take(300)}")
+            jsonString = decoded
+        } else {
+            Log.d("Odnoklassniki_DEBUG", "data-options bulunamadı, alternatif regex deniyor...")
+            // Bazen data-options tek tırnak ile olabilir
+            val altRegex = Regex("""data-options='([^']+)'""")
+            val altMatch = altRegex.find(embedPage)
+            if (altMatch != null) {
+                jsonString = altMatch.groupValues[1]
+                    .replace("&quot;", "\"")
+                    .replace("&amp;", "&")
             }
         }
 
-        if (response == null) {
-            Log.e("Odnoklassniki_DEBUG", "HATA: Hiçbir API'den geçerli yanıt alınamadı!")
+        // data-options bulunamadıysa, embed sayfası içinde video metadata JSON'u arayalım
+        if (jsonString == null) {
+            Log.d("Odnoklassniki_DEBUG", "data-options yok, sayfa içinde video metadata aranıyor...")
+            // Bazı sayfalarda video metadata doğrudan bir JS değişkeninde olur
+            val metadataRegex = Regex(""""videos"\s*:\s*(\[[^\]]+\])""")
+            val metadataMatch = metadataRegex.find(embedPage)
+            if (metadataMatch != null) {
+                jsonString = """{"videos":${metadataMatch.groupValues[1]}}"""
+                Log.d("Odnoklassniki_DEBUG", "Sayfa içinde videos dizisi bulundu.")
+            }
+        }
+
+        // ---- 2. ADIM: JSON bulunamadıysa, API'ye fallback yap ----
+        if (jsonString == null) {
+            Log.d("Odnoklassniki_DEBUG", "data-options'ta bulunamadı, API deneniyor...")
+            val apiUrls = listOf(
+                "https://odnoklassniki.ru/dk?cmd=videoPlayerMetadata&mid=$videoId",
+                "https://ok.ru/dk?cmd=videoPlayerMetadata&mid=$videoId"
+            )
+
+            for (apiUrl in apiUrls) {
+                try {
+                    val apiResponse = app.get(
+                        apiUrl,
+                        referer = embedReferer,
+                        headers = apiHeaders
+                    ).text
+
+                    Log.d("Odnoklassniki_DEBUG", "API yanıtı (ilk 200 karakter): ${apiResponse.take(200)}")
+
+                    // JSON mu yoksa HTML mi kontrol et
+                    if (apiResponse.trimStart().startsWith("{") || apiResponse.contains("callbackFunc(")) {
+                        // JSONP temizliği
+                        jsonString = apiResponse
+                            .substringAfter("callbackFunc(", apiResponse)
+                            .substringBeforeLast(")", apiResponse)
+                            .trim()
+                            .removeSuffix(";")
+
+                        if (!jsonString.trimStart().startsWith("{")) {
+                            jsonString = apiResponse
+                        }
+                        Log.d("Odnoklassniki_DEBUG", "API'den JSON alındı.")
+                        break
+                    } else {
+                        Log.w("Odnoklassniki_DEBUG", "API HTML döndü, atlanıyor: $apiUrl")
+                    }
+                } catch (e: Exception) {
+                    Log.e("Odnoklassniki_DEBUG", "API isteği başarısız: $apiUrl", e)
+                }
+            }
+        }
+
+        if (jsonString == null) {
+            Log.e("Odnoklassniki_DEBUG", "HATA: Hiçbir kaynaktan video JSON'u alınamadı!")
             return
         }
 
-        Log.d("Odnoklassniki_DEBUG", "Yanıt uzunluğu: ${response.length}")
-
-        // JSON parse et
+        // ---- 3. ADIM: JSON'u parse et ----
         try {
-            // API yanıtı callbackFunc(...) içinde olabilir, temizle
-            val jsonString = response
-                .substringAfter("callbackFunc(", response)
-                .substringBeforeLast(")", response)
-                .trim()
-                .removeSuffix(";")
-
             val json = JSONObject(jsonString)
             val videos = json.optJSONArray("videos")
 
             if (videos == null || videos.length() == 0) {
                 Log.e("Odnoklassniki_DEBUG", "HATA: JSON içinde video bulunamadı!")
-                Log.d("Odnoklassniki_DEBUG", "JSON başı: ${jsonString.take(2000)}")
+                Log.d("Odnoklassniki_DEBUG", "JSON başı: ${jsonString.take(1500)}")
                 return
             }
 
@@ -97,8 +164,9 @@ class OdnoklassnikiExtractor : ExtractorApi() {
 
                 if (videoUrl.isBlank()) continue
 
-                // URL'deki HTML entity'leri ve escape karakterlerini temizle
-                videoUrl = videoUrl.replace("\\/", "/")
+                // Escape karakterlerini temizle
+                videoUrl = videoUrl
+                    .replace("\\/", "/")
                     .replace("&amp;", "&")
                     .replace("\\u0026", "&")
 
@@ -118,14 +186,13 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                     else -> Qualities.Unknown.value
                 }
 
-                // Link tipini belirle
                 val linkType = if (videoUrl.contains("m3u8")) {
                     ExtractorLinkType.M3U8
                 } else {
                     ExtractorLinkType.VIDEO
                 }
 
-                Log.d("Odnoklassniki_DEBUG", "Video bulundu -> Kalite: $videoName ($quality) URL: ${videoUrl.take(100)}...")
+                Log.d("Odnoklassniki_DEBUG", "Video -> Kalite: $videoName ($quality) URL: ${videoUrl.take(120)}...")
 
                 callback.invoke(
                     newExtractorLink(
@@ -134,14 +201,15 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                         url = videoUrl,
                         type = linkType
                     ) {
-                        this.referer = referer ?: "https://ok.ru/"
+                        this.referer = embedReferer
                         this.quality = quality
+                        this.headers = browserHeaders
                     }
                 )
             }
 
-            // Altyazıları da API'den alabiliriz (genellikle "subtitle" alanı olur)
-            val subtitles = json.optJSONArray("subtitle")
+            // Altyazılar
+            val subtitles = json.optJSONArray("subtitle") ?: json.optJSONArray("subtitles")
             if (subtitles != null) {
                 for (i in 0 until subtitles.length()) {
                     val sub = subtitles.getJSONObject(i)
@@ -155,7 +223,7 @@ class OdnoklassnikiExtractor : ExtractorApi() {
 
         } catch (e: Exception) {
             Log.e("Odnoklassniki_DEBUG", "JSON parse hatası!", e)
-            Log.d("Odnoklassniki_DEBUG", "Yanıt başı: ${response.take(2000)}")
+            Log.d("Odnoklassniki_DEBUG", "JSON başı: ${jsonString.take(2000)}")
         }
     }
 }
