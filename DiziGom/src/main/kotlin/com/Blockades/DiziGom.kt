@@ -35,17 +35,27 @@ class DiziGom : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.TvSeries)
 
-    private val genreRoutes = linkedMapOf(
-        "Aile" to "aile", "Aksiyon" to "aksiyon", "Animasyon" to "animasyon",
-        "Belgesel" to "belgesel", "Bilim Kurgu" to "bilim-kurgu", "Biyografi" to "biyografi",
-        "Dram" to "dram", "Fantastik" to "fantastik", "Gençlik" to "genclik",
-        "Gerilim" to "gerilim", "Gizem" to "gizem", "Komedi" to "komedi",
-        "Korku" to "korku", "Macera" to "macera", "Polisiye" to "polisiye",
-        "Romantik" to "romantik", "Savaş" to "savas", "Suç" to "suc", "Tarih" to "tarih"
-    )
-
+    // Site yapısı: tek liste sayfası /dizi-izle/ + ?tur=X query filtresi
     override val mainPage = mainPageOf(
-        *genreRoutes.map { (genre, slug) -> "$mainUrl/tur/$slug/" to genre }.toTypedArray()
+        "$mainUrl/dizi-izle/" to "Tüm Diziler",
+        "$mainUrl/dizi-izle/?tur=Aksiyon" to "Aksiyon",
+        "$mainUrl/dizi-izle/?tur=Animasyon" to "Animasyon",
+        "$mainUrl/dizi-izle/?tur=Belgesel" to "Belgesel",
+        "$mainUrl/dizi-izle/?tur=Bilim Kurgu" to "Bilim Kurgu",
+        "$mainUrl/dizi-izle/?tur=Biyografi" to "Biyografi",
+        "$mainUrl/dizi-izle/?tur=Dram" to "Dram",
+        "$mainUrl/dizi-izle/?tur=Fantastik" to "Fantastik",
+        "$mainUrl/dizi-izle/?tur=Gençlik" to "Gençlik",
+        "$mainUrl/dizi-izle/?tur=Gerilim" to "Gerilim",
+        "$mainUrl/dizi-izle/?tur=Gizem" to "Gizem",
+        "$mainUrl/dizi-izle/?tur=Komedi" to "Komedi",
+        "$mainUrl/dizi-izle/?tur=Korku" to "Korku",
+        "$mainUrl/dizi-izle/?tur=Macera" to "Macera",
+        "$mainUrl/dizi-izle/?tur=Polisiye" to "Polisiye",
+        "$mainUrl/dizi-izle/?tur=Romantik" to "Romantik",
+        "$mainUrl/dizi-izle/?tur=Savaş" to "Savaş",
+        "$mainUrl/dizi-izle/?tur=Suç" to "Suç",
+        "$mainUrl/dizi-izle/?tur=Tarih" to "Tarih"
     )
 
     private fun cleanUrl(value: String?): String? = value
@@ -124,9 +134,7 @@ class DiziGom : MainAPI() {
     private fun Element.toMainPageResult(): SearchResponse? {
         val card = findCard()
 
-        // Ana sayfa + arama sonuçları için tüm başlık varyantları:
-        //  - .serie-name a (list-series, list-episodes)
-        //  - .categorytitle a (single-item / arama)
+        // Title: list-series (.serie-name a) + single-item (.categorytitle a) + arama
         val title = sequenceOf(
             card.selectFirst("div.serie-name a")?.text(),
             card.selectFirst(".serie-name a")?.text(),
@@ -140,10 +148,7 @@ class DiziGom : MainAPI() {
             if (tagName() == "a") text() else null
         ).mapNotNull { it?.trim()?.takeIf { v -> v.isNotBlank() } }.firstOrNull() ?: return null
 
-        // Dizi URL'si:
-        //  - list-series: .serie-name a href → /diziler/slug/
-        //  - single-item: .cat-img a href veya .categorytitle a href → /diziler/slug/
-        //  - list-episodes: dizi linki YOK → episode URL'sinden slug türet
+        // href: /diziler/slug/ — single-item ve list-series aynı formatta
         val href = sequenceOf(
             card.selectFirst("div.serie-name a[href*='/diziler/']")?.attr("href"),
             card.selectFirst(".categorytitle a[href*='/diziler/']")?.attr("href"),
@@ -151,7 +156,7 @@ class DiziGom : MainAPI() {
             card.selectFirst("a[href*='/diziler/']")?.attr("href")
         ).mapNotNull { cleanUrl(it) }.firstOrNull()
             ?: run {
-                // Bölüm URL'sinden dizi slug'ı türet: "/alikara-1-sezon-10-bolum/"
+                // Fallback: bölüm URL'sinden dizi slug'ı türet
                 val episodeHref = cleanUrl(card.selectFirst("a[href]")?.attr("href"))
                 episodeHref?.let { ep ->
                     Regex("/([^/]+?)-\\d+-sezon-\\d+-bolum/?$", RegexOption.IGNORE_CASE)
@@ -171,12 +176,21 @@ class DiziGom : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val pageUrl = if (page <= 1) request.data else request.data.trimEnd('/') + "/page/$page/"
+        // Sayfalama: /dizi-izle/page/N/ + ?tur=X query'sini koru
+        val pageUrl = if (page <= 1) {
+            request.data
+        } else {
+            val base = request.data.substringBefore("?")
+            val query = request.data.substringAfter("?", "")
+            val paginated = base.trimEnd('/') + "/page/$page/"
+            if (query.isBlank()) paginated else "$paginated?$query"
+        }
+
         val document = runCatching { app.get(pageUrl, referer = "$mainUrl/").document }.getOrNull()
             ?: return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
-        // SADECE dizi kartları. list-episodes bölümdür → dizi detayına değil bölüme gider.
-        val results = document.select("div.list-series")
+        // Hem single-item (dizi-izle) hem list-series (ana sayfa) desteği
+        val results = document.select("div.single-item, div.list-series")
             .mapNotNull { it.toMainPageResult() }
             .distinctBy { it.url }
 
@@ -206,7 +220,7 @@ class DiziGom : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, referer = "$mainUrl/").document
 
-        // Detay sayfası HTML'inde: <h1 class="title-border bd-purple">Cape Fear izle - ...</h1>
+        // Title: h1.title-border içinde "Cape Fear izle - Dizigom | ..." → temizle
         val rawTitle = document.firstText("h1.title-border", "h1.entry-title", "article h1", "h1")
             ?: return null
         val title = rawTitle
@@ -215,11 +229,11 @@ class DiziGom : MainAPI() {
             .trim()
             .ifBlank { rawTitle }
 
-        // Poster: div.category_image img (HTML'de doğrulandı)
+        // Poster: div.category_image img
         val poster = document.selectFirst("div.category_image img")?.posterUrl()
             ?: document.selectFirst("meta[property='og:image']")?.attr("content")?.let { cleanUrl(it) }
 
-        // Açıklama: div.category_desc (HTML'de doğrulandı)
+        // Açıklama: div.category_desc
         val description = document.firstText(
             "div.category_desc",
             ".category_desc",
@@ -232,12 +246,11 @@ class DiziGom : MainAPI() {
         val rating = Regex("(?:IMDB|IMDb)\\s*:?\\s*([0-9]+(?:[.,][0-9]+)?)", RegexOption.IGNORE_CASE)
             .find(document.text())?.groupValues?.getOrNull(1)?.replace(",", ".")
 
-        // Türler: div.genres a (HTML'de doğrulandı)
+        // Türler: div.genres a
         val tags = document.select("div.genres a, .genres a")
             .map { it.text().trim() }.filter { it.isNotBlank() }.distinct()
 
-        // Oyuncular: düz metin "Oyuncular : A, B, C" — link değil.
-        // Meta satırından çıkar: <span class="dizimeta">... Oyuncular : </span> A, B, C
+        // Oyuncular: düz metin "Oyuncular : A, B, C"
         val actors = Regex("Oyuncular\\s*:\\s*([^<\\n]+)", RegexOption.IGNORE_CASE)
             .find(document.selectFirst("div#icerikcat2, div#icerikcatright")?.html() ?: document.html())
             ?.groupValues?.getOrNull(1)
@@ -250,17 +263,14 @@ class DiziGom : MainAPI() {
             .orEmpty()
 
         // Bölümler: div.bolumust > a[href*='-sezon-'][href*='-bolum']
-        // HTML'de yapı: <div class="bolumust"><button>...<a href="/...-1-sezon-1-bolum/"><div class="baslik">1. Sezon 1. Bölüm ...</div></a></div>
         val episodes = document.select("div.bolumust")
             .mapNotNull { element ->
                 val link = element.selectFirst("a[href*='-sezon-'][href*='-bolum']")
                     ?: return@mapNotNull null
                 val href = cleanUrl(link.attr("href")) ?: return@mapNotNull null
 
-                // Bölüm adı: div.baslik içindeki metin (button'ın "İzledim" metnini ALMA)
                 val baslik = element.selectFirst("div.baslik")?.text()?.trim().orEmpty()
                 val bolumIsmi = element.selectFirst("div.bolum-ismi")?.text()?.trim().orEmpty()
-
                 val source = "$baslik $href"
 
                 val season = Regex("(\\d+)\\s*\\.?\\s*Sezon", RegexOption.IGNORE_CASE)
@@ -294,8 +304,8 @@ class DiziGom : MainAPI() {
 
     /**
      * Bölüm sayfasındaki iframe'i bul.
-     * HTML: <iframe referrerpolicy="no-referrer" src="https://spidypro.com/embed/XXX" ...>
-     * Site pilavyerplay/pilayerplay yerine spidypro kullanıyor.
+     * HTML: <div class="video-container"><iframe src="https://spidypro.com/embed/XXX" ...></iframe></div>
+     * YouTube fragman iframe'ini hariç tut.
      */
     private fun extractPlayerUrl(document: Document): String? {
         return document.select("div.video-container iframe[src], div.dizialani iframe[src], iframe[src]")
