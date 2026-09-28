@@ -13,7 +13,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 
 class DiziMom : MainAPI() {
-    override var mainUrl = "https://www.dizimom.cam"
+    override var mainUrl = "https://www.dizimom.help"
     override var name = "DiziMom"
     override val hasMainPage = true
     override var lang = "tr"
@@ -30,12 +30,11 @@ class DiziMom : MainAPI() {
         "${mainUrl}/turkce-dublaj-diziler-hd/" to "Dublajlı Diziler",
         "${mainUrl}/yerli-filmler/" to "Yerli Filmler",
         "${mainUrl}/yerli-dizi-izle/" to "Yerli Diziler",
-        "${mainUrl}/tv-programlari-izle/" to "TV Programları"
+        "${mainUrl}/tv-programlari-izle/" to "TV Programları",
+        "${mainUrl}/tum-bolumler/" to "Tüm Bölümler"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-
-
         Log.d(name, "getMainPage - Sayfa: $page, Kategori: ${request.name}")
 
         val pageUrl = if (page == 1) {
@@ -47,34 +46,42 @@ class DiziMom : MainAPI() {
 
         val document = app.get(pageUrl).document
 
+        // Hem dizi kartı (single-item) hem bölüm kartı (list-episodes) desteklenir
         val elements = document.select("div.single-item, div.list-episodes")
         val home = elements.mapNotNull { it.toSearchResult() }
-        val hasNext = document.select("div.paginate-links a.next").isNotEmpty()
+
+        // Sayfalama: div.sayfalama içinde sonraki sayfa linki var mı?
+        val hasNext = document.select("div.sayfalama a[href*='/page/']")
+            .any { it.text().trim() != "Son »" }
 
         Log.d(name, "getMainPage - ${home.size} icerik bulundu, hasNext=$hasNext")
         return newHomePageResponse(request.name, home, hasNext = hasNext)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        // Dizi kartı: div.single-item
+        // 1) Dizi kartı: div.single-item
         var titleElement = this.selectFirst("div.categorytitle a")
         var title = titleElement?.text()?.trim()
         var href = titleElement?.attr("href")
         var poster = this.selectFirst("div.cat-img img")?.attr("data-src")
             ?: this.selectFirst("div.cat-img img")?.attr("src")
         var imdbText = this.selectFirst("div.imdbp")?.text()?.trim()
-        var year = this.select("div.dizimeta:contains(Yapım Yılı)").firstOrNull()?.parent()?.ownText()?.trim()?.toIntOrNull()
+        var year = this.select("div.dizimeta:contains(Yapım Yılı)").firstOrNull()
+            ?.parent()?.ownText()?.trim()?.toIntOrNull()
 
-        // Film kartı: div.list-episodes
+        // 2) Bölüm kartı: div.list-episodes
         if (titleElement == null) {
             titleElement = this.selectFirst("div.episode-name a")
             title = titleElement?.text()?.trim()
             href = titleElement?.attr("href")
-            // Poster: div.poster div.img img kullan, çünkü div.poster img dil ikonu ile çakışıyor
+            // Poster: div.poster div.img img (dil ikonuyla çakışmasın)
             poster = this.selectFirst("div.poster div.img img")?.attr("data-src")
                 ?: this.selectFirst("div.poster div.img img")?.attr("src")
-            imdbText = this.selectFirst("div.episode-date.movie_date")?.text()?.trim()
-            year = this.selectFirst("div.film-yil")?.text()?.trim()?.let { Regex("""\d{4}""").find(it)?.value?.toIntOrNull() }
+            // Yıl: bölüm kartlarında yok, ama başlıktan yakalanabilir
+            year = title?.let {
+                Regex("""\b(19|20)\d{2}\b""").find(it)?.value?.toIntOrNull()
+            }
+            imdbText = null
         }
 
         if (href.isNullOrBlank() || title.isNullOrBlank()) return null
@@ -86,7 +93,10 @@ class DiziMom : MainAPI() {
             Regex("""([0-9]+(?:\.[0-9]+)?)""").find(it)?.groupValues?.get(1)?.toFloatOrNull()
         }
 
-        return newMovieSearchResponse(title, fixedHref, TvType.Movie) {
+        // Bölüm kartları dizi olabilir; ama tek tek bölüm linkleri film gibi davranır
+        val type = if (this.hasClass("single-item")) TvType.TvSeries else TvType.Movie
+
+        return newMovieSearchResponse(title, fixedHref, type) {
             this.posterUrl = fixedPoster
             this.year = year
             if (imdbScore != null) this.score = Score.from10(imdbScore)
@@ -96,10 +106,8 @@ class DiziMom : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         Log.d(name, "search basladi - Sorgu: $query")
         return try {
+            // Nonce'u ana sayfadan çek (live-search-js-extra script'i base64 gömülü)
             val homeDoc = app.get(mainUrl).document
-
-            // Nonce değeri script src attribute'u içinde base64 olarak gömülü:
-            // <script id="live-search-js-extra" src="data:text/javascript;base64,..."></script>
             val scriptTag = homeDoc.selectFirst("script#live-search-js-extra")
             val base64Src = scriptTag?.attr("src")
             val base64Part = base64Src?.substringAfter("base64,", "")
@@ -110,6 +118,7 @@ class DiziMom : MainAPI() {
                         android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT),
                         Charsets.UTF_8
                     )
+                    // JSON: {"ajax_url":"...","admin_ajax_nonce":"0721b9225c"}
                     Regex(""""admin_ajax_nonce"\s*:\s*"([^"]+)"""")
                         .find(decoded)
                         ?.groupValues
@@ -118,9 +127,7 @@ class DiziMom : MainAPI() {
                     Log.e(name, "Nonce base64 decode hatası: ${e.message}")
                     null
                 }
-            } else {
-                null
-            }
+            } else null
 
             if (nonce.isNullOrBlank()) {
                 Log.e(name, "Arama nonce değeri bulunamadı")
@@ -129,7 +136,9 @@ class DiziMom : MainAPI() {
             Log.d(name, "Nonce: $nonce")
 
             val postUrl = "$mainUrl/wp-admin/admin-ajax.php"
-            val body = "action=data_fetch&keyword=${query}&_wpnonce=$nonce"
+            // NOT: Bu action/parametre isimleri doğrulanmalı.
+            // live-search JS dosyası incelenip kesinleştirilmeli.
+            val body = "action=live_search&s=${query}&_wpnonce=$nonce"
             val response = app.post(
                 url = postUrl,
                 headers = mapOf(
@@ -140,7 +149,7 @@ class DiziMom : MainAPI() {
             )
 
             val doc = Jsoup.parse(response.text)
-            val elements = doc.select("div.searchelement")
+            val elements = doc.select("div.searchelement, div.search-result, li.search-item")
             Log.d(name, "Arama sonucu eleman sayısı: ${elements.size}")
 
             val results = elements.mapNotNull { element ->
@@ -150,7 +159,10 @@ class DiziMom : MainAPI() {
 
                 val href = fixUrlNull(titleLink.attr("href")) ?: return@mapNotNull null
                 val title = titleLink.text().trim()
-                val poster = fixUrlNull(element.selectFirst("div.search-cat-img img")?.attr("src"))
+                val poster = fixUrlNull(
+                    element.selectFirst("div.search-cat-img img")?.attr("src")
+                        ?: element.selectFirst("img")?.attr("src")
+                )
                 val year = element.selectFirst("#search-cat-year")?.text()?.trim()?.toIntOrNull()
 
                 newMovieSearchResponse(title, href, TvType.Movie) {
@@ -172,6 +184,9 @@ class DiziMom : MainAPI() {
         return search(query)
     }
 
+    // ===================== LOAD =====================
+    // NOT: Detay sayfası HTML'i elimde olmadığı için buradaki selectorler
+    // değiştirilmedi. Detay HTML gelince ayrıca düzeltilecek.
     override suspend fun load(url: String): LoadResponse? {
         Log.d(name, "load basladi - URL: $url")
 
@@ -190,7 +205,6 @@ class DiziMom : MainAPI() {
         }
 
         // ===== POSTER =====
-        // Film detayında div.info_move .image img, dizi detayında div.category_image img
         val poster = fixUrlNull(
             document.selectFirst("div.info_move .image img")?.attr("data-src")
                 ?: document.selectFirst("div.info_move .image img")?.attr("src")
@@ -199,35 +213,33 @@ class DiziMom : MainAPI() {
                 ?: document.selectFirst("meta[property=og:image]")?.attr("content")
         )
 
-        // Dizi veya film olduğunu belirle
-        val isSeries = document.selectFirst("div.bolumust") != null || document.selectFirst("#myBtnContainer") != null
+        val isSeries = document.selectFirst("div.bolumust") != null ||
+                document.selectFirst("#myBtnContainer") != null
 
         if (isSeries) {
-            // ================= DIZI DETAY =================
             Log.d(name, "load - Dizi sayfasi algılandı")
 
-            // Yıl
-            val year = document.select("div.dizimeta:contains(Yapım Yılı)").firstOrNull()?.parent()?.ownText()?.trim()?.toIntOrNull()
+            val year = document.select("div.dizimeta:contains(Yapım Yılı)").firstOrNull()
+                ?.parent()?.ownText()?.trim()?.toIntOrNull()
 
-            // Özet
             val description = document.selectFirst("div.category_desc")?.text()?.trim()
                 ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-            // Türler
             val tags = document.select("div.genres a").map { it.text().trim() }.distinct()
 
-            // IMDb
-            val imdbText = document.select("div.dizimeta:contains(IMDB)").firstOrNull()?.parent()?.ownText()?.trim()
-            val rating = imdbText?.let { Regex("""([0-9]+(?:\.[0-9]+)?)""").find(it)?.groupValues?.get(1) }
+            val imdbText = document.select("div.dizimeta:contains(IMDB)").firstOrNull()
+                ?.parent()?.ownText()?.trim()
+            val rating = imdbText?.let {
+                Regex("""([0-9]+(?:\.[0-9]+)?)""").find(it)?.groupValues?.get(1)
+            }
 
-            // Oyuncular
-            val actorText = document.select("div.dizimeta:contains(Oyuncular)").firstOrNull()?.parent()?.ownText()?.trim()
+            val actorText = document.select("div.dizimeta:contains(Oyuncular)").firstOrNull()
+                ?.parent()?.ownText()?.trim()
             val actors: List<Pair<Actor, String?>> = actorText?.split(",")?.mapNotNull { name ->
                 val cleanName = name.trim()
                 if (cleanName.isNotEmpty()) Pair<Actor, String?>(Actor(cleanName, null), null) else null
             } ?: emptyList()
 
-            // Fragman
             val trailerRaw = document.selectFirst("#trailer .trailer-video")?.attr("data-src")
                 ?: document.selectFirst("#trailer .trailer-video")?.attr("src")
                 ?: ""
@@ -238,11 +250,11 @@ class DiziMom : MainAPI() {
                 else -> ""
             }
 
-            // Bölümler
             val episodes = mutableListOf<Episode>()
             document.select("div.bolumust a[href]").forEach { link ->
                 val epHref = fixUrlNull(link.attr("href")) ?: return@forEach
-                val epText = link.selectFirst("div.baslik")?.text()?.trim() ?: link.text()?.trim() ?: return@forEach
+                val epText = link.selectFirst("div.baslik")?.text()?.trim()
+                    ?: link.text()?.trim() ?: return@forEach
                 val season = Regex("""(\d+)\.Sezon""").find(epText)?.groupValues?.get(1)?.toIntOrNull()
                 val episode = Regex("""(\d+)\.Bölüm""").find(epText)?.groupValues?.get(1)?.toIntOrNull()
                 if (season != null && episode != null) {
@@ -269,37 +281,32 @@ class DiziMom : MainAPI() {
                 if (trailer.isNotBlank()) addTrailer(trailer)
             }
         } else {
-            // ================= FILM DETAY =================
             Log.d(name, "load - Film sayfasi algılandı")
 
-            // Yıl: "Çıkış Yılı" başlıklı span içindeki 4 haneli sayı
             val year = document.select("div.info_content .detail .center span")
                 .firstOrNull { it.selectFirst("small")?.text()?.contains("Çıkış Yılı") == true }
                 ?.text()
                 ?.let { Regex("""\d{4}""").find(it)?.value?.toIntOrNull() }
 
-            // Özet
             val description = document.selectFirst("div.desc.yeniscroll")?.text()?.trim()
                 ?: document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-            // Türler: rel="category tag" olan bağlantılar
             val tags = document.select("div.info_content .detail .center a[rel='category tag']")
                 .map { it.text().trim() }
                 .distinct()
 
-            // IMDb: varsa
             val imdbText = document.select("div.info_content .detail .center span")
                 .firstOrNull { it.selectFirst("small")?.text()?.contains("IMDb") == true }
                 ?.text()
-            val rating = imdbText?.let { Regex("""([0-9]+(?:\.[0-9]+)?)""").find(it)?.groupValues?.get(1) }
+            val rating = imdbText?.let {
+                Regex("""([0-9]+(?:\.[0-9]+)?)""").find(it)?.groupValues?.get(1)
+            }
 
-            // Süre: "Film Süre" başlıklı span içindeki "98 Dakika" gibi ifadeden sayı
             val duration = document.select("div.info_content .detail .center span")
                 .firstOrNull { it.selectFirst("small")?.text()?.contains("Film Süre") == true }
                 ?.text()
                 ?.let { Regex("""(\d+)\s*Dakika""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
 
-            // Oyuncular: "Oyuncular" başlıklı span içindeki isimler
             val actorText = document.select("div.info_content .detail .center span")
                 .firstOrNull { it.selectFirst("small")?.text()?.contains("Oyuncular") == true }
                 ?.text()
@@ -311,7 +318,6 @@ class DiziMom : MainAPI() {
                     if (cleanName.isNotEmpty()) Pair<Actor, String?>(Actor(cleanName, null), null) else null
                 } ?: emptyList()
 
-            // Fragman: div.btn.fragman_goster elemanının rel attribute'u
             val trailerRaw = document.selectFirst("div.btn.fragman_goster")?.attr("rel")
                 ?: document.selectFirst("div.btn.fragman_goster")?.attr("href")
             val trailer = when {
