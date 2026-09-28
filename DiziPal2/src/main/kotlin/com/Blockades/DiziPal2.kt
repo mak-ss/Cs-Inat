@@ -1,11 +1,9 @@
-// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
-
-package com.keyiflerolsun
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.Blockades.DizipalPlayer2   // ← KRİTİK IMPORT!
+import com.Blockades.DizipalPlayer2
 import org.jsoup.nodes.Element
 
 class DiziPal2 : MainAPI() {
@@ -34,8 +32,6 @@ class DiziPal2 : MainAPI() {
         "${mainUrl}/kategori/komedi"      to "Komedi Filmleri",
         "${mainUrl}/kategori/belgesel"    to "Belgesel Filmleri",
     )
-
-    // ==================== ANA SAYFA ====================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
@@ -73,8 +69,6 @@ class DiziPal2 : MainAPI() {
 
         return newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = posterUrl }
     }
-
-    // ==================== ARAMA ====================
 
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/ajax-search?q=$query"
@@ -126,13 +120,7 @@ class DiziPal2 : MainAPI() {
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
-    // ==================== DETAY SAYFASI ====================
-
     override suspend fun load(url: String): LoadResponse? {
-        Log.e("DiziPal2", "===== load ÇAĞRILDI =====")
-        Log.e("DiziPal2", "url » $url")
-
-        // Bölüm linki yönlendirmesi
         if (url.contains("/bolum/")) {
             val seriesUrl = url.replace("/bolum/", "/dizi/")
                 .replace(Regex("-\\d+-sezon.*"), "")
@@ -147,7 +135,6 @@ class DiziPal2 : MainAPI() {
         val description = document.selectFirst("p.series-description")?.text()?.trim()
         val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a")
             .map { it.text().trim() }
-        val duration: Int? = null
 
         if (url.contains("/dizi/")) {
             val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
@@ -171,14 +158,11 @@ class DiziPal2 : MainAPI() {
                 }
             }
 
-            Log.e("DiziPal2", "TOPLAM BÖLÜM » ${episodes.size}")
-
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year      = year
                 this.plot      = description
                 this.tags      = tags
-                this.duration  = duration
             }
         } else {
             val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim()
@@ -193,12 +177,9 @@ class DiziPal2 : MainAPI() {
                 this.year      = year
                 this.plot      = description
                 this.tags      = tags
-                this.duration  = duration
             }
         }
     }
-
-    // ==================== LİNK YÜKLEME ====================
 
     override suspend fun loadLinks(
         data: String,
@@ -206,20 +187,13 @@ class DiziPal2 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.e("DiziPal2", "===== loadLinks ÇAĞRILDI =====")
-        Log.e("DiziPal2", "data » $data")
-
-        // DizipalPlayer2 extractor'ünü kullan
-        try {
-            Log.e("DiziPal2", ">>> DizipalPlayer2 INSTANCE OLUŞTURULUYOR...")
+        return try {
             val player = DizipalPlayer2()
-            Log.e("DiziPal2", ">>> DizipalPlayer2 getUrl ÇAĞRILIYOR...")
             player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
-            Log.e("DiziPal2", ">>> DizipalPlayer2 TAMAMLANDI")
-            return true
+            true
         } catch (e: Exception) {
             Log.e("DiziPal2", "DizipalPlayer2 HATA » ${e.message}", e)
-            return false
+            false
         }
     }
 }
