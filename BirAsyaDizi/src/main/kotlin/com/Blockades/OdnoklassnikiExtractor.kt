@@ -24,11 +24,11 @@ class OdnoklassnikiExtractor : ExtractorApi() {
         // Video URL'sini içeren JavaScript bloğunu bulmak için regex.
         // Örnek: 'videos':[{'url':'...mp4','name':'...','quality':'...'}]
         val videoRegex = Regex("""\{\"name\":\"(.*?)\",\"url\":\"(.*?)\"|\{\"url\":\"(.*?)\",\"name\":\"(.*?)\"""")
-        
+
         videoRegex.findAll(response).forEach { matchResult ->
             val qualityName = matchResult.groupValues[1].ifEmpty { matchResult.groupValues[4] }
             val videoUrl = matchResult.groupValues[2].ifEmpty { matchResult.groupValues[3] }
-            
+
             if (videoUrl.isNotBlank() && (videoUrl.contains(".mp4") || videoUrl.contains("m3u8"))) {
                 val quality = when {
                     qualityName.contains("1080", true) -> Qualities.P1080.value
@@ -37,7 +37,7 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                     qualityName.contains("360", true) -> Qualities.P360.value
                     else -> Qualities.Unknown.value
                 }
-                
+
                 val linkType = if (videoUrl.contains("m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
                 callback.invoke(
@@ -47,7 +47,8 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                         url = videoUrl.replace("\\/", "/"),
                         type = linkType
                     ) {
-                        this.referer = referer
+                        // referer null olabilir, bu yüzden güvenli bir şekilde atıyoruz
+                        this.referer = referer ?: ""
                         this.quality = quality
                     }
                 )
@@ -68,4 +69,3 @@ class OdnoklassnikiExtractor : ExtractorApi() {
         }
     }
 }
-
