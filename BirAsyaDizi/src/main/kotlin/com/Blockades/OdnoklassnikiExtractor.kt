@@ -3,12 +3,16 @@ package com.Blockades
 import org.json.JSONException
 import org.json.JSONObject
 
+// Altyazı modeli veya arayüzü gereksinimi için dummy/generic sınıf tanımı
+data class SubtitleFile(val url: String, val lang: String = "")
+
 class OdnoklassnikiExtractor {
 
     fun getUrl(
         responseBody: String,
-        url: String? = null,
-        headers: Map<String, String>? = null
+        headers: Map<String, String>? = null,
+        subtitleCallback: ((SubtitleFile) -> Unit)? = null,
+        callback: ((String) -> Unit)? = null
     ): String? {
         val trimmedBody = responseBody.trim()
 
@@ -22,18 +26,47 @@ class OdnoklassnikiExtractor {
 
         return try {
             val jsonObject = JSONObject(trimmedBody)
-            
+            var extractedUrl: String? = null
+
             if (jsonObject.has("url")) {
-                jsonObject.getString("url")
+                extractedUrl = jsonObject.getString("url")
             } else if (jsonObject.has("play")) {
-                jsonObject.getString("play")
-            } else {
-                println("HATA: JSON yanıtı içinde geçerli bir URL anahtarı bulunamadı.")
-                null
+                extractedUrl = jsonObject.getString("play")
             }
+
+            // Eğer varsa callback üzerinden sonucu bildir
+            extractedUrl?.let { url ->
+                callback?.invoke(url)
+            }
+
+            extractedUrl
         } catch (e: JSONException) {
             println("JSON Parse Hatası: ${e.message}")
             null
         }
+    }
+
+    // Farklı parametre sıralamaları veya aşırı yüklenmiş (overloaded) çağrılar için esnek getUrl metodu
+    fun getUrl(
+        responseBody: String,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): String? {
+        return getUrl(responseBody, null, subtitleCallback, null)
+    }
+
+    fun getUrl(
+        responseBody: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (String) -> Unit
+    ): String? {
+        return getUrl(responseBody, null, subtitleCallback, callback)
+    }
+
+    fun getUrl(
+        responseBody: String,
+        headers: Map<String, String>?,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ): String? {
+        return getUrl(responseBody, headers, subtitleCallback, null)
     }
 }
