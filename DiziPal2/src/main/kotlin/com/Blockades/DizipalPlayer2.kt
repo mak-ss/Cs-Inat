@@ -25,6 +25,7 @@ class DizipalPlayer2 : ExtractorApi() {
         Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
         Log.d("DPPLAYER2", "url » $url")
 
+        // 1. Sayfayı Çek
         val pageResp = try {
             app.get(url, referer = "$mainUrl/")
         } catch (e: Exception) {
@@ -41,6 +42,7 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
+        // 2. AJAX İsteği At
         val response = try {
             app.post(
                 "$mainUrl/ajax-player-config",
@@ -61,6 +63,7 @@ class DizipalPlayer2 : ExtractorApi() {
             return
         }
 
+        // 3. Yanıtı Decrypt Et
         val result = parseAndDecrypt(response)
         if (result == null) {
             Log.e("DPPLAYER2", "Decryption işlemi başarısız")
@@ -69,6 +72,7 @@ class DizipalPlayer2 : ExtractorApi() {
 
         val (videoUrl, videoType) = result
 
+        // 4. Iframe / Embed Yapılarını Doğrudan Çözümle
         if (videoType == "iframe" || videoUrl.contains("<iframe", true) || videoUrl.contains(".html", true)) {
             val iframeUrl = Regex("""src=["']([^"']+)["']""")
                 .find(videoUrl)?.groupValues?.get(1)
@@ -78,21 +82,23 @@ class DizipalPlayer2 : ExtractorApi() {
                 val fixedUrl = fixUrl(iframeUrl)
                 Log.d("DPPLAYER2", "Iframe adresi işleniyor » $fixedUrl")
 
+                // Öncelik 1: Cloudstream dahili extractor'ları ile dene
                 val extracted = try {
                     loadExtractor(fixedUrl, url, subtitleCallback, callback)
                 } catch (e: Exception) {
                     false
                 }
 
+                // Öncelik 2: Tanınmadıysa (örneğin formationfeed.net) iframe HTML'ini çekip içindeki m3u8'i çıkar
                 if (!extracted) {
-                    Log.d("DPPLAYER2", "Dahili extractor bulunamadı, özel Extractor çağrılıyor")
-                    val formationFeed = FormationFeedExtractor()
-                    formationFeed.getUrl(fixedUrl, url, subtitleCallback, callback)
+                    Log.d("DPPLAYER2", "Dahili extractor tanımadı, iframe içeriği elle ayrıştırılıyor » $fixedUrl")
+                    extractMediaFromIframe(fixedUrl, url, callback)
                 }
             }
             return
         }
 
+        // 5. Doğrudan Stream URL'si Gelmişse
         val isM3u8 = videoUrl.contains(".m3u8", true)
         callback.invoke(
             newExtractorLink(
@@ -110,6 +116,67 @@ class DizipalPlayer2 : ExtractorApi() {
                 )
             }
         )
+    }
+
+    // Iframe HTML sayfasından gerçek medya linkini (m3u8/mp4) çıkaran yardımcı fonksiyon
+    private suspend fun extractMediaFromIframe(
+        iframeUrl: String,
+        refererUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val html = app.get(
+                iframeUrl,
+                referer = refererUrl,
+                headers = mapOf("User-Agent" to USER_AGENT)
+            ).text
+
+            // HTML içindeki .m3u8 linkini bul
+            val m3u8Match = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""").find(html)?.groupValues?.get(1)
+            
+            if (!m3u8Match.isNullOrBlank()) {
+                Log.d("DPPLAYER2", "Iframe içinden M3U8 linki bulundu » $m3u8Match")
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = "${this.name} Stream",
+                        url = m3u8Match,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = iframeUrl
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to iframeUrl
+                        )
+                    }
+                )
+                return
+            }
+
+            // HTML içindeki .mp4 linkini bul
+            val mp4Match = Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\>]*)""").find(html)?.groupValues?.get(1)
+            if (!mp4Match.isNullOrBlank()) {
+                Log.d("DPPLAYER2", "Iframe içinden MP4 linki bulundu » $mp4Match")
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = "${this.name} Stream",
+                        url = mp4Match,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = iframeUrl
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to iframeUrl
+                        )
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("DPPLAYER2", "Iframe içerik çekme hatası » ${e.message}")
+        }
     }
 
     private fun parseAndDecrypt(response: String): Pair<String, String>? {
