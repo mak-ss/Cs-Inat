@@ -167,21 +167,36 @@ class BirAsyaDizi : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit, 
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d("BirAsyaDizi_DEBUG", "loadLinks çağrıldı. data: $data")
         val document = app.get(data, headers = mainHeaders).document
-        // Oynatıcı iframe'i artık daha spesifik bir seçici ile bulunuyor.
-        val iframe = document.selectFirst("div#vast iframe#Vidpplayera") ?: return false
+
+        // Birincil seçici
+        val iframe = document.selectFirst("div#vast iframe#Vidpplayera")
+        Log.d("BirAsyaDizi_DEBUG", "Birincil seçici ('div#vast iframe#Vidpplayera') sonucu: $iframe")
+
+        // Yedek seçici
+        val targetIframe = iframe ?: document.selectFirst("iframe")
+        if (targetIframe == null) {
+            Log.e("BirAsyaDizi_DEBUG", "HATA: Sayfada hiç iframe bulunamadı!")
+            return false
+        }
+        Log.d("BirAsyaDizi_DEBUG", "Kullanılacak iframe HTML: ${targetIframe.outerHtml()}")
 
         val iframeVid = fixUrlNull(
-            iframe.attr("vdo-src").ifEmpty { 
-                iframe.attr("src").ifEmpty { 
-                    iframe.attr("data-src") 
-                } 
+            targetIframe.attr("vdo-src").ifEmpty {
+                targetIframe.attr("src").ifEmpty {
+                    targetIframe.attr("data-src")
+                }
             }
-        ) ?: return false
+        ) ?: run {
+            Log.e("BirAsyaDizi_DEBUG", "HATA: iframe içinde vdo-src, src veya data-src attribute'u bulunamadı!")
+            return false
+        }
 
-        Log.d("kraptor_$name", "iframeVid -> $iframeVid")
+        Log.d("BirAsyaDizi_DEBUG", "Çıkarılan video URL'si: $iframeVid")
 
-        // Burada OdnoklassnikiExtractor'ın devreye girmesi için URL'yi loadExtractor'a gönderiyoruz.
-        return loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
+        val result = loadExtractor(iframeVid, "$mainUrl/", subtitleCallback, callback)
+        Log.d("BirAsyaDizi_DEBUG", "loadExtractor çağrı sonucu: $result")
+        return result
     }
 }
