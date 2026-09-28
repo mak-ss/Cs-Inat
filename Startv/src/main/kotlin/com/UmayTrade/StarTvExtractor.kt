@@ -8,10 +8,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 
-/**
- * Star TV için özel extractor.
- * Hem canlı yayın hem de dizi bölümleri için m3u8 linklerini çıkarır.
- */
 class StarTvExtractor {
 
     private val extractorName = "Star TV"
@@ -19,14 +15,13 @@ class StarTvExtractor {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    // Daion CDN domaini - Star TV ve diğer Doğuş yayınları burayı kullanıyor
-    private val daionCdnRegex = Regex("""(https?://[^\s"'<>]*?daioncdn\.net[^\s"'<>]*?\.m3u8[^\s"'<>]*)""")
-
-    // Genel m3u8 yakalayıcı
+    // SADECE gerçek m3u8 linklerini yakala (sayfa URL'si değil!)
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
-
-    // MP4 yakalayıcı
     private val mp4Regex = Regex("""(https?://[^\s"'<>]+?\.mp4[^\s"'<>]*)""")
+    
+    // Sayfa içindeki JSON'da video objesini bul
+    private val videoJsonRegex = Regex(""""video"\s*:\s*\{[^}]*"contentUrl"\s*:\s*"([^"]+)"""")
+    private val filenameRegex = Regex(""""filename"\s*:\s*"([^"]+)"""")
 
     suspend fun getUrl(
         url: String,
@@ -44,37 +39,75 @@ class StarTvExtractor {
     }
 
     /**
-     * Canlı yayın linkini çıkarır.
+     * Canlı yayın - Star TV canlı yayını iframe içinde geliyor.
+     * Sayfada player iframe'ini bulup oradan m3u8 çekiyoruz.
      */
     private suspend fun extractLiveStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
-            var streamUrl = findStreamUrl(doc)
+            // 1. Sayfadaki iframe'leri kontrol et
+            val iframeSrc = doc.select(
+                "iframe[src*=player], iframe[src*=canli], iframe[src*=live], iframe[src*=daion], iframe[src*=dogus]"
+            ).attr("src").firstOrNull()
 
-            // Iframe kontrolü
-            if (streamUrl.isNullOrBlank()) {
-                val iframeSrc = doc.selectFirst("iframe[src*=player], iframe[src*=canli], iframe[src*=live]")?.attr("src")
-                if (!iframeSrc.isNullOrBlank()) {
-                    val iframeDoc = app.get(fixUrl(iframeSrc), headers = mapOf(
-                        "User-Agent" to userAgent,
-                        "Referer" to url
-                    )).document
-                    streamUrl = findStreamUrl(iframeDoc)
+            if (!iframeSrc.isNullOrBlank()) {
+                val fullIframeUrl = fixUrl(iframeSrc)
+                
+                // Iframe içeriğini çek
+                val iframeDoc = app.get(fullIframeUrl, headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "Referer" to url
+                )).document
+
+                // Iframe içinden m3u8 çek
+                var streamUrl = findStreamUrl(iframeDoc)
+                
+                // Iframe içinde başka bir script/iframe varsa oraya da bak
+                if (streamUrl.isNullOrBlank()) {
+                    val innerIframe = iframeDoc.selectFirst("iframe[src]")?.attr("src")
+                    if (!innerIframe.isNullOrBlank()) {
+                        val innerDoc = app.get(fixUrl(innerIframe), headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "Referer" to fullIframeUrl
+                        )).document
+                        streamUrl = findStreamUrl(innerDoc)
+                    }
+                }
+
+                // Iframe içindeki script'lerde m3u8 ara
+                if (streamUrl.isNullOrBlank()) {
+                    streamUrl = extractFromScripts(iframeDoc)
+                }
+
+                if (!streamUrl.isNullOrBlank()) {
+                    callback(
+                        newExtractorLink(
+                            source = extractorName,
+                            name = "Star TV Canlı HD",
+                            url = streamUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = mainUrl
+                            this.headers = mapOf(
+                                "User-Agent" to userAgent,
+                                "Origin" to mainUrl
+                            )
+                            this.quality = Qualities.P720.value
+                        }
+                    )
+                    return true
                 }
             }
 
-            // Fallback: Bilinen canlı yayın endpoint'i
-            if (streamUrl.isNullOrBlank()) {
-                streamUrl = "https://dogus-live.daioncdn.net/startv/startv.m3u8"
-            }
-
-            if (!streamUrl.isNullOrBlank()) {
+            // 2. Doğrudan sayfa içeriğinde m3u8/mp4 ara
+            val directStreamUrl = findStreamUrl(doc)
+            if (!directStreamUrl.isNullOrBlank()) {
                 callback(
                     newExtractorLink(
                         source = extractorName,
                         name = "Star TV Canlı HD",
-                        url = streamUrl,
+                        url = directStreamUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = mainUrl
@@ -95,42 +128,46 @@ class StarTvExtractor {
     }
 
     /**
-     * Dizi bölümü stream URL'sini çıkarır.
+     * Dizi bölümü - Sayfadaki JSON'dan video bilgisini bulup stream URL'sini çıkarır.
      */
     private suspend fun extractEpisodeStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
-            var streamUrl = findStreamUrl(doc)
+            var streamUrl: String? = null
 
-            // Iframe kontrolü
+            // 1. Sayfadaki script'lerde video URL'si ara (contentUrl, m3u8, filename)
+            streamUrl = extractFromScripts(doc)
+
+            // 2. Iframe varsa içeriğini çek
             if (streamUrl.isNullOrBlank()) {
-                val iframeSrc = doc.selectFirst("iframe[src*=player], iframe[src*=video], iframe[src*=embed]")?.attr("src")
+                val iframeSrc = doc.selectFirst("iframe[src*=player], iframe[src*=video], iframe[src*=embed], iframe[src*=daion]")?.attr("src")
                 if (!iframeSrc.isNullOrBlank()) {
                     val iframeDoc = app.get(fixUrl(iframeSrc), headers = mapOf(
                         "User-Agent" to userAgent,
                         "Referer" to url
                     )).document
-                    streamUrl = findStreamUrl(iframeDoc)
+                    streamUrl = extractFromScripts(iframeDoc) ?: findStreamUrl(iframeDoc)
                 }
             }
 
-            // JSON-LD'den contentUrl veya embedUrl
+            // 3. Son çare: sayfadaki tüm linklerde m3u8 ara
             if (streamUrl.isNullOrBlank()) {
-                val jsonLd = doc.selectFirst("script[type=application/ld+json]")?.html()
-                if (!jsonLd.isNullOrBlank()) {
-                    streamUrl = Regex(""""contentUrl"\s*:\s*"([^"]+)"""").find(jsonLd)?.groupValues?.get(1)
-                        ?: Regex(""""embedUrl"\s*:\s*"([^"]+)"""").find(jsonLd)?.groupValues?.get(1)
-                }
+                streamUrl = findStreamUrl(doc)
             }
 
             if (!streamUrl.isNullOrBlank()) {
+                // KRİTİK: Sayfa URL'sini stream olarak göndermeyi engelle!
+                if (streamUrl.contains("startv.com.tr/dizi/")) {
+                    return false
+                }
+                
                 callback(
                     newExtractorLink(
                         source = extractorName,
                         name = "Star TV",
                         url = streamUrl,
-                        type = if (streamUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.M3U8
+                        type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = mainUrl
                         this.headers = mapOf(
@@ -150,23 +187,84 @@ class StarTvExtractor {
     }
 
     /**
-     * Sayfa içeriğinden stream URL'sini bulur.
-     * Öncelik: daioncdn -> genel m3u8 -> mp4
+     * Sayfadaki tüm script tag'lerini tarayıp video URL'sini bulur.
+     * Öncelik: contentUrl -> filename -> m3u8 -> mp4
      */
-    private fun findStreamUrl(doc: Document): String? {
-        val html = doc.html()
-        daionCdnRegex.find(html)?.value?.let { return it }
-        m3u8Regex.find(html)?.value?.let { return it }
-        mp4Regex.find(html)?.value?.let { return it }
+    private fun extractFromScripts(doc: Document): String? {
+        // Sayfadaki tüm script'leri topla (inline + __NEXT_DATA__ + JSON-LD)
+        val allScripts = buildString {
+            doc.select("script").forEach { script ->
+                append(script.html())
+                append("\n")
+            }
+        }
+
+        // 1. contentUrl (JSON içinde)
+        videoJsonRegex.find(allScripts)?.groupValues?.get(1)?.let { url ->
+            if (url.contains(".m3u8") || url.contains(".mp4")) {
+                return url
+            }
+        }
+
+        // 2. filename -> bir CDN URL'si olabilir, genelde mp4
+        filenameRegex.find(allScripts)?.groupValues?.get(1)?.let { filename ->
+            if (filename.contains(".mp4") && filename.startsWith("http")) {
+                return filename
+            }
+        }
+
+        // 3. Genel m3u8 araması
+        val m3u8Matches = m3u8Regex.findAll(allScripts).map { it.value }
+            .filter { it.contains("daioncdn") || it.contains("dogus") || it.contains("startv") }
+            .toList()
+        if (m3u8Matches.isNotEmpty()) {
+            return m3u8Matches.first()
+        }
+
+        // 4. Genel mp4 araması
+        val mp4Matches = mp4Regex.findAll(allScripts).map { it.value }
+            .filter { !it.contains("startv.com.tr/dizi") }
+            .toList()
+        if (mp4Matches.isNotEmpty()) {
+            return mp4Matches.first()
+        }
+
         return null
     }
 
     /**
-     * Göreceli URL'leri mutlak hale getirir.
+     * Sayfa HTML'inde stream URL'si arar (script dışı).
+     * ÖNEMLİ: Sayfa URL'sini yakalamamak için filtre uygular.
      */
+    private fun findStreamUrl(doc: Document): String? {
+        val html = doc.html()
+
+        // Daion CDN öncelikli
+        Regex("""(https?://[^\s"'<>]*?daioncdn\.net[^\s"'<>]*?\.m3u8[^\s"'<>]*)""")
+            .find(html)?.value?.let { return it }
+
+        // Genel m3u8 (sayfa URL'si hariç)
+        m3u8Regex.find(html)?.value?.let { url ->
+            if (!url.contains("startv.com.tr/dizi")) {
+                return url
+            }
+        }
+
+        // MP4 (sayfa URL'si hariç)
+        mp4Regex.find(html)?.value?.let { url ->
+            if (!url.contains("startv.com.tr/dizi")) {
+                return url
+            }
+        }
+
+        return null
+    }
+
     private fun fixUrl(url: String): String {
         if (url.startsWith("http")) return url
-        return if (url.startsWith("/")) {
+        return if (url.startsWith("//")) {
+            "https:$url"
+        } else if (url.startsWith("/")) {
             "${mainUrl}$url"
         } else {
             "${mainUrl}/$url"
