@@ -8,6 +8,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import java.security.MessageDigest
 import javax.crypto.Cipher
@@ -26,6 +28,16 @@ class DiziFilm : MainAPI() {
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
             "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8"
         )
+
+        // Ana sayfada gösterilecek kategoriler (RSC payload'dan veya statik path'lerden)
+        private val mainSections = listOf(
+            "Son Eklenen Filmler" to "/",
+            "Türkçe Dublaj Filmler" to "/turkce-dublaj-filmler",
+            "Türkçe Altyazılı Filmler" to "/turkce-altyazili-filmler",
+            "Yabancı Diziler" to "/yabanci-dizi-izle",
+            "Trend Filmler" to "/trend-filmler",
+            "Trend Diziler" to "/trend-diziler"
+        )
     }
 
     // ── Main Page ───────────────────────────────────────────────────────
@@ -33,64 +45,141 @@ class DiziFilm : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val allPages = mutableListOf<HomePageList>()
 
-        val doc = try {
-            app.get(mainUrl, headers = defaultHeaders).document
+        // Önce ana sayfayı çek ve RSC payload'dan verileri çıkar
+        val html = try {
+            app.get(mainUrl, headers = defaultHeaders).text
         } catch (_: Exception) {
             return newHomePageResponse(allPages)
         }
 
-        // Parse sections: Popüler Filmler, HD Film izle, Yabancı Diziler, Efsane Diziler, etc.
-        val sectionHeaders = doc.select("h2[id^='section-'], h2.text-lg, h2.font-bold")
-        for (header in sectionHeaders) {
-            val title = header.text().trim()
-            if (title.isBlank() || title.equals("DiziFilm", ignoreCase = true)) continue
+        val doc = org.jsoup.Jsoup.parse(html)
+        val rscPayload = parseRscPayload(html)
 
-            // Traverse parent container to find swiper-wrapper or cards
-            val container = header.parents().firstOrNull { it.tagName() == "section" || it.children().any { c -> c.hasClass("swiper") || c.hasClass("relative") } }
-                ?: header.parent()?.parent() ?: continue
+        // Ana sayfadaki tüm filmleri RSC'den çek
+        val homeMovies = parseMoviesFromRsc(rscPayload, doc, mainUrl)
+        if (homeMovies.isNotEmpty()) {
+            allPages.add(HomePageList("Son Eklenenler", homeMovies))
+        }
 
-            val cards = container.select("a[href*='/film/'], a[href*='/dizi/']")
-            val items = cards.mapNotNull { a ->
-                val href = a.attr("href")
-                if (href.isBlank() || href.contains("/sezon-") || href.contains("/bolum-")) return@mapNotNull null
-
-                val img = a.selectFirst("img") ?: a.parent()?.selectFirst("img")
-                val poster = img?.attr("src")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("srcSet")?.split(" ")?.firstOrNull()?.takeIf { it.isNotBlank() }
-
-                val rawName = a.attr("aria-label").takeIf { it.isNotBlank() }
-                    ?: a.selectFirst(".sr-only")?.text()
-                    ?: img?.attr("alt")?.takeIf { it.isNotBlank() }
-                    ?: a.text()
-
-                val cardTitle = rawName.replace(Regex("""(?i)\s*(izle\d*|dizi izle|film izle)"""), "").trim()
-                if (cardTitle.isBlank()) return@mapNotNull null
-
-                val cardScore = a.parent()?.selectFirst(".dynamic-island.bg-yellow-500\\/20, [class*='bg-yellow-500']")?.text()?.let {
-                    Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
-                }
-
-                val fullUrl = fixUrl(href)
-                if (fullUrl.contains("/film/")) {
-                    newMovieSearchResponse(cardTitle, fullUrl, TvType.Movie) {
-                        this.posterUrl = poster?.let { fixUrl(it) }
-                        if (cardScore != null) this.score = Score.from10(cardScore)
+        // Ek kategoriler için ayrı sayfaları çek (opsiyonel - performans için sadece ilk sayfa)
+        if (page == 1) {
+            for ((title, path) in mainSections.drop(1)) {
+                try {
+                    val sectionHtml = app.get("$mainUrl$path", headers = defaultHeaders).text
+                    val sectionDoc = org.jsoup.Jsoup.parse(sectionHtml)
+                    val sectionRsc = parseRscPayload(sectionHtml)
+                    val items = parseMoviesFromRsc(sectionRsc, sectionDoc, "$mainUrl$path")
+                    if (items.isNotEmpty()) {
+                        allPages.add(HomePageList(title, items))
                     }
-                } else {
-                    newTvSeriesSearchResponse(cardTitle, fullUrl, TvType.TvSeries) {
-                        this.posterUrl = poster?.let { fixUrl(it) }
-                        if (cardScore != null) this.score = Score.from10(cardScore)
-                    }
+                } catch (_: Exception) {
+                    // Sessizce geç
                 }
-            }.distinctBy { it.url }
-
-            if (items.isNotEmpty()) {
-                allPages.add(HomePageList(title, items))
             }
         }
 
         return newHomePageResponse(allPages)
+    }
+
+    /**
+     * RSC payload'dan film/dizi verilerini çıkarır.
+     * Next.js App Router, verileri `self.__next_f.push([1,"..."])` içinde JSON olarak gönderir.
+     * Film objeleri şu formatta: {"slug":"...","title":"...","posterUrl":"...","year":...,"imdbRating":...}
+     */
+    private fun parseMoviesFromRsc(
+        rscPayload: String,
+        doc: Document,
+        pageUrl: String
+    ): List<SearchResponse> {
+        val movies = mutableListOf<SearchResponse>()
+        val seenUrls = mutableSetOf<String>()
+
+        // Yöntem 1: RSC payload'daki film objelerini regex ile bul
+        // Slug, title ve posterUrl içeren JSON bloklarını yakala
+        val movieBlockRegex = Regex(
+            """"slug"\s*:\s*"([^"]+)"[^{}]*?"title"\s*:\s*"((?:\\.|[^"\\])*)"[^{}]*?"posterUrl"\s*:\s*"((?:\\.|[^"\\])*)"""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+
+        for (m in movieBlockRegex.findAll(rscPayload)) {
+            val slug = m.groupValues[1]
+            val title = unescapeUnicode(m.groupValues[2])
+            val rawPoster = m.groupValues[3].replace("\\/", "/")
+
+            if (slug.isBlank() || title.isBlank()) continue
+
+            // content_type belirle: slug veya pageUrl'de /dizi/ varsa dizi
+            val isSeries = pageUrl.contains("/dizi") || slug.startsWith("dizi-")
+            val fullUrl = if (isSeries) "$mainUrl/dizi/$slug" else "$mainUrl/film/$slug"
+
+            if (!seenUrls.add(fullUrl)) continue
+
+            val poster = fixPosterUrl(rawPoster)
+
+            // Yıl ve puanı da yakalamaya çalış
+            val year = Regex(""""slug"\s*:\s*"$slug"[^{}]*?"year"\s*:\s*(\d{4})""")
+                .find(rscPayload)?.groupValues?.get(1)?.toIntOrNull()
+            val rating = Regex(""""slug"\s*:\s*"$slug"[^{}]*?"imdbRating"\s*:\s*(\d+(?:\.\d+)?)""")
+                .find(rscPayload)?.groupValues?.get(1)?.toDoubleOrNull()
+
+            if (isSeries) {
+                movies.add(newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
+                    this.posterUrl = poster
+                    this.year = year
+                    if (rating != null) this.score = Score.from10(rating)
+                })
+            } else {
+                movies.add(newMovieSearchResponse(title, fullUrl, TvType.Movie) {
+                    this.posterUrl = poster
+                    this.year = year
+                    if (rating != null) this.score = Score.from10(rating)
+                })
+            }
+        }
+
+        // Yöntem 2: DOM'dan media-card__link'leri çek (RSC başarısız olursa)
+        if (movies.isEmpty()) {
+            val cards = doc.select("a.media-card__link[href*='/film/'], a.media-card__link[href*='/dizi/'], a[href*='/film/'], a[href*='/dizi/']")
+            for (a in cards) {
+                val href = a.attr("href")
+                if (href.isBlank()) continue
+                if (href.contains("/sezon-") || href.contains("/bolum-")) continue
+
+                val fullUrl = fixUrl(href)
+                if (!seenUrls.add(fullUrl)) continue
+
+                val container = a.parent() ?: a
+                val img = container.selectFirst("img") ?: a.selectFirst("img")
+                val poster = img?.let { extractPosterUrl(it) }
+
+                val rawTitle = a.attr("aria-label").takeIf { it.isNotBlank() }
+                    ?: a.selectFirst(".sr-only")?.text()?.trim()
+                    ?: img?.attr("alt")?.replace(Regex("""(?i)\s*izle\s*$"""), "")?.trim()
+                    ?: a.text().trim()
+
+                val title = rawTitle.replace(Regex("""(?i)\s*(izle\d*|dizi izle|film izle)"""), "").trim()
+                if (title.isBlank()) continue
+
+                val rating = container.selectFirst("[class*='bg-yellow-500']")?.text()?.let {
+                    Regex("""(\d+(?:\.\d+)?)""").find(it)?.groupValues?.get(1)?.toDoubleOrNull()
+                }
+
+                val isSeries = href.contains("/dizi/")
+                if (isSeries) {
+                    movies.add(newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
+                        this.posterUrl = poster
+                        if (rating != null) this.score = Score.from10(rating)
+                    })
+                } else {
+                    movies.add(newMovieSearchResponse(title, fullUrl, TvType.Movie) {
+                        this.posterUrl = poster
+                        if (rating != null) this.score = Score.from10(rating)
+                    })
+                }
+            }
+        }
+
+        return movies
     }
 
     // ── Search ──────────────────────────────────────────────────────────
@@ -118,21 +207,24 @@ class DiziFilm : MainAPI() {
             val slug = item.optString("slug").takeIf { it.isNotBlank() } ?: continue
             val title = item.optString("title").takeIf { it.isNotBlank() }
                 ?: item.optString("original_title").takeIf { it.isNotBlank() } ?: continue
-            val posterUrl = item.optString("poster_url").takeIf { it.isNotBlank() }?.let { fixUrl(it) }
+            val posterUrl = item.optString("poster_url").takeIf { it.isNotBlank() }?.let { fixPosterUrl(it) }
             val contentType = item.optString("content_type")
             val year = item.optInt("year", 0).takeIf { it > 0 }
+            val rating = item.optDouble("imdb_rating", 0.0).takeIf { it > 0 }
 
             if (contentType == "movie") {
                 val fullUrl = "$mainUrl/film/$slug"
                 list.add(newMovieSearchResponse(title, fullUrl, TvType.Movie) {
                     this.posterUrl = posterUrl
                     this.year = year
+                    if (rating != null) this.score = Score.from10(rating)
                 })
             } else {
                 val fullUrl = "$mainUrl/dizi/$slug"
                 list.add(newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
                     this.posterUrl = posterUrl
                     this.year = year
+                    if (rating != null) this.score = Score.from10(rating)
                 })
             }
         }
@@ -149,17 +241,21 @@ class DiziFilm : MainAPI() {
         val rscPayload = parseRscPayload(html)
 
         val title = doc.selectFirst("h1")?.text()?.trim()
-            ?: doc.selectFirst("meta[property='og:title']")?.attr("content")?.trim()
+            ?: doc.selectFirst("meta[property='og:title']")?.attr("content")?.trim()?.replace(Regex("""(?i)\s*\|.*$"""), "")?.trim()
             ?: "DiziFilm"
 
-        val poster = doc.selectFirst("meta[property='og:image']")?.attr("content")?.let { fixUrl(it) }
-            ?: doc.selectFirst("img.object-cover, img[src*='/poster/']")?.attr("src")?.let { fixUrl(it) }
+        // Poster: og:image > img.object-cover > img[src*='/poster/']
+        val poster = doc.selectFirst("meta[property='og:image']")?.attr("content")?.let { fixPosterUrl(it) }
+            ?: doc.selectFirst("img.object-cover")?.let { extractPosterUrl(it) }
+            ?: doc.selectFirst("img[src*='/poster/']")?.let { extractPosterUrl(it) }
+            ?: doc.selectFirst("img[srcSet*='/poster/']")?.let { extractPosterUrl(it) }
 
         val plot = extractPlot(doc, rscPayload)
 
-        val year = Regex("""(20\d\d|19\d\d)""").find(html)?.groupValues?.get(1)?.toIntOrNull()
+        val year = Regex(""""year"\s*:\s*(\d{4})""").find(rscPayload)?.groupValues?.get(1)?.toIntOrNull()
+            ?: Regex("""(20\d\d|19\d\d)""").find(html)?.groupValues?.get(1)?.toIntOrNull()
 
-        val scoreText = Regex("""(?:imdb_rating|tmdb_rating)["']?\s*:\s*(\d+(?:\.\d+)?)""").find(rscPayload)?.groupValues?.get(1)
+        val scoreText = Regex(""""(?:imdb_rating|imdbRating|tmdb_rating)"\s*:\s*(\d+(?:\.\d+)?)""").find(rscPayload)?.groupValues?.get(1)
             ?: Regex("""(\d+(?:\.\d+)?)\s*(?:/10|IMDb)""").find(html)?.groupValues?.get(1)
         val score = scoreText?.toDoubleOrNull()
 
@@ -178,7 +274,7 @@ class DiziFilm : MainAPI() {
             }
         }
 
-        // TV Series: First try Next.js RSC payload seasonsWithEpisodes
+        // TV Series: RSC seasonsWithEpisodes > DOM episode cards > regex href
         val seriesSlug = Regex("""/dizi/([^/?#]+)""").find(url)?.groupValues?.get(1) ?: ""
         var episodes = if (seriesSlug.isNotBlank()) {
             parseSeasonsWithEpisodes(rscPayload, seriesSlug)
@@ -186,7 +282,6 @@ class DiziFilm : MainAPI() {
             emptyList()
         }
 
-        // Fallback 1: DOM episode cards
         if (episodes.isEmpty()) {
             val episodeCards = doc.select("a[href*='/bolum-']")
             if (episodeCards.isNotEmpty()) {
@@ -196,8 +291,8 @@ class DiziFilm : MainAPI() {
                     val sNum = m.groupValues[1].toIntOrNull() ?: 1
                     val eNum = m.groupValues[2].toIntOrNull() ?: 1
                     val epThumb = a.selectFirst(".bolum-afis-img img, img")?.let { img ->
-                        img.attr("src").takeIf { it.isNotBlank() } ?: img.attr("data-src")
-                    }?.let { fixUrl(it) } ?: poster
+                        extractPosterUrl(img)
+                    } ?: poster
                     val titleFromA = a.selectFirst("p.text-zinc-500")?.text()?.trim()
                         ?: a.selectFirst("h3")?.text()?.trim()
                         ?: a.attr("title").replace(Regex("""(?i)^.*?(\d+\.\s*Sezon\s*\d+\.\s*Bölüm)\s*"""), "").trim()
@@ -213,7 +308,6 @@ class DiziFilm : MainAPI() {
             }
         }
 
-        // Fallback 2: Regex href matching
         if (episodes.isEmpty()) {
             val episodeMatches = Regex("""href=["'](/dizi/[^/]+/sezon-(\d+)/bolum-(\d+))["']""").findAll(html).toList()
             episodes = episodeMatches.map { m ->
@@ -248,13 +342,11 @@ class DiziFilm : MainAPI() {
     ): Boolean {
         var found = false
 
-        // Case 1: data is already an embed URL (e.g. from movie parts)
         if (data.contains("/embed/") || data.contains("/video/")) {
             found = extractDirectEmbed(data, "$mainUrl/", subtitleCallback, callback) || found
             if (found) return true
         }
 
-        // Case 2: data is a page URL (episode page or movie page)
         val html = try {
             app.get(data, headers = defaultHeaders).text
         } catch (_: Exception) {
@@ -263,19 +355,16 @@ class DiziFilm : MainAPI() {
 
         val rscPayload = parseRscPayload(html)
 
-        // Find embeds from episode payload
         val embedUrls = mutableListOf<String>()
         val embed1 = Regex(""""embed_player_url_1"\s*:\s*"(https?:[^"]+)"""").find(rscPayload)?.groupValues?.get(1)
         val embed2 = Regex(""""embed_player_url_2"\s*:\s*"(https?:[^"]+)"""").find(rscPayload)?.groupValues?.get(1)
         if (!embed1.isNullOrBlank()) embedUrls.add(embed1.replace("\\/", "/"))
         if (!embed2.isNullOrBlank()) embedUrls.add(embed2.replace("\\/", "/"))
 
-        // Also check parts from payload
         for (part in parseMovieParts(rscPayload)) {
             if (!embedUrls.contains(part.url)) embedUrls.add(part.url)
         }
 
-        // Also fallback to scanning html for iframe/embeds
         if (embedUrls.isEmpty()) {
             val iframeMatches = Regex("""(?:src|data-src)=["'](https?://[^"']*(?:vidmixi|vidlop|embed|video)[^"']*)["']""").findAll(html)
             for (m in iframeMatches) {
@@ -333,7 +422,6 @@ class DiziFilm : MainAPI() {
             val streamUrl = settings.optString("video_location").replace("\\/", "/")
             if (streamUrl.isBlank() || !streamUrl.startsWith("http")) return false
 
-            // Subtitles
             val subsArray = settings.optJSONArray("strSubtitles")
             if (subsArray != null) {
                 for (i in 0 until subsArray.length()) {
@@ -422,16 +510,29 @@ class DiziFilm : MainAPI() {
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
+    /**
+     * RSC payload'ı parse eder.
+     * `self.__next_f.push([1,"..."])` chunk'larını birleştirir ve escape'leri çözer.
+     */
     private fun parseRscPayload(html: String): String {
         val sb = StringBuilder()
         val regex = Regex("""self\.__next_f\.push\(\[1,"((?:\\.|[^"\\])*)"\]\)""")
         for (m in regex.findAll(html)) {
-            val chunk = m.groupValues[1]
+            var chunk = m.groupValues[1]
                 .replace("\\n", "\n")
                 .replace("\\r", "\r")
                 .replace("\\t", "\t")
                 .replace("\\\"", "\"")
+                .replace("\\/", "/")
                 .replace("\\\\", "\\")
+            // Unicode escape'leri çöz (\u0026 -> &, \u003c -> < vb.)
+            chunk = Regex("""\\u([0-9a-fA-F]{4})""").replace(chunk) { match ->
+                try {
+                    match.groupValues[1].toInt(16).toChar().toString()
+                } catch (_: Exception) {
+                    match.value
+                }
+            }
             sb.append(chunk)
         }
         return sb.toString()
@@ -501,7 +602,7 @@ class DiziFilm : MainAPI() {
 
                     val epName = if (!rawTitle.isNullOrBlank()) unescapeUnicode(rawTitle) else "$epNum. Bölüm"
                     val epDesc = if (!rawOverview.isNullOrBlank()) unescapeUnicode(rawOverview) else null
-                    val epThumb = rawThumb?.let { fixUrl(unescapeUnicode(it)) }
+                    val epThumb = rawThumb?.let { fixPosterUrl(unescapeUnicode(it)) }
 
                     val epUrl = "$mainUrl/dizi/$seriesSlug/sezon-$seasonNum/bolum-$epNum"
 
@@ -519,8 +620,7 @@ class DiziFilm : MainAPI() {
         return episodes
     }
 
-    private fun extractPlot(doc: org.jsoup.nodes.Document, rscPayload: String): String? {
-        // 1. From schema.org LD+JSON
+    private fun extractPlot(doc: Document, rscPayload: String): String? {
         for (script in doc.select("script[type='application/ld+json']")) {
             try {
                 val data = JSONObject(script.data())
@@ -534,21 +634,51 @@ class DiziFilm : MainAPI() {
             } catch (_: Exception) {}
         }
 
-        // 2. From DOM div.prose or div.text-gray-300
         val domPlot = doc.selectFirst("div.prose, div.text-gray-300.text-sm, div.text-gray-300.text-base, div.text-gray-300, p.text-gray-300")?.text()?.trim()
         if (!domPlot.isNullOrBlank() && !domPlot.contains("olarak Full HD izleyebilirsiniz")) {
             return domPlot
         }
 
-        // 3. From RSC payload
-        val rscPlot = Regex(""""description"\s*:\s*"([^"]{20,})"""").find(rscPayload)?.groupValues?.get(1)
-            ?: Regex(""""overview"\s*:\s*"([^"]{20,})"""").find(rscPayload)?.groupValues?.get(1)
+        val rscPlot = Regex(""""(?:description|overview)"\s*:\s*"((?:\\.|[^"\\]){20,})"""").find(rscPayload)?.groupValues?.get(1)
         if (!rscPlot.isNullOrBlank() && !rscPlot.contains("olarak Full HD izleyebilirsiniz")) {
             return unescapeUnicode(rscPlot)
         }
 
-        // 4. Meta description fallback
         return doc.selectFirst("meta[name='description']")?.attr("content")?.trim()
+    }
+
+    /**
+     * Poster URL'ini güvenli formata çevirir.
+     * `.avif` uzantısı bazı Cloudstream client'larında render edilemez, bu yüzden `.jpg`'ye çevirir.
+     * Ayrıca `-w200`, `-w240` gibi boyut varyantlarını temizler.
+     */
+    private fun fixPosterUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        var fixed = url.replace("\\/", "/").trim()
+        // Protokol yoksa ekle
+        if (fixed.startsWith("//")) fixed = "https:$fixed"
+        // .avif -> .jpg dönüşümü
+        fixed = fixed.replace(Regex("""\.avif(\?.*)?$""", RegexOption.IGNORE_CASE), ".jpg")
+        // Boyut varyantlarını temizle: -w200.jpg -> .jpg
+        fixed = fixed.replace(Regex("""-w\d+\.(jpg|jpeg|png|avif)""", RegexOption.IGNORE_CASE), ".$1")
+        return fixUrl(fixed)
+    }
+
+    /**
+     * img elementinden en uygun poster URL'ini çıkarır.
+     * Öncelik: src > srcSet (ilk) > data-src > data-srcset
+     */
+    private fun extractPosterUrl(img: Element): String? {
+        val src = img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+        val srcSet = img.attr("srcSet").takeIf { it.isNotBlank() }
+            ?: img.attr("srcset").takeIf { it.isNotBlank() }
+        val fromSrcSet = srcSet?.split(",")?.firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+        val dataSrc = img.attr("data-src").takeIf { it.isNotBlank() }
+        val dataSrcSet = img.attr("data-srcset").takeIf { it.isNotBlank() }
+        val fromDataSrcSet = dataSrcSet?.split(",")?.firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+
+        val raw = src ?: fromSrcSet ?: dataSrc ?: fromDataSrcSet ?: return null
+        return fixPosterUrl(raw)
     }
 
     private fun unescapeUnicode(input: String): String {
@@ -566,6 +696,7 @@ class DiziFilm : MainAPI() {
             .replace("&lt;", "<")
             .replace("&gt;", ">")
             .replace("&#39;", "'")
+            .replace("&#x27;", "'")
             .trim()
     }
 
