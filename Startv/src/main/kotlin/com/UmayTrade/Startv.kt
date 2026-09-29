@@ -1,5 +1,6 @@
 package com.UmayTrade
 
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
@@ -83,6 +84,8 @@ class StarTv : MainAPI() {
 
     // 3. DETAY
     override suspend fun load(url: String): LoadResponse? {
+        Log.e("StarTvDebug", "=== StarTv.load called: $url ===")
+
         if (url.contains("canli-yayin")) {
             return newLiveStreamLoadResponse(
                 name = "Star TV Canlı",
@@ -164,13 +167,14 @@ class StarTv : MainAPI() {
         }
     }
 
-    // 4. VİDEO ÇÖZÜMLEME  ← BURASI DÜZELTİLDİ
+    // 4. VİDEO ÇÖZÜMLEME
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.e("StarTvDebug", "=== StarTv.loadLinks called: $data ===")
         return StarTvExtractor().getUrl(data, subtitleCallback, callback)
     }
 }
