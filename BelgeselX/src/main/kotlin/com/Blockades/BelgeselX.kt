@@ -1,6 +1,6 @@
 // ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
-package com.keyiflerolsun
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -69,6 +69,11 @@ class BelgeselX : MainAPI() {
         val cseLibVersion = Regex("""cselibVersion": "(.*)"""").find(tokenResponse.text)?.groupValues?.get(1)
         val cseToken = Regex("""cse_token": "(.*)"""").find(tokenResponse.text)?.groupValues?.get(1)
 
+        if (cseLibVersion == null || cseToken == null) {
+            Log.d("BLX", "search: cseLibVersion or cseToken null")
+            return emptyList()
+        }
+
         val response =
             app.get("https://cse.google.com/cse/element/v1?rsz=filtered_cse&num=100&hl=tr&source=gcsc&cselibv=${cseLibVersion}&cx=${cx}&q=${query}&safe=off&cse_tok=${cseToken}&oq=${query}&callback=google.search.cse.api9969&rurl=https%3A%2F%2Fbelgeselx.com%2F")
         Log.d("BLX", "Search result: ${response.text}")
@@ -76,7 +81,7 @@ class BelgeselX : MainAPI() {
         val titles = Regex(""""titleNoFormatting": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
         val urls = Regex(""""url": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
         val posterUrls = Regex(""""ogImage": "(.*)"""").findAll(response.text)
-            .map { it.groupValues[1].trim() }  // Trim ekleniyor
+            .map { it.groupValues[1].trim() }
             .toList()
 
         val searchResponses = mutableListOf<TvSeriesSearchResponse>()
@@ -100,14 +105,29 @@ class BelgeselX : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h2.gen-title")?.text()?.trim()?.toTitleCase() ?: return null
-        val poster = fixUrlNull(document.selectFirst("div.gen-tv-show-top img")?.attr("src")?.trim()) ?: return null
+        Log.d("BLX", "load url=$url title=${document.title()}")
+
+        val title = document.selectFirst("h2.gen-title")?.text()?.trim()?.toTitleCase() ?: run {
+            Log.d("BLX", "load: title null")
+            return null
+        }
+        val poster = fixUrlNull(document.selectFirst("div.gen-tv-show-top img")?.attr("src")?.trim()) ?: run {
+            Log.d("BLX", "load: poster null")
+            return null
+        }
         val description = document.selectFirst("div.gen-single-tv-show-info p")?.text()?.trim()
         val tags = document.select("div.gen-socail-share a[href*='belgeselkanali']")
             .map { it.attr("href").split("/").last().replace("-", " ").toTitleCase() }
 
+        // Episodes: sayfadaki tüm gen-movie-contain'ları al, ama detay sayfasında
+        // ilgili/öneri bloklarını dışlamak için en azından h3 a içerenleri filtrele.
+        val episodeElements = document.select("div.gen-movie-contain")
+            .filter { it.selectFirst("div.gen-movie-info h3 a") != null }
+
+        Log.d("BLX", "load: episodeElements=${episodeElements.size}")
+
         var counter = 0
-        val episodes = document.select("div.gen-movie-contain").mapNotNull {
+        val episodes = episodeElements.mapNotNull {
             val epName = it.selectFirst("div.gen-movie-info h3 a")?.text()?.trim() ?: return@mapNotNull null
             val epHref = fixUrlNull(it.selectFirst("div.gen-movie-info h3 a")?.attr("href")) ?: return@mapNotNull null
 
@@ -126,6 +146,8 @@ class BelgeselX : MainAPI() {
             }
         }
 
+        Log.d("BLX", "load: episodes=${episodes.size}")
+
         return newTvSeriesLoadResponse(title, url, TvType.Documentary, episodes) {
             this.posterUrl = poster
             this.plot = description
@@ -139,9 +161,21 @@ class BelgeselX : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val sourceHtml = app.get(data).body?.string() ?: return false
-        val idMatch = Regex("""id=\"no(\d+)\"""").find(sourceHtml)
-        val number = idMatch?.groupValues?.get(1) ?: return false
+        Log.d("BLX", "loadLinks data=$data")
+
+        val sourceHtml = app.get(data).body?.string() ?: run {
+            Log.d("BLX", "loadLinks: body null")
+            return false
+        }
+
+        // id="no123" veya id='no123' formatlarını destekle
+        val idMatch = Regex("""id=["']no(\d+)["']""").find(sourceHtml)
+        val number = idMatch?.groupValues?.get(1) ?: run {
+            Log.d("BLX", "loadLinks: no(\d+) bulunamadı")
+            return false
+        }
+
+        Log.d("BLX", "loadLinks: number=$number")
 
         val videoUrls = listOf(
             "https://belgeselx.com/video/data/new1.php?id=$number",
@@ -158,7 +192,6 @@ class BelgeselX : MainAPI() {
             "Referer" to data
         )
 
-        // Compile regex once
         val linkRegex = Regex("""file\s*:\s*"([^"]+)"""")
         val labelRegex = Regex("""label\s*:\s*"([^"]+)"""")
 
@@ -169,15 +202,23 @@ class BelgeselX : MainAPI() {
             "360p" to Qualities.P360.value
         )
 
+        var foundAny = false
+
         coroutineScope {
             val jobs = videoUrls.map { url ->
                 launch(Dispatchers.IO) {
                     try {
-                        val html = withTimeout(3_000) {
+                        val html = withTimeout(10_000) {
                             app.get(url, headers).document.html()
                         }
+                        Log.d("BLX", "url=$url htmlLen=${html.length}")
+
                         val links = linkRegex.findAll(html).map { it.groupValues[1] }.toList()
                         val labels = labelRegex.findAll(html).map { it.groupValues[1] }.toList()
+
+                        if (links.isEmpty()) {
+                            Log.d("BLX", "url=$url links boş")
+                        }
 
                         links.forEachIndexed { i, linkUrl ->
                             val labelText = labels.getOrNull(i) ?: ""
@@ -192,13 +233,18 @@ class BelgeselX : MainAPI() {
                                 this.quality = qualityInt
                             }
 
+                            foundAny = true
                             callback(extractor)
                         }
-                    } catch (_: Exception) { /* skip */
+                    } catch (e: Exception) {
+                        Log.d("BLX", "fail url=$url ${e.message}")
                     }
-                 }
                 }
             }
-        return true
+            jobs.joinAll()
+        }
+
+        Log.d("BLX", "loadLinks: foundAny=$foundAny")
+        return foundAny
     }
 }
