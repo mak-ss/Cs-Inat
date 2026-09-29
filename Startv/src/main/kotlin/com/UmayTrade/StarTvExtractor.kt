@@ -25,19 +25,16 @@ class StarTvExtractor {
     private val dygSecretKey = "NtvApiSecret2014*"
     private val dygPublisherId = "1"
 
+    // ✅ KRİTİK: ReferenceId'ye eklenmesi gereken prefix
+    private val dygReferencePrefix = "StarTv_"
+
     private val daionM3u8Regex = Regex("""(https?://dogus[a-z-]*\.daioncdn\.net/startv/[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val sidRegex = Regex("""["']?sid["']?\s*[:=]\s*["']?([a-z0-9]+)["']?""")
 
-    // entry_id regex — "entry_id":"1033298_4C730E850F"
-    private val entryIdRegex = Regex(
-        """"entry[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*([0-9]+_[A-F0-9]+)"""",
-        RegexOption.IGNORE_CASE
-    )
-
-    // videoId regex — "videoId":"1033298" (fallback)
-    private val videoIdRegex = Regex(
-        """["'\\]*video[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*(\d+)""",
+    // Sayfadaki referenceId (hex formatında)
+    private val referenceIdRegex = Regex(
+        """"referenceId"\s*:\s*"([a-f0-9]+)"""",
         RegexOption.IGNORE_CASE
     )
 
@@ -148,7 +145,7 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DİZİ BÖLÜMÜ — entry_id ile DYG API
+    // DİZİ BÖLÜMÜ — StarTv_ prefix'i ile
     // ============================================================
     private suspend fun extractEpisodeStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
@@ -159,30 +156,30 @@ class StarTvExtractor {
             val pageHtml = doc.html()
             log("Page HTML length: ${pageHtml.length}")
 
-            // entry_id ara (öncelikli)
-            val entryId = entryIdRegex.find(pageHtml)?.groupValues?.get(1)
-            log("entry_id=$entryId")
+            // referenceId'yi sayfadan çek
+            val referenceId = referenceIdRegex.find(pageHtml)?.groupValues?.get(1)
+            log("referenceId=$referenceId")
 
-            var streamUrl: String? = null
-
-            if (!entryId.isNullOrBlank()) {
-                log("Calling DYG API with entry_id=$entryId")
-                streamUrl = fetchFromDygVideoApi(entryId, url)
-                log("DYG API (entry_id) returned: $streamUrl")
-            }
-
-            // entry_id başarısız olursa videoId dene
-            if (streamUrl.isNullOrBlank()) {
-                val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
-                log("Fallback: videoId=$videoId")
-                if (!videoId.isNullOrBlank()) {
-                    streamUrl = fetchFromDygVideoApi(videoId, url)
-                    log("DYG API (videoId) returned: $streamUrl")
+            if (referenceId.isNullOrBlank()) {
+                log("FAILED: referenceId bulunamadı")
+                val refIndex = pageHtml.indexOf("referenceId", ignoreCase = true)
+                if (refIndex >= 0) {
+                    val start = maxOf(0, refIndex - 80)
+                    val end = minOf(pageHtml.length, refIndex + 200)
+                    log("DEBUG context: ${pageHtml.substring(start, end)}")
                 }
+                return false
             }
 
+            // ✅ KRİTİK: StarTv_ prefix'i ekle
+            val prefixedReferenceId = "$dygReferencePrefix$referenceId"
+            log("prefixedReferenceId=$prefixedReferenceId")
+
+            val streamUrl = fetchFromDygVideoApi(prefixedReferenceId, url)
+            log("DYG API returned: $streamUrl")
+
             if (streamUrl.isNullOrBlank()) {
-                log("FAILED: hiçbir ID ile stream bulunamadı")
+                log("FAILED: DYG API boş döndü")
                 return false
             }
 
@@ -211,9 +208,9 @@ class StarTvExtractor {
     // ============================================================
     // DYG Video API
     // ============================================================
-    private suspend fun fetchFromDygVideoApi(referenceValue: String, refererUrl: String): String? {
-        val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$referenceValue&SecretKey=$dygSecretKey"
-        log("DYG URL: $apiUrl")
+    private suspend fun fetchFromDygVideoApi(referenceIdWithPrefix: String, refererUrl: String): String? {
+        val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$referenceIdWithPrefix&SecretKey=$dygSecretKey"
+        log("Calling DYG API: $apiUrl")
 
         return try {
             val response = app.get(apiUrl, headers = mapOf(
@@ -223,12 +220,19 @@ class StarTvExtractor {
                 "Accept" to "application/json, text/plain, */*"
             )).text
 
-            log("DYG response length: ${response.length}")
-            log("DYG response preview: ${response.take(300)}")
+            log("DYG API response length: ${response.length}")
+            log("DYG API response preview: ${response.take(300)}")
 
             if (response.isBlank()) return null
 
             val json = JSONObject(response)
+
+            // Başarı kontrolü
+            val success = json.optBoolean("success", false)
+            if (!success) {
+                log("API returned success=false")
+                return null
+            }
 
             val dataObj = json.optJSONObject("data")
             if (dataObj != null) {
