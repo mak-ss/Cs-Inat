@@ -17,12 +17,10 @@ class StarTvExtractor {
     private val userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    // CANLI YAYIN (dokunulmadı)
     private val starTvAppId = "a20ac41e-bdc3-4aa1-934d-26b484480ac9"
     private val daionInitUrl = "https://dogus.daioncdn.net/options/init"
     private val daionBaseUrl = "https://dogus.daioncdn.net/startv"
 
-    // DİZİ BÖLÜMLERİ için DYG Video API (DOĞRULANDI!)
     private val dygVideoApiUrl = "https://dygvideo.dygdigital.com/api/video_info"
     private val dygSecretKey = "NtvApiSecret2014*"
     private val dygPublisherId = "1"
@@ -31,22 +29,9 @@ class StarTvExtractor {
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val sidRegex = Regex("""["']?sid["']?\s*[:=]\s*["']?([a-z0-9]+)["']?""")
 
-    // ESKİ (çok katı):
-    // private val referenceIdRegex = Regex(""""referenceId"\s*:\s*"([a-f0-9]+)"""")
-
-    // YENİ (esnek — tüm formatları yakalar):
-    // "referenceId":"abc..."    → referenceId:"abc..."
-    // \"referenceId\":\"abc...\" → escape'li JSON
-    // reference_id: "abc..."     → snake_case
-    // ReferenceId = "abc..."     → PascalCase, eşittir işareti
-    private val referenceIdRegex = Regex(
-        """reference[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*([a-f0-9]{20,})""",
-        RegexOption.IGNORE_CASE
-    )
-
-    // videoId için esnek regex (fallback)
+    // YENİ: videoId regex - "videoId":"1033298" veya "videoId":1033298
     private val videoIdRegex = Regex(
-        """video[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*(\d+)""",
+        """["'\\]*video[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*(\d+)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -157,7 +142,7 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DİZİ BÖLÜMÜ (DYG Video API + esnek regex + debug log)
+    // DİZİ BÖLÜMÜ (videoId ile DYG API)
     // ============================================================
     private suspend fun extractEpisodeStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
@@ -168,43 +153,26 @@ class StarTvExtractor {
             val pageHtml = doc.html()
             log("Page HTML length: ${pageHtml.length}")
 
-            // -------- AŞAMA 1: referenceId ara --------
-            var referenceId = referenceIdRegex.find(pageHtml)?.groupValues?.get(1)
-            log("referenceId (regex1)=$referenceId")
+            // videoId'yi sayfadan çek
+            val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
+            log("videoId=$videoId")
 
-            // -------- AŞAMA 2: Bulunamadıysa, context logla ve alternatif dene --------
-            if (referenceId.isNullOrBlank()) {
-                val refIndex = pageHtml.indexOf("eference", ignoreCase = true)
-                if (refIndex >= 0) {
-                    val start = maxOf(0, refIndex - 80)
-                    val end = minOf(pageHtml.length, refIndex + 250)
+            if (videoId.isNullOrBlank()) {
+                log("FAILED: videoId bulunamadı")
+                // Debug: context logla
+                val vidIndex = pageHtml.indexOf("videoId", ignoreCase = true)
+                if (vidIndex >= 0) {
+                    val start = maxOf(0, vidIndex - 80)
+                    val end = minOf(pageHtml.length, vidIndex + 200)
                     log("DEBUG context: ${pageHtml.substring(start, end)}")
                 } else {
-                    log("DEBUG: 'reference' kelimesi sayfada hiç yok")
+                    log("DEBUG: 'videoId' sayfada hiç yok")
                 }
-
-                // videoId fallback
-                val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
-                log("DEBUG videoId=$videoId")
-
-                // __NEXT_DATA__ içinde olabilir mi?
-                val nextDataMatch = Regex("""__NEXT_DATA__["\s:=]+(\{.+?\})\s*</script>""", RegexOption.DOT_MATCHES_ALL)
-                    .find(pageHtml)
-                if (nextDataMatch != null) {
-                    log("DEBUG: __NEXT_DATA__ bulundu, içinde referenceId aranıyor...")
-                    val nextData = nextDataMatch.groupValues[1]
-                    referenceId = referenceIdRegex.find(nextData)?.groupValues?.get(1)
-                    log("referenceId (from __NEXT_DATA__)=$referenceId")
-                }
-            }
-
-            if (referenceId.isNullOrBlank()) {
-                log("FAILED: referenceId bulunamadı")
                 return false
             }
 
-            // -------- AŞAMA 3: DYG API çağrısı --------
-            val streamUrl = fetchFromDygVideoApi(referenceId, url)
+            // DYG API'ye videoId ile istek at
+            val streamUrl = fetchFromDygVideoApi(videoId, url)
             log("DYG API returned: $streamUrl")
 
             if (streamUrl.isNullOrBlank()) {
@@ -212,7 +180,6 @@ class StarTvExtractor {
                 return false
             }
 
-            // -------- AŞAMA 4: Oynatıcıya ver --------
             callback(newExtractorLink(
                 source = extractorName,
                 name = "Star TV",
@@ -236,11 +203,11 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DYG Video API
+    // DYG Video API (videoId ile)
     // ============================================================
-    private suspend fun fetchFromDygVideoApi(referenceId: String, refererUrl: String): String? {
-        val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$referenceId&SecretKey=$dygSecretKey"
-        log("Calling DYG API: $apiUrl")
+    private suspend fun fetchFromDygVideoApi(videoId: String, refererUrl: String): String? {
+        val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$videoId&SecretKey=$dygSecretKey"
+        log("Calling DYG API with videoId=$videoId")
 
         return try {
             val response = app.get(apiUrl, headers = mapOf(
@@ -257,26 +224,22 @@ class StarTvExtractor {
 
             val json = JSONObject(response)
 
-            // Ana yol: data.flavors.hls
             val dataObj = json.optJSONObject("data")
             if (dataObj != null) {
                 val flavorsObj = dataObj.optJSONObject("flavors")
                 if (flavorsObj != null) {
-                    // 1) flavors.hls
                     val hls = flavorsObj.optString("hls")
                     if (hls.isNotBlank() && hls.contains(".m3u8")) {
                         log("✅ Found flavors.hls: $hls")
                         return hls
                     }
 
-                    // 2) flavors.hds
                     val hds = flavorsObj.optString("hds")
                     if (hds.isNotBlank() && hds.contains(".m3u8")) {
                         log("Found flavors.hds: $hds")
                         return hds
                     }
 
-                    // 3) flavors."0".file_url_1
                     val zeroObj = flavorsObj.optJSONObject("0")
                     if (zeroObj != null) {
                         val fileUrl = zeroObj.optString("file_url_1")
@@ -288,7 +251,6 @@ class StarTvExtractor {
                 }
             }
 
-            // Fallback: tüm response'ta m3u8 ara
             daionM3u8Regex.find(response)?.value?.let { return it }
             m3u8Regex.find(response)?.value?.let { return it }
 
