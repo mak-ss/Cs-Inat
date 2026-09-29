@@ -1,4 +1,4 @@
-package com.keyiflerolsun
+package com.Blockades
 
 import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
