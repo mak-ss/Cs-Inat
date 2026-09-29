@@ -3,384 +3,555 @@
 package com.Blockades
 
 import android.util.Base64
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.StringUtils.decodeUri
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class DiziBox : MainAPI() {
-    override var mainUrl              = "https://www.dizibox.live"
-    override var name                 = "DiziBox"
-    override val hasMainPage          = true
-    override var lang                 = "tr"
-    override val hasQuickSearch       = true
-    override val supportedTypes       = setOf(TvType.TvSeries)
+    override var mainUrl = "https://www.dizibox.live"
+    override var name = "DiziBox"
+    override val supportedTypes = setOf(TvType.TvSeries)
+    override var lang = "tr"
+    override val hasMainPage = true
 
-    override var sequentialMainPage            = true
-    override var sequentialMainPageDelay       = 200L
-    override var sequentialMainPageScrollDelay = 50L
-
-    private val baseCookies = mapOf(
-        "LockUser"      to "true",
-        "isTrustedUser" to "true"
-    )
+    // Cloudflare bypass — request rows sequentially with a small delay
+    override var sequentialMainPage = true
+    override var sequentialMainPageDelay = 150L
+    override var sequentialMainPageScrollDelay = 150L
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
-    private val interceptor      by lazy { CloudflareInterceptor(cloudflareKiller) }
+    private val interceptor by lazy { CloudflareInterceptor(cloudflareKiller) }
 
     class CloudflareInterceptor(private val cloudflareKiller: CloudflareKiller) : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
-            val request    = chain.request()
-            val response   = chain.proceed(request)
-            val bodySample = response.peekBody(1024 * 1024).string()
-            if (
-                bodySample.contains("Güvenlik taramasından geçiriliyorsunuz")
-                || bodySample.contains("cf-browser-verification")
-                || bodySample.contains("Checking your browser")
-                || bodySample.contains("just a moment", ignoreCase = true)
-                || response.code in listOf(403, 503, 429)
-            ) {
+            val request = chain.request()
+            val response = chain.proceed(request)
+            val body = response.peekBody(1024 * 1024).string()
+            val doc = Jsoup.parse(body)
+            val title = doc.selectFirst("title")?.text().orEmpty()
+
+            // Site artık managed challenge döndürüyor: "Just a moment..." + cdn-cgi/challenge-platform
+            // (eski Türkçe uyarı metni artık üretilmiyor)
+            val isChallenge = title == "Just a moment..." ||
+                title == "Bir dakika lütfen..." ||
+                body.contains("cdn-cgi/challenge-platform") ||
+                body.contains("Güvenlik taramasından geçiriliyorsunuz") ||
+                (response.code in intArrayOf(403, 503) && response.header("Server") == "cloudflare")
+
+            if (isChallenge) {
                 response.close()
                 return cloudflareKiller.intercept(chain)
             }
+
             return response
         }
     }
 
+    private val authCookies = mapOf(
+        "LockUser" to "true",
+        "isTrustedUser" to "true",
+        "dbxu" to "1744009162326"
+    )
+
+    companion object {
+        private const val USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+    }
+
+    private suspend fun getDoc(url: String, referer: String = "$mainUrl/"): Document =
+        app.get(url, referer = referer, cookies = authCookies, interceptor = interceptor).document
+
+    private suspend fun getText(url: String, referer: String = "$mainUrl/"): String =
+        app.get(url, referer = referer, cookies = authCookies, interceptor = interceptor).text
+
+    // ── Main Page ────────────────────────────────────────────────────────
+
     override val mainPage = mainPageOf(
-        "${mainUrl}/tum-bolumler/page/SAYFA/"                        to "Son Bölümler",
-        "${mainUrl}/tum-bolumler/page/SAYFA/?tip=populer"            to "Popüler Diziler",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/"                         to "Yeni Eklenenler",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?ulke[]=turkiye&yil=&imdb" to "Yerli Diziler",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=aksiyon&yil&imdb" to "Aksiyon",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=bilimkurgu&yil&imdb" to "Bilimkurgu",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=komedi&yil&imdb"  to "Komedi",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=dram&yil&imdb"    to "Dram",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=fantastik&yil&imdb" to "Fantastik",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=gerilim&yil&imdb" to "Gerilim",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=korku&yil&imdb"   to "Korku",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=romantik&yil&imdb" to "Romantik",
-        "${mainUrl}/dizi-arsivi/page/SAYFA/?tur[0]=animasyon&yil&imdb" to "Animasyon"
+        "$mainUrl/" to "Beklenen / Eklenen Diziler",
+        "$mainUrl/efsane-diziler/" to "Efsane Diziler",
+        "$mainUrl/tum-bolumler/page/SAYFA/" to "Yeni Eklenen Bölümler",
+        "$mainUrl/tum-bolumler/page/SAYFA/?tip=populer" to "Popüler Dizilerden Son Bölümler",
+        "$mainUrl/dizi-arsivi/page/SAYFA/" to "Dizi Arşivi"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val rawUrl = request.data
-        val url = if (page == 1) {
-            if (rawUrl.contains("?")) {
-                rawUrl.substringBefore("/page/SAYFA/") + "/?" + rawUrl.substringAfter("?")
-            } else {
-                rawUrl.substringBefore("/page/SAYFA/") + "/"
-            }
-        } else {
-            rawUrl.replace("SAYFA", "$page")
+        val url = request.data.replace("SAYFA", "$page")
+
+        val document = try {
+            getDoc(url)
+        } catch (_: Exception) {
+            return newHomePageResponse(request.name, emptyList())
         }
 
-        val document = app.get(
-            url,
-            cookies     = baseCookies,
-            interceptor = interceptor,
-            timeout     = 60L,
-            cacheTime   = 60
-        ).document
+        val items: List<SearchResponse> = try {
+            when (request.name) {
+                "Beklenen / Eklenen Diziler" -> parseRecommended(document)
+                "Efsane Diziler" -> parseEfsane(document)
+                "Yeni Eklenen Bölümler",
+                "Popüler Dizilerden Son Bölümler" ->
+                    document.select("article.article-episode-card").mapNotNull { it.toEpisodeCardResult() }
 
-        val home = document.select("article.detailed-article, article.article-episode-card a.figure-link")
-            .mapNotNull { it.toMainPageResult() }
+                else -> document.select("article.detailed-article").mapNotNull { it.toDetailResult() }
+            }.distinctBy { it.url }
+        } catch (e: Exception) {
+            emptyList()
+        }
 
-        val isHorizontal = request.name.contains("Bölümler") || request.name.contains("Popüler")
-        return newHomePageResponse(listOf(HomePageList(request.name, home, isHorizontal)), home.isNotEmpty())
+        return newHomePageResponse(request.name, items)
     }
 
-    private fun Element.toMainPageResult(): SearchResponse? {
-        val titleEl = this.selectFirst("h3 a, a.episode-card-title")
-        val title   = titleEl?.text()?.trim() ?: this.selectFirst("img")?.attr("alt") ?: return null
-        val imgEl   = this.selectFirst("img")
-        val imgUrl  = fixUrlNull(imgEl?.attr("data-src")?.takeIf { it.isNotBlank() } ?: imgEl?.attr("src"))
-        val href    = fixUrlNull(titleEl?.attr("href") ?: this.attr("href")) ?: return null
-        val rating  = this.selectFirst("span.label-imdb b")?.text()?.trim()
+    // #recommended_series — homepage "Beklenen / Eklenen Diziler"
+    private fun parseRecommended(document: Document): List<SearchResponse> {
+        return document.select("#recommended_series li").mapNotNull { li ->
+            val link = li.selectFirst("a[href]") ?: return@mapNotNull null
+            val href = fixUrlNull(link.attr("href")) ?: return@mapNotNull null
+            val title = link.selectFirst("span.baslik")?.text()?.trim()
+                ?: link.attr("title").substringBefore(" ").trim()
+            if (title.isBlank()) return@mapNotNull null
+            val posterUrl = link.selectFirst("img")?.let {
+                fixUrlNull(it.attr("data-src").ifEmpty { it.attr("src") })
+            }
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = posterUrl
+            }
+        }
+    }
+
+    // article.article-series-poster — /efsane-diziler/
+    private fun parseEfsane(document: Document): List<SearchResponse> {
+        return document.select("article.article-series-poster").mapNotNull { article ->
+            val titleLink = article.selectFirst("a.poster-title") ?: return@mapNotNull null
+            val href = fixUrlNull(titleLink.attr("href")) ?: return@mapNotNull null
+            val title = titleLink.text().trim()
+            if (title.isBlank()) return@mapNotNull null
+            val imdbRaw = article.selectFirst("div.imdb")?.text()
+                ?.replace(Regex("[^0-9.]"), "")?.trim()
+            val year = article.selectFirst("div.release")?.text()
+                ?.replace(Regex("[^0-9]"), "")?.trim()?.toIntOrNull()
+            val posterUrl = article.selectFirst("img.afis")?.let {
+                fixUrlNull(it.attr("data-src").ifEmpty { it.attr("src") })
+            }
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = posterUrl
+                this.year = year
+                if (!imdbRaw.isNullOrBlank()) this.score = runCatching { Score.from10(imdbRaw) }.getOrNull()
+            }
+        }
+    }
+
+    // article.detailed-article — /dizi-arsivi/ and search results
+    private fun Element.toDetailResult(): SearchResponse? {
+        val titleEl = selectFirst("h3 a") ?: return null
+        val href = fixUrlNull(titleEl.attr("href")) ?: return null
+        val title = titleEl.text().trim()
+        if (title.isBlank()) return null
+
+        val img = selectFirst("figure img")
+        val posterUrl = img?.let { fixUrlNull(it.attr("src").ifEmpty { it.attr("data-src") }) }
+
+        val yearText = selectFirst(".custom-field:has(i.icon-globe)")?.text()
+        val year = yearText?.replace(Regex("[^0-9]"), "")?.take(4)?.toIntOrNull()
+
+        val imdbRaw = selectFirst("span.label-imdb b, .label-imdb b")?.text()
+            ?.replace(Regex("[^0-9.]"), "")
+            ?.trim()
 
         return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-            this.posterUrl = imgUrl
-            this.score     = Score.from10(rating)
+            this.posterUrl = posterUrl
+            this.year = year
+            if (!imdbRaw.isNullOrBlank()) this.score = runCatching { Score.from10(imdbRaw) }.getOrNull()
         }
     }
 
-    data class SearchApiResponse(@JsonProperty("results") val results: List<SearchResult> = emptyList())
-    data class SearchResult(
-        @JsonProperty("post_title")          val postTitle           : String  = "",
-        @JsonProperty("permalink")           val permalink           : String  = "",
-        @JsonProperty("attachment_thumbnail") val attachmentThumbnail: String? = null
-    )
+    // article.article-episode-card — /tum-bolumler/ (links go to the episode page,
+    // load() resolves the series URL through a.archive-title)
+    private fun Element.toEpisodeCardResult(): SearchResponse? {
+        val link = selectFirst("a[href]") ?: return null
+        val href = fixUrlNull(link.attr("href")) ?: return null
+
+        val fullTitle = link.attr("title").trim()
+            .ifEmpty { selectFirst("a[title]")?.attr("title")?.trim() ?: "" }
+
+        val seasonMatch = Regex("""(\d+)\s*\.\s*[Ss]ezon""").find(fullTitle)
+        val episodeMatch = Regex("""(\d+)\s*\.\s*[Bb][oö]l[uü]m""").find(fullTitle)
+
+        val seriesName = if (seasonMatch != null) {
+            fullTitle.substring(0, seasonMatch.range.first).trim()
+        } else {
+            selectFirst("b.series-name")?.text()?.trim()
+        }?.trim().orEmpty()
+
+        if (seriesName.isBlank()) return null
+
+        val season = seasonMatch?.groupValues?.get(1)
+        val episode = episodeMatch?.groupValues?.get(1)
+
+        val title = if (season != null && episode != null) "$seriesName - ${season}x$episode"
+        else seriesName
+
+        val posterUrl = selectFirst("img[data-src], img[src]")?.let {
+            fixUrlNull(it.attr("data-src").ifEmpty { it.attr("src") })
+        }?.replace("220x140", "200x290")
+
+        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    // ── Search ───────────────────────────────────────────────────────────
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url      = "$mainUrl/wp-admin/admin-ajax.php?s=$query&action=dwls_search"
-        val response = app.get(
-            url,
-            headers     = mapOf(
-                "X-Requested-With" to "XMLHttpRequest",
-                "Referer"          to "$mainUrl/?s=$query"
-            ),
-            cookies     = baseCookies,
-            interceptor = interceptor,
-            timeout     = 60L
-        )
-        if (!response.isSuccessful) return emptyList()
-
-        val json = tryParseJson<SearchApiResponse>(response.text) ?: return emptyList()
-        return json.results.mapNotNull { result ->
-            val thumbnail = result.attachmentThumbnail?.replace("50x50", "200x290")
-            newTvSeriesSearchResponse(result.postTitle, result.permalink, TvType.TvSeries) {
-                this.posterUrl = fixUrlNull(thumbnail)
-            }
+        return try {
+            app.post(
+                "$mainUrl/",
+                data = mapOf("s" to query),
+                cookies = authCookies,
+                interceptor = interceptor
+            ).document.select("article.detailed-article").mapNotNull { it.toDetailResult() }
+                .distinctBy { it.url }
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
-    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
+    // ── Load ─────────────────────────────────────────────────────────────
 
-    override suspend fun load(url: String): LoadResponse? {
-        var document = app.get(
-            url,
-            cookies     = baseCookies,
-            interceptor = interceptor,
-            timeout     = 60L
-        ).document
-
-        val archiveLink = document.selectFirst("div#archive-box a.archive-title")?.attr("href")
-        if (!archiveLink.isNullOrBlank()) {
-            val redirectUrl = fixUrlNull(archiveLink) ?: url
-            document = app.get(
-                redirectUrl,
-                cookies     = baseCookies,
-                interceptor = interceptor,
-                timeout     = 60L
-            ).document
+    override suspend fun load(url: String): LoadResponse {
+        var finalUrl = url
+        var doc = try {
+            getDoc(url)
+        } catch (e: Exception) {
+            throw e
         }
 
-        val title    = document.selectFirst("div.tv-overview h1 a")?.text()?.trim() ?: return null
-        val poster   = fixUrlNull(document.selectFirst("div.tv-overview figure img")?.attr("src"))
-        val plot     = document.selectFirst("div.tv-story p")?.text()?.trim()
-        val year     = document.selectFirst("a[href*='/yil/']")?.text()?.trim()?.toIntOrNull()
-        val tags     = document.select("a[href*='/tur/']").map { it.text() }
-        val actors   = document.select("a[href*='/oyuncu/']").map { Actor(it.text()) }
-        val trailer  = document.selectFirst("div.tv-overview iframe")?.attr("src")
-        val rating   = document.selectFirst("span.label-imdb b")?.text()?.trim()
-
-        val seasonLinks = document.select("div#seasons-list a").mapNotNull {
-            fixUrlNull(it.attr("href"))
-        }
-
-        val episodeList = mutableListOf<Episode>()
-        seasonLinks.forEach { seasonUrl ->
-            val seasonDoc = app.get(
-                seasonUrl,
-                cookies     = baseCookies,
-                interceptor = interceptor,
-                timeout     = 60L
-            ).document
-
-            seasonDoc.select("article.grid-box").forEach epLoop@{ epElem ->
-                val epTitleEl = epElem.selectFirst("div.post-title a.season-episode") ?: return@epLoop
-                val epRawTitle = epTitleEl.text().trim()
-                val epHref     = fixUrlNull(epTitleEl.attr("href")) ?: return@epLoop
-
-                val dateEl   = epElem.selectFirst("small.date")
-                val dateText = dateEl?.text()?.trim()?.let { d ->
-                    d.replace("Ocak", "01").replace("Şubat", "02").replace("Mart", "03")
-                     .replace("Nisan", "04").replace("Mayıs", "05").replace("Haziran", "06")
-                     .replace("Temmuz", "07").replace("Ağustos", "08").replace("Eylül", "09")
-                     .replace("Ekim", "10").replace("Kasım", "11").replace("Aralık", "12")
-                }
-
-                val sNum = Regex("""(\d+)\.? ?Sezon""").find(epRawTitle)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                val eNum = Regex("""(\d+)\.? ?Bölüm""").find(epRawTitle)?.groupValues?.get(1)?.toIntOrNull()
-
-                episodeList.add(newEpisode(epHref) {
-                    this.name      = "Bölüm"
-                    this.season    = sNum
-                    this.episode   = eNum
-                    this.posterUrl = poster
-                    if (dateText != null) {
-                        val parts = dateText.split(" ")
-                        if (parts.size >= 3) {
-                            val formatted = "${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}"
-                            addDate(formatted)
-                        }
-                    }
-                })
+        // Episode pages link back to their series page through a.archive-title
+        val archiveHref = doc.selectFirst("a.archive-title")?.attr("href")
+        if (!archiveHref.isNullOrBlank()) {
+            val seriesUrl = fixUrlNull(archiveHref)
+            if (!seriesUrl.isNullOrBlank() && seriesUrl != finalUrl) {
+                try {
+                    doc = getDoc(seriesUrl)
+                    finalUrl = seriesUrl
+                } catch (_: Exception) {}
             }
         }
 
-        val sortedEpisodes = episodeList.sortedWith(compareBy({ it.season }, { it.episode }))
+        val title = doc.selectFirst("div.tv-overview h1 a")?.text()?.trim()
+            ?: doc.selectFirst("div.tv-overview h1, h1.cat-title")?.text()?.trim()
+            ?: doc.title()?.substringBefore(" - DiziBOX")?.trim()
+            ?: "Unknown"
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sortedEpisodes) {
-            this.posterUrl = poster
-            this.plot      = plot
-            this.year      = year
-            this.tags      = tags
-            this.score     = Score.from10(rating)
+        val posterUrl = doc.selectFirst("div.tv-overview figure img, .category-cover img")?.let {
+            fixUrlNull(it.attr("src").ifEmpty { it.attr("data-src") })
+        }
+
+        val plot = doc.selectFirst("div.tv-story p, .tv-overview .text-muted-darker, .tv-overview p")
+            ?.text()?.trim()
+
+        val tags = doc.select("a[href*='/tur/']").mapNotNull { it.text().trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
+        val year = doc.selectFirst("a[href*='/yil/']")?.text()
+            ?.replace(Regex("[^0-9]"), "")?.take(4)?.toIntOrNull()
+
+        val rating = doc.selectFirst("span.label-imdb b, .label-imdb b")?.text()
+            ?.replace(",", ".")
+            ?.replace(Regex("[^0-9.]"), "")
+            ?.toDoubleOrNull()
+
+        val actors = doc.select("a[href*='/oyuncu/']").map { it.text().trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .map { Actor(it) }
+
+        val trailer = doc.selectFirst("#trailer-box iframe")?.attr("src")
+            ?: doc.selectFirst("div.tv-overview iframe")?.attr("src")
+            ?.takeIf { it.contains("youtu") }
+
+        val episodes = mutableListOf<Episode>()
+        val firstSeasonEpisodes = parseEpisodesFromGrid(doc)
+        episodes.addAll(firstSeasonEpisodes)
+
+        // Season tabs — first season is on the current page, rest need separate fetches
+        val seasonLinks = doc.select("#seasons-list a[href]")
+            .mapNotNull { fixUrlNull(it.attr("href")) }
+            .filter { it.startsWith("http") }
+            .distinct()
+
+        val remainingSeasons = if (firstSeasonEpisodes.isNotEmpty()) seasonLinks.drop(1) else seasonLinks
+        for (seasonUrl in remainingSeasons) {
+            try {
+                episodes.addAll(parseEpisodesFromGrid(getDoc(seasonUrl)))
+            } catch (_: Exception) {}
+        }
+
+        return newTvSeriesLoadResponse(title, finalUrl, TvType.TvSeries, episodes.distinctBy { it.data }) {
+            this.posterUrl = posterUrl
+            this.plot = plot
+            this.year = year
+            this.tags = tags
+            this.score = rating?.let { runCatching { Score.from10(it) }.getOrNull() }
             addActors(actors)
             addTrailer(trailer)
         }
     }
 
+    // ── Load Links ───────────────────────────────────────────────────────
+
     override suspend fun loadLinks(
-        data             : String,
-        isCasting        : Boolean,
-        subtitleCallback : (SubtitleFile) -> Unit,
-        callback         : (ExtractorLink) -> Unit
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val document = app.get(
-            data,
-            cookies     = baseCookies,
-            interceptor = interceptor,
-            timeout     = 60L
-        ).document
+        val doc = getDoc(data)
 
-        val iframeUrl = document.selectFirst("div#video-area iframe")?.attr("src")
-            ?: return false
-
-        val sources = mutableListOf(data)
-        document.select("div.video-toolbar option[value]").forEach { opt ->
-            val valUrl = opt.attr("value")
-            if (!valUrl.startsWith("http") && !sources.contains(valUrl)) {
-                sources.add(valUrl)
+        val options = doc.select("select.woca-linkpages-dd option")
+        val sources = mutableListOf<VideoSource>()
+        if (options.isEmpty()) {
+            sources.add(VideoSource("Varsayılan", data))
+        } else {
+            for (option in options) {
+                val sourceName = option.text().trim()
+                if (sourceName.isEmpty()) continue
+                val pageUrl = option.attr("value").trim()
+                    .ifEmpty { option.attr("href").trim() }
+                    .ifEmpty { data }
+                sources.add(VideoSource(sourceName, fixUrl(pageUrl)))
             }
         }
 
-        sources.forEach { sourceUrl ->
-            val sourceDoc = app.get(
-                sourceUrl,
-                cookies     = baseCookies,
-                interceptor = interceptor,
-                timeout     = 60L
-            ).document
+        var found = false
+        for (source in sources) {
+            try {
+                val sourceDoc = if (source.url == data) doc else getDoc(source.url)
 
-            val srcIframe = sourceDoc.selectFirst("div#video-area iframe")?.attr("src")
-                ?: return@forEach
+                // Source display name from HTML comment <!--baslik:...-->
+                val label = Regex("<!--baslik:(.*?)-->").find(sourceDoc.html())
+                    ?.groupValues?.get(1)?.trim()
+                    ?: source.name
 
-            processIframe(srcIframe, sourceUrl, data, subtitleCallback, callback)
+                var iframeSrc = sourceDoc.selectFirst("#video-area iframe")?.attr("src")
+                    ?: sourceDoc.select("iframe[src]").firstOrNull { el ->
+                        val s = el.attr("src")
+                        listOf("player", "king", "moly", "haydi", "mecnun").any { s.contains(it) }
+                    }?.attr("src")
+
+                if (iframeSrc.isNullOrBlank()) continue
+                if (iframeSrc.startsWith("/")) iframeSrc = fixUrl(iframeSrc)
+
+                if (iframeDecode(source.url, iframeSrc, label, subtitleCallback, callback)) {
+                    found = true
+                }
+            } catch (_: Exception) {}
         }
 
-        return true
+        return found
     }
 
-    private suspend fun processIframe(
-        iframeUrl        : String,
-        sourceUrl        : String,
-        referer          : String,
-        subtitleCallback : (SubtitleFile) -> Unit,
-        callback         : (ExtractorLink) -> Unit
-    ) {
-        when {
-            iframeUrl.contains("moly.php") -> {
-                loadExtractor(iframeUrl, sourceUrl, subtitleCallback, callback)
-            }
+    /**
+     * Resolve a dizibox player iframe to actual streams.
+     * king.php  → molystream embed → CryptoJS AES → M3U8
+     * moly.php  → atob(unescape(...)) → #Player iframe → loadExtractor
+     * haydi.php → #Player iframe → loadExtractor
+     */
+    private suspend fun iframeDecode(
+        data: String,
+        iframeIn: String,
+        label: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var iframe = iframeIn
 
-            iframeUrl.contains("php?v=") -> {
-                val playerUrl = iframeUrl.replace("php?v=", "php?wmode=opaque&v=")
-                val playerDoc = app.get(
-                    playerUrl,
-                    referer     = sourceUrl,
-                    cookies     = baseCookies,
-                    interceptor = interceptor,
-                    timeout     = 60L
-                ).document
+        if (iframe.contains("king.php")) {
+            iframe = iframe.replace("king.php?v=", "king.php?wmode=opaque&v=")
 
-                val finalEmbed = playerDoc.selectFirst("div#Player iframe")?.attr("src")
-                    ?: return
+            val subDoc = getDoc(iframe, referer = data)
+            val subFrame = subDoc.selectFirst("div#Player iframe")?.attr("src")?.let {
+                if (it.startsWith("/")) fixUrl(it) else it
+            } ?: return false
 
-                val sheila = finalEmbed
-                    .replace("/embed/", "/embed/sheila/")
-                    .replace("vidmoly.me", "vidmoly.net")
+            val iDoc = getText(subFrame, referer = "$mainUrl/")
+            val payload = parseCryptoPayload(iDoc) ?: return false
 
-                if (sheila.contains("dbx.molystream")) {
-                    val m3u8Data = app.get(
-                        sheila,
-                        referer     = finalEmbed,
-                        interceptor = interceptor,
-                        timeout     = 60L
-                    ).text
-                    val m3u8Url = m3u8Data.lineSequence().firstOrNull { it.startsWith("http") }
-                    if (m3u8Url != null) {
-                        callback.invoke(
-                            newExtractorLink(
-                                source = name,
-                                name   = name,
-                                url    = m3u8Url,
-                                type   = ExtractorLinkType.M3U8
-                            ) {
-                                this.headers = mapOf("Referer" to finalEmbed)
-                                this.quality = Qualities.P1080.value
-                            }
-                        )
-                    }
-                } else {
-                    loadExtractor(sheila, sourceUrl, subtitleCallback, callback)
+            val decrypted = runCatching {
+                CryptoJS.decrypt(payload.password, payload.cipherText)
+            }.getOrNull() ?: return false
+
+            val vidUrl = Regex("""file:\s*'([^']+)'""").find(decrypted)?.groupValues?.get(1)
+                ?: Regex("""file:\s*"([^"]+)"""").find(decrypted)?.groupValues?.get(1)
+                ?: return false
+
+            callback(
+                newExtractorLink(
+                    source = name,
+                    name = label,
+                    url = vidUrl,
+                    ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "https://dbx.molystream.org/"
+                    this.headers = mapOf(
+                        "Referer" to "https://dbx.molystream.org/",
+                        "Origin" to "https://dbx.molystream.org/",
+                        // molystream segmentleri ExoPlayerLib UA ile 404 döndürüyor
+                        "User-Agent" to USER_AGENT
+                    )
+                    this.quality = Qualities.P1080.value
                 }
-            }
+            )
+            return true
+        }
 
-            iframeUrl.contains("/player/king/king.php") -> {
-                val kingUrl = iframeUrl.replace("king.php?v=", "king.php?wmode=opaque&v=")
-                val subDoc  = app.get(
-                    kingUrl,
-                    referer     = referer,
-                    cookies     = baseCookies,
-                    interceptor = interceptor,
-                    timeout     = 60L
-                ).document
-                val subFrame = subDoc.selectFirst("div#Player iframe")?.attr("src") ?: return
+        if (iframe.contains("moly.php") || iframe.contains("haydi.php") || iframe.contains("mecnun.php")) {
+            iframe = iframe
+                .replace("moly.php?h=", "moly.php?wmode=opaque&h=")
+                .replace("haydi.php?v=", "haydi.php?wmode=opaque&v=")
+                .replace("mecnun.php?v=", "mecnun.php?wmode=opaque&v=")
 
-                val iDoc      = app.get(subFrame, referer = "$mainUrl/", timeout = 60L).text
-                val cryptData = Regex("""CryptoJS\.AES\.decrypt\("(.*)","""""").find(iDoc)?.groupValues?.get(1) ?: return
-                val cryptPass = Regex(""""","(.*)"\);""").find(iDoc)?.groupValues?.get(1) ?: return
-                val decrypted = CryptoJS.decrypt(cryptPass, cryptData)
-                val vidUrl    = Regex("""file: '(.*)',""").find(Jsoup.parse(decrypted).html())?.groupValues?.get(1) ?: return
+            var subDoc = getDoc(iframe, referer = data)
 
-                callback.invoke(
-                    newExtractorLink(
-                        source = name,
-                        name   = name,
-                        url    = vidUrl,
-                        type   = ExtractorLinkType.M3U8
-                    ) {
-                        this.headers = mapOf("Referer" to vidUrl)
-                        this.quality = Qualities.P1080.value
-                    }
-                )
-            }
-
-            iframeUrl.contains("/player/moly/moly.php") || iframeUrl.contains("/player/haydi.php") -> {
-                val molyUrl = when {
-                    iframeUrl.contains("moly.php") -> iframeUrl.replace("moly.php?h=", "moly.php?wmode=opaque&h=")
-                    else                           -> iframeUrl.replace("haydi.php?v=", "haydi.php?wmode=opaque&v=")
-                }
-                var subDoc = app.get(
-                    molyUrl,
-                    referer     = referer,
-                    cookies     = baseCookies,
-                    interceptor = interceptor,
-                    timeout     = 60L
-                ).document
-
-                val atobData = Regex("""unescape\("(.*)"\)""").find(subDoc.html())?.groupValues?.get(1)
-                if (atobData != null) {
-                    val decoded = String(Base64.decode(atobData.decodeUri(), Base64.DEFAULT), Charsets.UTF_8)
+            // moly.php wraps its HTML in document.write(atob(unescape("...")))
+            val atobData = Regex("""unescape\("([^"]+)"\)""").find(subDoc.html())?.groupValues?.get(1)
+            if (atobData != null) {
+                runCatching {
+                    val decoded = String(
+                        Base64.decode(atobData.decodeUri(), Base64.DEFAULT),
+                        Charsets.UTF_8
+                    )
                     subDoc = Jsoup.parse(decoded)
                 }
-
-                val subFrame = subDoc.selectFirst("div#Player iframe")?.attr("src") ?: return
-                loadExtractor(subFrame, "$mainUrl/", subtitleCallback, callback)
             }
 
-            else -> {
-                loadExtractor(iframeUrl, sourceUrl, subtitleCallback, callback)
+            var subFrame = subDoc.selectFirst("div#Player iframe")?.attr("src")
+                ?: subDoc.selectFirst("iframe[src]")?.attr("src")
+            if (subFrame.isNullOrBlank()) return false
+            if (subFrame.startsWith("/")) subFrame = fixUrl(subFrame)
+            if (subFrame.startsWith("//")) subFrame = "https:$subFrame"
+            if (subFrame.contains("vidmoly.net")) subFrame = subFrame.replace("vidmoly.net", "vidmoly.biz")
+
+            if (loadExtractor(subFrame, "$mainUrl/", subtitleCallback) { link ->
+                    callback(renameLink(link, "$label - ${link.name}"))
+                }
+            ) return true
+
+            return scrapeDirectStream(subFrame, label, callback)
+        }
+
+        // Direct stream url
+        if (iframe.contains(".m3u8") || iframe.contains(".mp4")) {
+            val isM3u8 = iframe.contains(".m3u8")
+            callback(
+                ExtractorLink(
+                    source = label,
+                    name = "$label - Direct",
+                    url = iframe,
+                    referer = data,
+                    quality = Qualities.P1080.value,
+                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                )
+            )
+            return true
+        }
+
+        // Generic fallback
+        return loadExtractor(iframe, "$mainUrl/", subtitleCallback) { link ->
+            callback(renameLink(link, "$label - ${link.name}"))
+        }
+    }
+
+    private fun parseCryptoPayload(html: String): CryptoPayload? {
+        val match = Regex("""CryptoJS\.AES\.decrypt\("([^"]+)","([^"]+)"\)""").find(html)
+            ?: return null
+        return CryptoPayload(
+            cipherText = match.groupValues[1],
+            password = match.groupValues[2]
+        )
+    }
+
+    private suspend fun scrapeDirectStream(
+        embedUrl: String,
+        label: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        return try {
+            val html = app.get(embedUrl, referer = "$mainUrl/").text
+            val m3u8 = Regex("""['"](https?://[^'"]+\.m3u8[^'"]*)['"]""").find(html)
+                ?.groupValues?.get(1)
+            if (m3u8.isNullOrBlank()) return false
+
+            callback(
+                ExtractorLink(
+                    source = "Vidmoly",
+                    name = "$label - Vidmoly HLS",
+                    url = m3u8,
+                    referer = "https://vidmoly.biz/",
+                    quality = Qualities.P1080.value,
+                    headers = mapOf(
+                        "Referer" to "https://vidmoly.biz/",
+                        "User-Agent" to USER_AGENT
+                    ),
+                    type = ExtractorLinkType.M3U8
+                )
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun renameLink(link: ExtractorLink, newName: String): ExtractorLink = ExtractorLink(
+        source = link.source ?: name,
+        name = newName,
+        url = link.url ?: "",
+        referer = link.referer ?: "$mainUrl/",
+        quality = link.quality,
+        headers = link.headers ?: emptyMap(),
+        extractorData = link.extractorData,
+        type = link.type,
+        audioTracks = link.audioTracks ?: emptyList()
+    )
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Parse episodes from a season/series page grid.
+     * Episode link text format confirmed: "1.Sezon 1.Bölüm" (mixed case, Turkish chars)
+     */
+    private fun parseEpisodesFromGrid(doc: Document): List<Episode> {
+        return doc.select("#category-posts article.grid-box.grid-four").mapNotNull { article ->
+            val link = article.selectFirst("a.season-episode") ?: return@mapNotNull null
+            val href = link.attr("href")
+            if (href.isBlank()) return@mapNotNull null
+
+            val fullUrl = fixUrl(href)
+            val linkText = link.text().trim()
+
+            // Regex covers: "1.Sezon 1.Bölüm", "1.sezon 1.bolum", "1.Sezon 1.Bolüm" etc.
+            val match = Regex(
+                "(\\d+)\\s*\\.\\s*[Ss]ezon\\s+(\\d+)\\s*\\.\\s*[Bb][oö]l[uü]m",
+                RegexOption.IGNORE_CASE
+            ).find(linkText)
+            val season = match?.groupValues?.get(1)?.toIntOrNull()
+            val episode = match?.groupValues?.get(2)?.toIntOrNull()
+
+            val epTitle = article.selectFirst(".post-title a:not(.season-episode)")?.text()?.trim()
+                ?: linkText
+
+            newEpisode(fullUrl) {
+                this.name = epTitle
+                this.season = season
+                this.episode = episode
             }
         }
     }
