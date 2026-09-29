@@ -1,3 +1,5 @@
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+
 package com.Blockades
 
 import android.util.Base64
@@ -28,8 +30,7 @@ class DiziBox : MainAPI() {
 
     private val baseCookies = mapOf(
         "LockUser"      to "true",
-        "isTrustedUser" to "true",
-        "dbxu"          to "1744054959089"
+        "isTrustedUser" to "true"
     )
 
     private val cloudflareKiller by lazy { CloudflareKiller() }
@@ -97,8 +98,8 @@ class DiziBox : MainAPI() {
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
-        val titleEl = this.selectFirst("h3 a")
-        val title   = titleEl?.text() ?: this.selectFirst("img")?.attr("alt") ?: return null
+        val titleEl = this.selectFirst("h3 a, a.episode-card-title")
+        val title   = titleEl?.text()?.trim() ?: this.selectFirst("img")?.attr("alt") ?: return null
         val imgEl   = this.selectFirst("img")
         val imgUrl  = fixUrlNull(imgEl?.attr("data-src")?.takeIf { it.isNotBlank() } ?: imgEl?.attr("src"))
         val href    = fixUrlNull(titleEl?.attr("href") ?: this.attr("href")) ?: return null
