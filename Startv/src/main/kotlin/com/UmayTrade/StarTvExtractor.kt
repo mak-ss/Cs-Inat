@@ -29,7 +29,13 @@ class StarTvExtractor {
     private val m3u8Regex = Regex("""(https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*)""")
     private val sidRegex = Regex("""["']?sid["']?\s*[:=]\s*["']?([a-z0-9]+)["']?""")
 
-    // YENİ: videoId regex - "videoId":"1033298" veya "videoId":1033298
+    // entry_id regex — "entry_id":"1033298_4C730E850F"
+    private val entryIdRegex = Regex(
+        """"entry[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*([0-9]+_[A-F0-9]+)"""",
+        RegexOption.IGNORE_CASE
+    )
+
+    // videoId regex — "videoId":"1033298" (fallback)
     private val videoIdRegex = Regex(
         """["'\\]*video[_]?[Ii]d["'\\]*\s*[:=]\s*["'\\]*(\d+)""",
         RegexOption.IGNORE_CASE
@@ -142,7 +148,7 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DİZİ BÖLÜMÜ (videoId ile DYG API)
+    // DİZİ BÖLÜMÜ — entry_id ile DYG API
     // ============================================================
     private suspend fun extractEpisodeStream(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
@@ -153,30 +159,30 @@ class StarTvExtractor {
             val pageHtml = doc.html()
             log("Page HTML length: ${pageHtml.length}")
 
-            // videoId'yi sayfadan çek
-            val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
-            log("videoId=$videoId")
+            // entry_id ara (öncelikli)
+            val entryId = entryIdRegex.find(pageHtml)?.groupValues?.get(1)
+            log("entry_id=$entryId")
 
-            if (videoId.isNullOrBlank()) {
-                log("FAILED: videoId bulunamadı")
-                // Debug: context logla
-                val vidIndex = pageHtml.indexOf("videoId", ignoreCase = true)
-                if (vidIndex >= 0) {
-                    val start = maxOf(0, vidIndex - 80)
-                    val end = minOf(pageHtml.length, vidIndex + 200)
-                    log("DEBUG context: ${pageHtml.substring(start, end)}")
-                } else {
-                    log("DEBUG: 'videoId' sayfada hiç yok")
-                }
-                return false
+            var streamUrl: String? = null
+
+            if (!entryId.isNullOrBlank()) {
+                log("Calling DYG API with entry_id=$entryId")
+                streamUrl = fetchFromDygVideoApi(entryId, url)
+                log("DYG API (entry_id) returned: $streamUrl")
             }
 
-            // DYG API'ye videoId ile istek at
-            val streamUrl = fetchFromDygVideoApi(videoId, url)
-            log("DYG API returned: $streamUrl")
+            // entry_id başarısız olursa videoId dene
+            if (streamUrl.isNullOrBlank()) {
+                val videoId = videoIdRegex.find(pageHtml)?.groupValues?.get(1)
+                log("Fallback: videoId=$videoId")
+                if (!videoId.isNullOrBlank()) {
+                    streamUrl = fetchFromDygVideoApi(videoId, url)
+                    log("DYG API (videoId) returned: $streamUrl")
+                }
+            }
 
             if (streamUrl.isNullOrBlank()) {
-                log("FAILED: DYG API boş döndü")
+                log("FAILED: hiçbir ID ile stream bulunamadı")
                 return false
             }
 
@@ -203,11 +209,11 @@ class StarTvExtractor {
     }
 
     // ============================================================
-    // DYG Video API (videoId ile)
+    // DYG Video API
     // ============================================================
-    private suspend fun fetchFromDygVideoApi(videoId: String, refererUrl: String): String? {
-        val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$videoId&SecretKey=$dygSecretKey"
-        log("Calling DYG API with videoId=$videoId")
+    private suspend fun fetchFromDygVideoApi(referenceValue: String, refererUrl: String): String? {
+        val apiUrl = "$dygVideoApiUrl?akamai=true&PublisherId=$dygPublisherId&ReferenceId=$referenceValue&SecretKey=$dygSecretKey"
+        log("DYG URL: $apiUrl")
 
         return try {
             val response = app.get(apiUrl, headers = mapOf(
@@ -217,8 +223,8 @@ class StarTvExtractor {
                 "Accept" to "application/json, text/plain, */*"
             )).text
 
-            log("DYG API response length: ${response.length}")
-            log("DYG API response preview: ${response.take(300)}")
+            log("DYG response length: ${response.length}")
+            log("DYG response preview: ${response.take(300)}")
 
             if (response.isBlank()) return null
 
