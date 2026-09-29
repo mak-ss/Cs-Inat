@@ -1,6 +1,6 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
-package com.Blockades
+package com.keyiflerolsun
 
 import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -27,10 +27,7 @@ open class Odnoklassniki : ExtractorApi() {
         val videos    = AppUtils.tryParseJson<List<OkRuVideo>>(videosStr) ?: throw ErrorLoadingException("Video not found")
 
         for (video in videos) {
-            Log.d("Kekik_${this.name}", "video » $video")
-
             val videoUrl  = if (video.url.startsWith("//")) "https:${video.url}" else video.url
-
             val quality   = video.name.uppercase()
                 .replace("MOBILE", "144p")
                 .replace("LOWEST", "240p")
