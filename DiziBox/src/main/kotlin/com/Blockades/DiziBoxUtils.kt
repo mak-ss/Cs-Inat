@@ -1,4 +1,4 @@
-// ! Bu araç @SAKLImavi tarafından | @UmayTrade için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
 package com.Blockades
 
