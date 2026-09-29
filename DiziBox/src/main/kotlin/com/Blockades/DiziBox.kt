@@ -87,6 +87,7 @@ class DiziBox : MainAPI() {
             url,
             cookies     = baseCookies,
             interceptor = interceptor,
+            timeout     = 60L,
             cacheTime   = 60
         ).document
 
@@ -127,7 +128,8 @@ class DiziBox : MainAPI() {
                 "Referer"          to "$mainUrl/?s=$query"
             ),
             cookies     = baseCookies,
-            interceptor = interceptor
+            interceptor = interceptor,
+            timeout     = 60L
         )
         if (!response.isSuccessful) return emptyList()
 
@@ -146,7 +148,8 @@ class DiziBox : MainAPI() {
         var document = app.get(
             url,
             cookies     = baseCookies,
-            interceptor = interceptor
+            interceptor = interceptor,
+            timeout     = 60L
         ).document
 
         val archiveLink = document.selectFirst("div#archive-box a.archive-title")?.attr("href")
@@ -155,7 +158,8 @@ class DiziBox : MainAPI() {
             document = app.get(
                 redirectUrl,
                 cookies     = baseCookies,
-                interceptor = interceptor
+                interceptor = interceptor,
+                timeout     = 60L
             ).document
         }
 
@@ -177,7 +181,8 @@ class DiziBox : MainAPI() {
             val seasonDoc = app.get(
                 seasonUrl,
                 cookies     = baseCookies,
-                interceptor = interceptor
+                interceptor = interceptor,
+                timeout     = 60L
             ).document
 
             seasonDoc.select("article.grid-box").forEach epLoop@{ epElem ->
@@ -234,7 +239,8 @@ class DiziBox : MainAPI() {
         val document = app.get(
             data,
             cookies     = baseCookies,
-            interceptor = interceptor
+            interceptor = interceptor,
+            timeout     = 60L
         ).document
 
         val iframeUrl = document.selectFirst("div#video-area iframe")?.attr("src")
@@ -252,7 +258,8 @@ class DiziBox : MainAPI() {
             val sourceDoc = app.get(
                 sourceUrl,
                 cookies     = baseCookies,
-                interceptor = interceptor
+                interceptor = interceptor,
+                timeout     = 60L
             ).document
 
             val srcIframe = sourceDoc.selectFirst("div#video-area iframe")?.attr("src")
@@ -282,7 +289,8 @@ class DiziBox : MainAPI() {
                     playerUrl,
                     referer     = sourceUrl,
                     cookies     = baseCookies,
-                    interceptor = interceptor
+                    interceptor = interceptor,
+                    timeout     = 60L
                 ).document
 
                 val finalEmbed = playerDoc.selectFirst("div#Player iframe")?.attr("src")
@@ -296,7 +304,8 @@ class DiziBox : MainAPI() {
                     val m3u8Data = app.get(
                         sheila,
                         referer     = finalEmbed,
-                        interceptor = interceptor
+                        interceptor = interceptor,
+                        timeout     = 60L
                     ).text
                     val m3u8Url = m3u8Data.lineSequence().firstOrNull { it.startsWith("http") }
                     if (m3u8Url != null) {
@@ -323,11 +332,12 @@ class DiziBox : MainAPI() {
                     kingUrl,
                     referer     = referer,
                     cookies     = baseCookies,
-                    interceptor = interceptor
+                    interceptor = interceptor,
+                    timeout     = 60L
                 ).document
                 val subFrame = subDoc.selectFirst("div#Player iframe")?.attr("src") ?: return
 
-                val iDoc      = app.get(subFrame, referer = "$mainUrl/").text
+                val iDoc      = app.get(subFrame, referer = "$mainUrl/", timeout = 60L).text
                 val cryptData = Regex("""CryptoJS\.AES\.decrypt\("(.*)","""""").find(iDoc)?.groupValues?.get(1) ?: return
                 val cryptPass = Regex(""""","(.*)"\);""").find(iDoc)?.groupValues?.get(1) ?: return
                 val decrypted = CryptoJS.decrypt(cryptPass, cryptData)
@@ -355,7 +365,8 @@ class DiziBox : MainAPI() {
                     molyUrl,
                     referer     = referer,
                     cookies     = baseCookies,
-                    interceptor = interceptor
+                    interceptor = interceptor,
+                    timeout     = 60L
                 ).document
 
                 val atobData = Regex("""unescape\("(.*)"\)""").find(subDoc.html())?.groupValues?.get(1)
