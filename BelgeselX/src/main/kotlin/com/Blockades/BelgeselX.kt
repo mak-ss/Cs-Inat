@@ -1,56 +1,59 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
-package com.Blockades
+package com.keyiflerolsun
 
-import java.util.Locale
 import android.util.Log
-import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
+import java.util.*
+import kotlinx.coroutines.*
 
 class BelgeselX : MainAPI() {
-    override var mainUrl              = "https://belgeselx.com"
-    override var name                 = "BelgeselX"
-    override val hasMainPage          = true
-    override var lang                 = "tr"
-    override val hasQuickSearch       = false
-    override val supportedTypes       = setOf(TvType.Documentary)
-	
+    override var mainUrl = "https://belgeselx.com"
+    override var name = "BelgeselX"
+    override val hasMainPage = true
+    override var lang = "tr"
+    override val hasQuickSearch = false
+    override val supportedTypes = setOf(TvType.Documentary)
+
     override val mainPage = mainPageOf(
-        "${mainUrl}/konu/turk-tarihi-belgeselleri" to "Türk Tarihi",
-        "${mainUrl}/konu/tarih-belgeselleri"	   to "Tarih",
-        "${mainUrl}/konu/seyehat-belgeselleri"	   to "Seyahat",
-        "${mainUrl}/konu/seri-belgeseller"		   to "Seri",
-        "${mainUrl}/konu/savas-belgeselleri"	   to "Savaş",
-        "${mainUrl}/konu/sanat-belgeselleri"	   to "Sanat",
-        "${mainUrl}/konu/psikoloji-belgeselleri"   to "Psikoloji",
-        "${mainUrl}/konu/polisiye-belgeselleri"	   to "Polisiye",
-        "${mainUrl}/konu/otomobil-belgeselleri"	   to "Otomobil",
-        "${mainUrl}/konu/nazi-belgeselleri"		   to "Nazi",
-        "${mainUrl}/konu/muhendislik-belgeselleri" to "Mühendislik",
-        "${mainUrl}/konu/kultur-din-belgeselleri"  to "Kültür Din",
-        "${mainUrl}/konu/kozmik-belgeseller"	   to "Kozmik",
-        "${mainUrl}/konu/hayvan-belgeselleri"	   to "Hayvan",
-        "${mainUrl}/konu/eski-tarih-belgeselleri"  to "Eski Tarih",
-        "${mainUrl}/konu/egitim-belgeselleri"	   to "Eğitim",
-        "${mainUrl}/konu/dunya-belgeselleri"	   to "Dünya",
-        "${mainUrl}/konu/doga-belgeselleri"		   to "Doğa",
-        "${mainUrl}/konu/bilim-belgeselleri"	   to "Bilim"
+        "${mainUrl}/konu/turk-tarihi-belgeselleri&page=" to "Türk Tarihi",
+        "${mainUrl}/konu/tarih-belgeselleri&page=" to "Tarih",
+        "${mainUrl}/konu/seyehat-belgeselleri&page=" to "Seyahat",
+        "${mainUrl}/konu/seri-belgeseller&page=" to "Seri",
+        "${mainUrl}/konu/savas-belgeselleri&page=" to "Savaş",
+        "${mainUrl}/konu/sanat-belgeselleri&page=" to "Sanat",
+        "${mainUrl}/konu/psikoloji-belgeselleri&page=" to "Psikoloji",
+        "${mainUrl}/konu/polisiye-belgeselleri&page=" to "Polisiye",
+        "${mainUrl}/konu/otomobil-belgeselleri&page=" to "Otomobil",
+        "${mainUrl}/konu/nazi-belgeselleri&page=" to "Nazi",
+        "${mainUrl}/konu/muhendislik-belgeselleri&page=" to "Mühendislik",
+        "${mainUrl}/konu/kultur-din-belgeselleri&page=" to "Kültür Din",
+        "${mainUrl}/konu/kozmik-belgeseller&page=" to "Kozmik",
+        "${mainUrl}/konu/hayvan-belgeselleri&page=" to "Hayvan",
+        "${mainUrl}/konu/eski-tarih-belgeselleri&page=" to "Eski Tarih",
+        "${mainUrl}/konu/egitim-belgeselleri&page=" to "Eğitim",
+        "${mainUrl}/konu/dunya-belgeselleri&page=" to "Dünya",
+        "${mainUrl}/konu/doga-belgeselleri&page=" to "Doğa",
+        "${mainUrl}/konu/bilim-belgeselleri&page=" to "Bilim"
+    )
+
+    // HTML'deki JS'den alınan kaynak haritası
+    // var srcMap = { '0':'new5','2':'new1','5':'new4','3':'new2','4':'new3' };
+    private val sourceMap = mapOf(
+        "0" to "new5",
+        "2" to "new1",
+        "5" to "new4",
+        "3" to "new2",
+        "4" to "new3"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) {
-            request.data
-        } else {
-            val categorySlug = request.data.removeSuffix("/").substringAfterLast("/")
-            "https://belgeselx.com/ajax_konukat.php?url=$categorySlug&page=$page"
-        }
+        val document = app.get("${request.data}${page}").document
+        val home = document.select("div.gen-movie-contain").mapNotNull { it.toSearchResult() }
 
-        val document = app.get(url, cacheTime = 60).document
-        val home = document.select("div.px-grid > a.px-card").mapNotNull { it.toSearchResult() }
-        val parsedItems = home.ifEmpty { document.select("a.px-card").mapNotNull { it.toSearchResult() } }
-
-        return newHomePageResponse(request.name, parsedItems)
+        return newHomePageResponse(request.name, home)
     }
 
     private fun String.toTitleCase(): String {
@@ -61,13 +64,11 @@ class BelgeselX : MainAPI() {
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst(".px-card-title")?.text()?.trim()?.toTitleCase() ?: return null
-        val href = fixUrlNull(this.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img.px-card-img")?.attr("src"))
+        val title = this.selectFirst("h3 a")?.text()?.trim()?.toTitleCase() ?: return null
+        val href = fixUrlNull(this.selectFirst("h3 a")?.attr("href")) ?: return null
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src")?.trim())
 
-        return newTvSeriesSearchResponse(title, href, TvType.Documentary) {
-            this.posterUrl = posterUrl
-        }
+        return newTvSeriesSearchResponse(title, href, TvType.Documentary) { this.posterUrl = posterUrl }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -75,30 +76,31 @@ class BelgeselX : MainAPI() {
 
         val tokenResponse = app.get("https://cse.google.com/cse.js?cx=${cx}")
         val cseLibVersion = Regex("""cselibVersion": "(.*)"""").find(tokenResponse.text)?.groupValues?.get(1)
-        val cseToken      = Regex("""cse_token": "(.*)"""").find(tokenResponse.text)?.groupValues?.get(1)
-        val fexp      = Regex("""fexp": "[.*]"""").find(tokenResponse.text)?.groupValues?.get(1)
+        val cseToken = Regex("""cse_token": "(.*)"""").find(tokenResponse.text)?.groupValues?.get(1)
 
-        val response = app.get("https://cse.google.com/cse/element/v1?rsz=filtered_cse&num=100&hl=tr&source=gcsc&cselibv=${cseLibVersion}&cx=${cx}&q=${query}&safe=off&cse_tok=${cseToken}&sort=&exp=cc%2Capo&fexp=${fexp}&callback=google.search.cse.api9969&rurl=https%3A%2F%2Fbelgeselx.com%2F")
-        Log.d("BLX", "response » $response")
-        val titles     = Regex(""""titleNoFormatting": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
-        val urls       = Regex(""""ogImage": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
-        val posterUrls = Regex(""""ogImage": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
+        val response =
+            app.get("https://cse.google.com/cse/element/v1?rsz=filtered_cse&num=100&hl=tr&source=gcsc&cselibv=${cseLibVersion}&cx=${cx}&q=${query}&safe=off&cse_tok=${cseToken}&oq=${query}&callback=google.search.cse.api9969&rurl=https%3A%2F%2Fbelgeselx.com%2F")
+        Log.d("BLX", "Search result: ${response.text}")
+
+        val titles = Regex(""""titleNoFormatting": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
+        val urls = Regex(""""url": "(.*)"""").findAll(response.text).map { it.groupValues[1] }.toList()
+        val posterUrls = Regex(""""ogImage": "(.*)"""").findAll(response.text)
+            .map { it.groupValues[1].trim() }
+            .toList()
 
         val searchResponses = mutableListOf<TvSeriesSearchResponse>()
 
         for (i in titles.indices) {
-            val title     = titles[i].split("İzle")[0].trim().toTitleCase()
-            val url       = urls.getOrNull(i) ?: continue
+            val title = titles[i].split("İzle")[0].trim().toTitleCase()
+            val url = urls.getOrNull(i) ?: continue
             val posterUrl = posterUrls.getOrNull(i) ?: continue
 
-            if (url.contains("diziresimleri")) {
-                val fileName = url.substringAfterLast("/").replace(Regex("\\.(jpe?g|png|webp)$"), "")
-                val modifiedUrl = "https://belgeselx.com/belgeseldizi/$fileName"
-                searchResponses.add(newTvSeriesSearchResponse(title, modifiedUrl, TvType.Documentary) {
-                    this.posterUrl = posterUrl
-                })
-            }
+            if (!url.contains("belgeseldizi")) continue
+            searchResponses.add(newTvSeriesSearchResponse(title, url, TvType.Documentary) {
+                this.posterUrl = posterUrl
+            })
         }
+
         return searchResponses
     }
 
@@ -107,87 +109,37 @@ class BelgeselX : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.px-hero-title")?.text()?.trim()?.toTitleCase() ?: return null
-        val description = document.selectFirst("p.px-hero-desc")?.text()?.trim()
-        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        val tags = document.select("a.px-hero-channel span").mapNotNull { it.text().trim().toTitleCase() }
+        val title = document.selectFirst("h2.gen-title")?.text()?.trim()?.toTitleCase() ?: return null
+        val poster = fixUrlNull(document.selectFirst("div.gen-tv-show-top img")?.attr("src")?.trim()) ?: return null
+        val description = document.selectFirst("div.gen-single-tv-show-info p")?.text()?.trim()
+        val tags = document.select("div.gen-socail-share a[href*='belgeselkanali']")
+            .map { it.attr("href").split("/").last().replace("-", " ").toTitleCase() }
 
-        val episodes = mutableListOf<Episode>()
+        var counter = 0
+        val episodes = document.select("div.gen-movie-contain").mapNotNull {
+            val epName = it.selectFirst("div.gen-movie-info h3 a")?.text()?.trim() ?: return@mapNotNull null
+            val epHref = fixUrlNull(it.selectFirst("div.gen-movie-info h3 a")?.attr("href")) ?: return@mapNotNull null
 
-        document.select("a.px-ep-card, a.px-ep-row").forEach { element ->
-            val onClickStr = element.attr("onclick")
-            val epName = element.selectFirst(".px-ep-title")?.text()?.trim()
-                ?: element.selectFirst(".c-num")?.text()?.trim()
-                ?: "Bölüm"
+            val seasonName = it.selectFirst("div.gen-single-meta-holder ul li")?.text()?.trim() ?: ""
+            var epEpisode = Regex("""Bölüm (\d+)""").find(seasonName)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val epSeason = Regex("""Sezon (\d+)""").find(seasonName)?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-            var epHref = fixUrlNull(element.attr("href")).takeIf { it != "#" && !it.isNullOrBlank() } ?: url
-
-            var epId: String? = null
-            var epSeason = 1
-            var epEpisode = 1
-
-            if (onClickStr.contains("diziGetir")) {
-                val paramsMatch = Regex("""diziGetir\((.*?)\)""").find(onClickStr)
-                if (paramsMatch != null) {
-                    val params = paramsMatch.groupValues[1].split(",").map { it.trim().removeSurrounding("'").removeSurrounding("\"") }
-                    epId = params.getOrNull(0)
-                    val titleParam = params.getOrNull(4) ?: epName
-                    val seasonParam = params.getOrNull(7)?.toIntOrNull() ?: 1
-                    val epParam = params.getOrNull(8)?.toIntOrNull() ?: 1
-
-                    epSeason = seasonParam
-                    epEpisode = epParam
-                    
-                    val suffix = if (epId != null) "?epId=$epId&ic1=${params.getOrNull(1) ?: ""}&ic2=${params.getOrNull(2) ?: ""}&ic3=${params.getOrNull(3) ?: ""}" else ""
-                    epHref = "$epHref$suffix"
-                }
-            } else {
-                epId = Regex("""\(\s*['"]?(\d+)['"]?\s*\)""").find(onClickStr)?.groupValues?.get(1)
-                val sMeta = element.selectFirst(".px-ep-s")?.text()?.trim() ?: ""
-                epSeason  = Regex("""S(\d+)""").find(sMeta)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-                epEpisode = Regex("""B(\d+)""").find(sMeta)?.groupValues?.get(1)?.toIntOrNull() ?: 1
-
-                val suffix = if (epId != null) "?epId=$epId" else ""
-                epHref = "$epHref$suffix"
+            if (epEpisode == 0) {
+                epEpisode = counter++
             }
 
-            episodes.add(newEpisode(epHref) {
-                this.name    = epName
-                this.season  = epSeason
+            newEpisode(epHref) {
+                this.name = epName
+                this.season = epSeason
                 this.episode = epEpisode
-            })
-        }
-
-        // Single documentary fallback: try to find bolumId directly in JS script
-        if (episodes.isEmpty()) {
-            val script = document.select("script").find { it.data().contains("bolumId") }?.data()
-            val epId = script?.let { Regex("""bolumId\s*:\s*(\d+)""").find(it)?.groupValues?.get(1) }
-            if (epId != null) {
-                episodes.add(newEpisode("$url?epId=$epId") {
-                    this.name = title
-                    this.season = 1
-                    this.episode = 1
-                })
             }
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.Documentary, episodes) {
             this.posterUrl = poster
-            this.plot      = description
-            this.tags      = tags
+            this.plot = description
+            this.tags = tags
         }
-    }
-
-    private fun getSrc(ic: String, id: String, sira: Int): String {
-        val f = when (ic) {
-            "0" -> "new5"
-            "2" -> "new1"
-            "3" -> "new2"
-            "4" -> "new3"
-            "5" -> "new4"
-            else -> "default"
-        }
-        return "https://belgeselx.com/video/data/$f.php?id=$id&sira=$sira"
     }
 
     override suspend fun loadLinks(
@@ -198,122 +150,185 @@ class BelgeselX : MainAPI() {
     ): Boolean {
         Log.d("BLX", "loadLinks data » $data")
 
-        val episodeId = data.substringAfter("?epId=", "").substringBefore("&")
-        Log.d("BLX", "Kullanılacak Bölüm ID: $episodeId")
+        val sourceHtml = app.get(data).body?.string() ?: return false
 
-        val refererUrl = data.substringBefore("?epId=")
+        // 1. Bölüm ID'sini bul (id="no16357")
+        val idMatch = Regex("""id="no(\d+)"""").find(sourceHtml)
+        val bolumId = idMatch?.groupValues?.get(1) ?: return false
+        Log.d("BLX", "Bölüm ID » $bolumId")
 
-        val playerUrls = mutableListOf<String>()
-        val ic1 = data.substringAfter("&ic1=", "").substringBefore("&")
-        val ic2 = data.substringAfter("&ic2=", "").substringBefore("&")
-        val ic3 = data.substringAfter("&ic3=", "").substringBefore("&")
+        // 2. diziGetir() fonksiyonundan kaynak kodlarını (ic1, ic2, ic3) al
+        // onclick="diziGetir('16357','5','4','0','Barborassa',...);"
+        val diziGetirMatch = Regex("""diziGetir\('$bolumId',\s*'(\d+)',\s*'(\d+)',\s*'(\d+)'""").find(sourceHtml)
+        val ic1 = diziGetirMatch?.groupValues?.get(1) ?: ""
+        val ic2 = diziGetirMatch?.groupValues?.get(2) ?: ""
+        val ic3 = diziGetirMatch?.groupValues?.get(3) ?: ""
 
-        if (ic1.isNotEmpty() && ic1 != "0") playerUrls.add(getSrc(ic1, episodeId, 1))
-        if (ic2.isNotEmpty() && ic2 != "0") playerUrls.add(getSrc(ic2, episodeId, 2))
-        if (ic3.isNotEmpty() && ic3 != "0") playerUrls.add(getSrc(ic3, episodeId, 3))
+        Log.d("BLX", "Kaynak kodları » ic1=$ic1, ic2=$ic2, ic3=$ic3")
 
-        if (playerUrls.isEmpty()) {
-            playerUrls.add("https://belgeselx.com/video/data/new4.php?id=$episodeId")
-            playerUrls.add("https://belgeselx.com/video/data/new5.php?id=$episodeId")
-            playerUrls.add("https://belgeselx.com/video/data/new3.php?id=$episodeId")
-            playerUrls.add("https://belgeselx.com/video/data/new2.php?id=$episodeId")
-            playerUrls.add("https://belgeselx.com/video/data/new1.php?id=$episodeId")
-        }
+        // 3. Kaynak kodlarını endpoint'lere çevir
+        val sourceCodes = listOf(ic1, ic2, ic3).filter { it.isNotEmpty() }
 
-        var linksFound = false
-
-        playerUrls.forEach { iframeUrl ->
-            try {
-                val alternatifResp = app.get(iframeUrl, referer = refererUrl).text
-                
-                // 1. Check for iframe sources
-                val iframeSrcMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""").find(alternatifResp)
-                if (iframeSrcMatch != null) {
-                    var embedUrl = iframeSrcMatch.groupValues[1]
-                    if (embedUrl.startsWith("AF1Qip")) {
-                        embedUrl = "https://photos.google.com/share/$embedUrl"
-                    }
-                    
-                    if (embedUrl.contains("photos.google.com") || embedUrl.contains("googleusercontent.com")) {
-                        try {
-                            val photosPage = app.get(embedUrl).text
-                            val streamMatch = Regex(""""(https://video-downloads\.googleusercontent\.com/[^"]+)"""").find(photosPage)
-                            if (streamMatch != null) {
-                                val streamUrl = streamMatch.groupValues[1].replace("\\u003d", "=").replace("\\u0026", "&")
-                                callback.invoke(
-                                    newExtractorLink(
-                                        source = "GooglePhotos",
-                                        name = "GooglePhotos",
-                                        url = streamUrl,
-                                        type = ExtractorLinkType.VIDEO
-                                    ) {
-                                        this.referer = refererUrl
-                                        this.quality = Qualities.P720.value
-                                    }
-                                )
-                                linksFound = true
-                            }
-                        } catch (e: Exception) {
-                            Log.e("BLX", "Failed to resolve Google Photos stream: ${e.message}")
-                        }
-                    } else if (embedUrl.startsWith("http")) {
-                        if (loadExtractor(embedUrl, refererUrl, subtitleCallback, callback)) {
-                            linksFound = true
-                        }
-                    }
+        if (sourceCodes.isNotEmpty()) {
+            sourceCodes.forEachIndexed { index, ic ->
+                val endpoint = sourceMap[ic]
+                if (endpoint != null) {
+                    val url = "$mainUrl/video/data/${endpoint}.php?id=$bolumId&sira=${index + 1}"
+                    Log.d("BLX", "Kaynak ${index + 1} (ic=$ic) » $url")
+                    tryExtractFromUrl(url, data, callback)
                 }
-
-                // 2. Parse video files and labels inside sources object array
-                Regex("""\{\s*["']?file["']?\s*:\s*["']([^"']+)["'](?:.*?["']?label["']?\s*:\s*["']([^"']+)["'])?""").findAll(alternatifResp).forEach {
-                    val videoUrl = it.groupValues[1]
-
-                    // Filter out empty/incomplete URLs
-                    if (videoUrl.endsWith("cid=") || videoUrl.endsWith("googleusercontent.com/") || videoUrl.isBlank()) {
-                        return@forEach
-                    }
-
-                    var qualityStr = it.groupValues[2].ifEmpty { "720p" }
-                    var sourceName = this.name
-
-                    if (qualityStr.equals("FULL", ignoreCase = true)) {
-                        qualityStr = "1080p"
-                        sourceName = "Google"
-                    }
-
-                    // Follow redirects for php stream URLs to get the final playable video URL
-                    var finalVideoUrl = videoUrl
-                    if (videoUrl.contains("belgeselx.php") || videoUrl.contains("belgeselx2.php") || videoUrl.contains("belgeselx3.php")) {
-                        try {
-                            val redirectRes = app.get(videoUrl, referer = refererUrl, allowRedirects = true)
-                            if (redirectRes.code == 200 && redirectRes.url.isNotEmpty() && !redirectRes.url.contains("belgeselx")) {
-                                finalVideoUrl = redirectRes.url
-                                Log.d("BLX", "Resolved redirect: $videoUrl -> $finalVideoUrl")
-                            }
-                        } catch (e: Exception) {
-                            Log.e("BLX", "Failed to resolve redirect: ${e.message}")
-                        }
-                    }
-
-                    val linkType = if (finalVideoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-
-                    callback.invoke(
-                        newExtractorLink(
-                            source = sourceName,
-                            name = sourceName,
-                            url = finalVideoUrl,
-                            type = linkType
-                        ) {
-                            this.referer = refererUrl
-                            this.quality = getQualityFromName(qualityStr)
-                        }
-                    )
-                    linksFound = true
-                }
-            } catch (e: Exception) {
-                Log.e("BLX", "Error loading player links: ${e.message}")
+            }
+        } else {
+            // Fallback: tüm endpoint'leri dene
+            Log.d("BLX", "Kaynak kodu bulunamadı, tüm endpoint'ler deneniyor...")
+            val allEndpoints = listOf("new1", "new2", "new3", "new4", "new5")
+            allEndpoints.forEachIndexed { index, ep ->
+                val url = "$mainUrl/video/data/${ep}.php?id=$bolumId&sira=${index + 1}"
+                tryExtractFromUrl(url, data, callback)
             }
         }
 
-        return linksFound
+        return true
+    }
+
+    private suspend fun tryExtractFromUrl(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val response = withTimeout(5_000) {
+                app.get(url, headers = mapOf("Referer" to referer))
+            }
+            val html = response.text
+            Log.d("BLX", "Response from $url (${html.length} chars)")
+
+            // Pattern 1: file:"...", label:"..." (JSON benzeri)
+            val fileLabelPattern = Regex(
+                """file\s*:\s*["']([^"']+)["']\s*,\s*label\s*:\s*["']([^"']+)["']""",
+                RegexOption.IGNORE_CASE
+            )
+            val matches = fileLabelPattern.findAll(html).toList()
+
+            if (matches.isNotEmpty()) {
+                matches.forEach { match ->
+                    val videoUrl = match.groupValues[1].trim()
+                    val label = match.groupValues[2].trim()
+                    Log.d("BLX", "Bulundu » $label : $videoUrl")
+
+                    val finalUrl = if (videoUrl.startsWith("//")) "https:$videoUrl" else videoUrl
+                    val quality = when {
+                        label.contains("1080", true) || label.contains("FULL", true) -> Qualities.P1080.value
+                        label.contains("720", true)  || label.contains("HD", true)   -> Qualities.P720.value
+                        label.contains("480", true)  || label.contains("SD", true)   -> Qualities.P480.value
+                        label.contains("360", true)  -> Qualities.P360.value
+                        label.contains("240", true)  -> Qualities.P240.value
+                        else -> Qualities.Unknown.value
+                    }
+
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = "${this.name} - $label",
+                            url = finalUrl,
+                            type = INFER_TYPE
+                        ) {
+                            this.referer = referer
+                            this.quality = quality
+                        }
+                    )
+                }
+                return
+            }
+
+            // Pattern 2: file:"..." (label olmadan)
+            val fileOnlyPattern = Regex("""file\s*:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            val fileOnlyMatches = fileOnlyPattern.findAll(html).toList()
+
+            if (fileOnlyMatches.isNotEmpty()) {
+                fileOnlyMatches.forEach { match ->
+                    val videoUrl = match.groupValues[1].trim()
+                    val finalUrl = if (videoUrl.startsWith("//")) "https:$videoUrl" else videoUrl
+                    Log.d("BLX", "Bulundu (label'sız) » $finalUrl")
+
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = finalUrl,
+                            type = INFER_TYPE
+                        ) {
+                            this.referer = referer
+                        }
+                    )
+                }
+                return
+            }
+
+            // Pattern 3: iframe src
+            val iframePattern = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            val iframeMatches = iframePattern.findAll(html).toList()
+
+            if (iframeMatches.isNotEmpty()) {
+                iframeMatches.forEach { match ->
+                    val iframeUrl = match.groupValues[1].trim()
+                    val finalIframeUrl = if (iframeUrl.startsWith("//")) "https:$iframeUrl" else iframeUrl
+                    Log.d("BLX", "Iframe bulundu » $finalIframeUrl")
+
+                    when {
+                        finalIframeUrl.contains("ok.ru") || finalIframeUrl.contains("odnoklassniki") -> {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = "Odnoklassniki",
+                                    name = "Odnoklassniki",
+                                    url = finalIframeUrl,
+                                    type = INFER_TYPE
+                                ) { this.referer = referer }
+                            )
+                        }
+                        finalIframeUrl.contains("drive.google.com") -> {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = "GoogleDrive",
+                                    name = "Google Drive",
+                                    url = finalIframeUrl.replace("/view", "/preview"),
+                                    type = INFER_TYPE
+                                ) { this.referer = referer }
+                            )
+                        }
+                        else -> {
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = this.name,
+                                    name = "${this.name} - iframe",
+                                    url = finalIframeUrl,
+                                    type = INFER_TYPE
+                                ) { this.referer = referer }
+                            )
+                        }
+                    }
+                }
+                return
+            }
+
+            // Pattern 4: Direkt video URL'leri
+            val directVideoPattern = Regex("""["'](https?://[^"']+\.(?:mp4|m3u8)[^"']*)["']""", RegexOption.IGNORE_CASE)
+            directVideoPattern.findAll(html).forEach { match ->
+                val videoUrl = match.groupValues[1].trim()
+                Log.d("BLX", "Direkt video » $videoUrl")
+
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = this.name,
+                        url = videoUrl,
+                        type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) { this.referer = referer }
+                )
+            }
+
+        } catch (e: Exception) {
+            Log.e("BLX", "Hata ($url): ${e.message}")
+        }
     }
 }
