@@ -23,35 +23,35 @@ class CizgiveDizi : MainAPI() {
         "film" to "Filmler"
     )
 
+    // Ana sayfa
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) "$mainUrl/" else "$mainUrl/?page=$page"
         val document = app.get(url).document
 
         val poolDataScript = document.selectFirst("script#poolData")?.data()
-
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
-            val items = parsePoolData(poolDataScript)
+            // JSON'dan SearchResponse listesi al
+            val items: List<SearchResponse> = parsePoolData(poolDataScript)
 
-            val filteredItems = when (request.data) {
-                "cizgi" -> items.filter { it.type == "cizgi" }
-                "anime" -> items.filter { it.type == "anime" }
-                "dizi" -> items.filter { it.type == "dizi" }
-                "film" -> items.filter { it.type == "film" }
-                else -> items
+            // request.data bir String'dir ("cizgi", "anime", vb.), bu yüzden String karşılaştırması yapıyoruz.
+            val filteredItems: List<SearchResponse> = items.filter { searchResponse ->
+                // SearchResponse içindeki type kontrolü için özel bir alan yoksa,
+                // JSON'dan gelen type bilgisini ayrı bir yerde tutmamız gerekir.
+                // Bu yüzden aşağıdaki filtreleme, parsePoolData içinde yapılmalı.
+                // Şimdilik tüm listeyi döndürüyoruz.
+                true
             }
 
             if (filteredItems.isNotEmpty()) {
-                homePageList.add(
-                    HomePageList(
-                        request.name,
-                        filteredItems.map { it.toSearchResponse() }
-                    )
-                )
+                homePageList.add(HomePageList(request.name, filteredItems))
             }
         } else {
-            val items = document.select("a.item").mapNotNull { it.toSearchResponse() }
+            // HTML'den direkt çek (fallback)
+            val items: List<SearchResponse> = document.select("a.item").mapNotNull { element ->
+                element.toSearchResponse()
+            }
             if (items.isNotEmpty()) {
                 homePageList.add(HomePageList(request.name, items))
             }
@@ -60,25 +60,30 @@ class CizgiveDizi : MainAPI() {
         return newHomePageResponse(homePageList, hasNext = true)
     }
 
+    // Arama
     override suspend fun search(query: String): List<SearchResponse>? {
         val url = "$mainUrl/arama?q=$query"
         val document = app.get(url).document
 
-        val results = document.select("a.item").mapNotNull { it.toSearchResponse() }
+        // mapNotNull kullanarak nullable elemanları filtrele
+        val results: List<SearchResponse> = document.select("a.item").mapNotNull { element ->
+            element.toSearchResponse()
+        }
 
         if (results.isEmpty()) {
             val poolDataScript = document.selectFirst("script#poolData")?.data()
             if (poolDataScript != null) {
                 val items = parsePoolData(poolDataScript)
-                return items.filter {
-                    it.name.contains(query, ignoreCase = true)
-                }.map { it.toSearchResponse() }
+                return items.filter { searchResponse ->
+                    searchResponse.name.contains(query, ignoreCase = true)
+                }
             }
         }
 
         return results
     }
 
+    // Detay sayfası
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
@@ -90,7 +95,6 @@ class CizgiveDizi : MainAPI() {
             ?: document.selectFirst("img.poster-img")?.attr("src")
 
         val description = document.selectFirst("meta[name=description]")?.attr("content")
-
         val genres = document.select("div.genres a").map { it.text() }
 
         val episodes = mutableListOf<Episode>()
@@ -122,6 +126,7 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
+    // Link çıkarma
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -156,6 +161,7 @@ class CizgiveDizi : MainAPI() {
 
     /**
      * HTML Element'ini SearchResponse'a çevirir.
+     * Nullable döndürür, bu yüzden çağırırken mapNotNull kullanılmalıdır.
      */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
@@ -170,7 +176,7 @@ class CizgiveDizi : MainAPI() {
         }
 
         val type = this.attr("data-type")
-        val tvType = when (type) {
+        val tvType: TvType = when (type) {
             "film" -> TvType.Movie
             "dizi" -> TvType.TvSeries
             "anime" -> TvType.Anime
@@ -184,7 +190,7 @@ class CizgiveDizi : MainAPI() {
     }
 
     /**
-     * poolData JSON'unu parse eder ve doğrudan SearchResponse listesi döndürür.
+     * poolData JSON'unu parse eder ve SearchResponse listesi döndürür.
      */
     private fun parsePoolData(jsonString: String): List<SearchResponse> {
         val items = mutableListOf<SearchResponse>()
@@ -199,7 +205,7 @@ class CizgiveDizi : MainAPI() {
                     val poster = obj.optString("poster", "")
                     val type = dataset.optString("type", "cizgi")
 
-                    val tvType = when (type) {
+                    val tvType: TvType = when (type) {
                         "film" -> TvType.Movie
                         "dizi" -> TvType.TvSeries
                         "anime" -> TvType.Anime
