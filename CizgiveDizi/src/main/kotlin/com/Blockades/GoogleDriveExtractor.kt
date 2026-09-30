@@ -1,5 +1,5 @@
 // ! Bu araç @Blockades tarafından yazılmıştır.
-package com.UmayTrade
+package com.Blockades
 
 import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
