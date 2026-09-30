@@ -1,11 +1,13 @@
 // ! Bu araç @Blockades tarafından yazılmıştır.
 package com.Blockades
 
+
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.runBlocking
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import com.lagradost.cloudstream3.extractors.*
 import com.lagradost.cloudstream3.newEpisode
@@ -28,6 +30,12 @@ class CizgiveDizi : MainAPI() {
         "tıp", "yar", "aks", "bilkur", "fant", "spor", "polis", "doğa", "suç", "füt"
     )
 
+    // Kod formatı: sadece küçük harf, rakam, tire, altçizgi. (Türkçe karakterler dahil)
+    private val validCodeRegex = Regex("^[a-z0-9_\\-çğıöşü]+$")
+
+    // Site canlı mı? (geçici cache)
+    @Volatile private var siteAlive: Boolean? = null
+
     // Etiket kodu -> açıklama
     private val tagLabels by lazy { runBlocking { loadTagLabels() } }
 
@@ -46,6 +54,10 @@ class CizgiveDizi : MainAPI() {
             "$mainUrl/etiket/$code" to tagLabels[code].orEmpty()
         }.toTypedArray()
     )
+
+    // ─────────────────────────────────────────────────────────────
+    // Ana Sayfa
+    // ─────────────────────────────────────────────────────────────
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(listOf())
@@ -89,10 +101,11 @@ class CizgiveDizi : MainAPI() {
                     }
             }.onFailure { Log.e("CizgiVeDizi", "Film yükleme hatası", it) }
 
-            // Karışık listeleme için karıştır
             results.shuffle()
-
-            return newHomePageResponse(request.name, results)
+            if (results.isNotEmpty()) {
+                return newHomePageResponse(request.name, results)
+            }
+            // Etiket listesi boşsa ana sayfaya düş
         }
 
         // Ana sayfa: sadece Diziler ana girdisi
@@ -113,20 +126,92 @@ class CizgiveDizi : MainAPI() {
             emptyList()
         }
 
+        // 🔴 Fallback: .txt dosyaları boş/HTML döndüyse doğrudan HTML scraping yap
+        if (results.isEmpty()) {
+            Log.w("CizgiVeDizi", "isim/poster.txt boş — HTML scraping fallback denenecek")
+            val scraped = scrapeMainPageFromHtml("$mainUrl/dizi")
+            if (scraped.isNotEmpty()) {
+                return newHomePageResponse("Diziler", scraped)
+            }
+        }
+
         return newHomePageResponse("Diziler", results)
     }
 
     // ─────────────────────────────────────────────────────────────
-    // Parse yardımcıları — HTML/çöp filtreleme ile sağlamlaştırıldı
+    // HTML Fallback — site yapısı değişirse çalışır
     // ─────────────────────────────────────────────────────────────
 
-    /** Kod formatı: sadece küçük harf, rakam, tire, altçizgi. */
-    private val validCodeRegex = Regex("^[a-z0-9_\\-]+$")
-
     /**
-     * Bir değerin geçerli bir URL olup olmadığını kontrol eder.
-     * HTML çöpü (tırnak, <, >, boşluk vb.) içerenleri reddeder.
+     * Ana sayfadan HTML scrape yaparak dizi kartlarını çıkarır.
+     * `.txt` dosyaları artık çalışmadığında devreye girer.
      */
+    private suspend fun scrapeMainPageFromHtml(pageUrl: String): List<SearchResponse> {
+        return runCatching {
+            val doc = app.get(pageUrl).document
+            val results = mutableListOf<SearchResponse>()
+
+            // Yaygın kart seçicileri dene
+            val selectors = listOf(
+                "div.card a",
+                "div.movie-box a",
+                "article a",
+                "div.item a",
+                "a[href*='/dizi/']",
+                "a[href*='/film/']"
+            )
+
+            val seenUrls = mutableSetOf<String>()
+            for (sel in selectors) {
+                doc.select(sel).forEach { a ->
+                    val href = a.attr("href").trim()
+                    if (href.isEmpty()) return@forEach
+                    val full = when {
+                        href.startsWith("http") -> href
+                        href.startsWith("/") -> "$mainUrl$href"
+                        else -> "$mainUrl/$href"
+                    }
+                    if (!full.contains("/dizi/") && !full.contains("/film/")) return@forEach
+                    if (full in seenUrls) return@forEach
+                    seenUrls += full
+
+                    val title = a.selectFirst("h3, h4, .title, .card-title, .name")
+                        ?.text()?.trim()
+                        ?: a.attr("title").trim().takeIf { it.isNotEmpty() }
+                        ?: return@forEach
+
+                    val img = a.selectFirst("img")
+                    val rawPoster = img?.attr("data-src")?.takeIf { it.isNotBlank() }
+                        ?: img?.attr("src")?.takeIf { it.isNotBlank() }
+                    val poster = rawPoster?.let { fixImageFormat(fixRelativeUrl(it)) }
+
+                    val isMovie = full.contains("/film/")
+                    results += if (isMovie) {
+                        newMovieSearchResponse(title, full, TvType.Movie) {
+                            this.posterUrl = poster
+                        }
+                    } else {
+                        newTvSeriesSearchResponse(title, full, TvType.Cartoon) {
+                            this.posterUrl = poster
+                        }
+                    }
+                }
+                if (results.isNotEmpty()) break
+            }
+
+            Log.d("CizgiVeDizi", "HTML fallback sonucu: ${results.size} öğe")
+            results
+        }.getOrElse {
+            Log.e("CizgiVeDizi", "HTML fallback hatası", it)
+            emptyList()
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Parse yardımcıları
+    // ─────────────────────────────────────────────────────────────
+
+    /** HTML çöpü içeren URL'leri temizler. */
     private fun sanitizeUrl(raw: String): String? {
         val trimmed = raw.trim().trim('"', '\'', ',', ';')
         if (trimmed.isEmpty()) return null
@@ -141,11 +226,25 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
+    /** Göreli URL'i tam URL'e çevirir. HTML çöpü içerenleri null yapar. */
+    private fun fixRelativeUrl(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.contains('"') || trimmed.contains('<') ||
+            trimmed.contains('>') || trimmed.contains(' ')
+        ) return null
+        return when {
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            trimmed.startsWith("//") -> "https:$trimmed"
+            trimmed.startsWith("/") -> "$mainUrl$trimmed"
+            else -> "$mainUrl/$trimmed"
+        }
+    }
+
     private suspend fun loadTagLabels(): Map<String, String> {
-        val text = app.get("$mainUrl/etiket.txt").text
-        // Eğer HTML döndüyse boş map
-        if (text.trimStart().startsWith("<")) {
-            Log.e("CizgiVeDizi", "etiket.txt HTML döndü, boş kabul ediliyor")
+        val text = runCatching { app.get("$mainUrl/etiket.txt").text }.getOrDefault("")
+        if (text.trimStart().startsWith("<") || text.isBlank()) {
+            Log.e("CizgiVeDizi", "etiket.txt HTML/boş döndü — tag etiketleri devre dışı")
             return emptyMap()
         }
         return text.lineSequence()
@@ -161,9 +260,9 @@ class CizgiveDizi : MainAPI() {
     }
 
     private suspend fun loadContentTagMappings(basePath: String): Map<String, List<String>> {
-        val text = app.get("$mainUrl/$basePath/etiket.txt").text
-        if (text.trimStart().startsWith("<")) {
-            Log.e("CizgiVeDizi", "$basePath/etiket.txt HTML döndü, boş kabul ediliyor")
+        val text = runCatching { app.get("$mainUrl/$basePath/etiket.txt").text }.getOrDefault("")
+        if (text.trimStart().startsWith("<") || text.isBlank()) {
+            Log.e("CizgiVeDizi", "$basePath/etiket.txt HTML/boş döndü")
             return emptyMap()
         }
         return text.lineSequence()
@@ -175,20 +274,18 @@ class CizgiveDizi : MainAPI() {
                 if (!validCodeRegex.matches(code)) return@mapNotNull null
                 val tags = parts[1].split(';')
                     .map { it.trim().lowercase() }
-                    .filter { it.isNotEmpty() && validCodeRegex.matches(it) }
+                    .filter { it.isNotEmpty() }
                 code to tags
             }.toMap()
     }
 
     private suspend fun loadIsimData(basePath: String): Pair<List<Pair<String, String>>, Map<String, String>> {
-        val resp = app.get("$mainUrl/$basePath/isim.txt")
-        val text = resp.text
+        val text = runCatching { app.get("$mainUrl/$basePath/isim.txt").text }.getOrDefault("")
         val list = mutableListOf<Pair<String, String>>()
         val map  = mutableMapOf<String, String>()
 
-        // HTML döndüyse boş dön
-        if (text.trimStart().startsWith("<")) {
-            Log.e("CizgiVeDizi", "$basePath/isim.txt HTML döndü, boş kabul ediliyor")
+        if (text.trimStart().startsWith("<") || text.isBlank()) {
+            Log.e("CizgiVeDizi", "$basePath/isim.txt HTML/boş — atlanıyor")
             return list to map
         }
 
@@ -197,12 +294,10 @@ class CizgiveDizi : MainAPI() {
             val parts = cleaned.split('=', limit = 2)
             if (parts.size != 2) return@forEach
 
-            val code = parts[0].trim().lowercase()
+            val code  = parts[0].trim().lowercase()
             val title = parts[1].trim()
 
-            // Geçersiz kod veya boş başlık → atla
             if (!validCodeRegex.matches(code) || title.isEmpty()) return@forEach
-            // HTML çöpü içeren başlıkları atla
             if (title.contains('<') || title.contains('>') || title.contains('"')) return@forEach
 
             list += code to title.replace(" ", "_")
@@ -212,12 +307,10 @@ class CizgiveDizi : MainAPI() {
     }
 
     private suspend fun loadPosterData(basePath: String): Map<String, String> {
-        val resp = app.get("$mainUrl/$basePath/poster.txt")
-        val text = resp.text
+        val text = runCatching { app.get("$mainUrl/$basePath/poster.txt").text }.getOrDefault("")
 
-        // HTML döndüyse boş dön (404 sayfası vs.)
-        if (text.trimStart().startsWith("<")) {
-            Log.e("CizgiVeDizi", "$basePath/poster.txt HTML döndü, boş kabul ediliyor")
+        if (text.trimStart().startsWith("<") || text.isBlank()) {
+            Log.e("CizgiVeDizi", "$basePath/poster.txt HTML/boş — atlanıyor")
             return emptyMap()
         }
 
@@ -230,10 +323,7 @@ class CizgiveDizi : MainAPI() {
             val code = parts[0].trim().lowercase()
             val raw  = parts[1].trim()
 
-            // Kod geçerli mi?
             if (!validCodeRegex.matches(code)) return@forEach
-
-            // URL geçerli mi? sanitizeUrl zaten HTML çöpünü reddeder
             val url = sanitizeUrl(raw) ?: return@forEach
             map[code] = url
         }
@@ -244,8 +334,8 @@ class CizgiveDizi : MainAPI() {
      * Poster URL'ini Cloudinary fetch formatına çevirir.
      * Geçersiz/HTML içeren URL'lerde null döner.
      */
-    private fun fixImageFormat(url: String): String? {
-        if (url.isBlank()) return null
+    private fun fixImageFormat(url: String?): String? {
+        if (url.isNullOrBlank()) return null
         if (!url.startsWith("http")) return null
         if (url.contains('"') || url.contains('<') || url.contains('>') || url.contains(' ')) return null
 
@@ -256,6 +346,10 @@ class CizgiveDizi : MainAPI() {
             null
         }
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // Arama
+    // ─────────────────────────────────────────────────────────────
 
     override suspend fun search(query: String): List<SearchResponse> {
         val normalizedQuery = normalizeString(query.lowercase().trim())
@@ -284,22 +378,62 @@ class CizgiveDizi : MainAPI() {
                 }
             }
         }
+
+        // Fallback: .txt araması boşsa HTML üzerinden ara
+        if (results.isEmpty()) {
+            Log.w("CizgiVeDizi", "TXT araması boş — HTML arama fallback")
+            val htmlSearch = runCatching {
+                app.get("$mainUrl/arama?q=${URLEncoder.encode(query, "UTF-8")}").document
+            }.getOrNull()
+            if (htmlSearch != null) {
+                htmlSearch.select("a[href*='/dizi/'], a[href*='/film/']").forEach { a ->
+                    val href = a.attr("href").trim()
+                    if (href.isEmpty()) return@forEach
+                    val full = if (href.startsWith("http")) href else "$mainUrl${if (href.startsWith("/")) "" else "/"}$href"
+                    val title = a.text().trim().ifEmpty { return@forEach }
+                    val isMovie = full.contains("/film/")
+                    val poster = a.selectFirst("img")?.let {
+                        val src = it.attr("data-src").ifBlank { it.attr("src") }
+                        fixImageFormat(fixRelativeUrl(src))
+                    }
+                    results += if (isMovie) {
+                        newMovieSearchResponse(title, full, TvType.Movie) { this.posterUrl = poster }
+                    } else {
+                        newTvSeriesSearchResponse(title, full, TvType.Cartoon) { this.posterUrl = poster }
+                    }
+                }
+            }
+        }
+
         return results
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
+    // ─────────────────────────────────────────────────────────────
+    // Detay / Load
+    // ─────────────────────────────────────────────────────────────
+
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get(url).document
+        val doc = runCatching { app.get(url).document }.getOrNull() ?: return null
         val isMovie = url.contains("/film/")
         return if (!isMovie) loadSeries(doc, url) else loadMovie(doc, url)
     }
 
     private suspend fun loadSeries(doc: Document, url: String) = runCatching {
         val title = doc.selectFirst("div.infoLine h4")?.text()?.trim().orEmpty()
-        val rawPoster = fixUrlNull(doc.selectFirst("picture img")?.attr("src"))
-        val poster = rawPoster?.let { fixImageFormat(it) }
+            .ifEmpty { doc.selectFirst("h1")?.text()?.trim().orEmpty() }
+
+        val rawPoster = fixRelativeUrl(
+            doc.selectFirst("picture img")?.attr("src")
+                ?: doc.selectFirst("meta[property=og:image]")?.attr("content")
+                ?: ""
+        )
+        val poster = fixImageFormat(rawPoster)
+
         val plot = doc.selectFirst("div.col-12 p")?.text()?.trim().orEmpty()
+            .ifEmpty { doc.selectFirst("meta[name=description]")?.attr("content")?.trim().orEmpty() }
+
         val tags = doc.select(".hero > div:nth-child(2) > div:nth-child(3) > p:nth-child(1)")
             .flatMap { it.text().split(",") }
             .map { it.trim() }
@@ -308,7 +442,7 @@ class CizgiveDizi : MainAPI() {
         val episodes = doc.select("div.container a.bolum").mapNotNull { el ->
             val rawName = el.selectFirst(".card-title")?.text()?.trim() ?: return@mapNotNull null
             val epName  = rawName.substringAfter(")").trim().ifEmpty { rawName }
-            val href    = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
+            val href    = fixRelativeUrl(el.attr("href")) ?: return@mapNotNull null
             val num     = Regex("^(\\d+)").find(rawName)?.groupValues?.get(1)?.toIntOrNull() ?: 0
             val seasonN = el.attr("data-sezon").toIntOrNull() ?: 1
 
@@ -328,10 +462,19 @@ class CizgiveDizi : MainAPI() {
 
     private suspend fun loadMovie(doc: Document, url: String) = runCatching {
         val rawTitle = doc.selectFirst("h1.fw-light")?.text()?.trim().orEmpty()
+            .ifEmpty { doc.selectFirst("h1")?.text()?.trim().orEmpty() }
         val title = "$rawTitle (film)"
-        val rawPoster = fixUrlNull(doc.selectFirst("picture img")?.attr("src"))
-        val poster = rawPoster?.let { fixImageFormat(it) }
+
+        val rawPoster = fixRelativeUrl(
+            doc.selectFirst("picture img")?.attr("src")
+                ?: doc.selectFirst("meta[property=og:image]")?.attr("content")
+                ?: ""
+        )
+        val poster = fixImageFormat(rawPoster)
+
         val plot = doc.selectFirst(".lead")?.text()?.trim().orEmpty()
+            .ifEmpty { doc.selectFirst("meta[name=description]")?.attr("content")?.trim().orEmpty() }
+
         val tags = doc.select(".hero > div:nth-child(2) > div:nth-child(3) > p:nth-child(1)")
             .flatMap { it.text().split(",") }
             .map { it.trim() }
@@ -344,32 +487,30 @@ class CizgiveDizi : MainAPI() {
         }
     }.getOrNull()
 
+    // ─────────────────────────────────────────────────────────────
+    // Link yükleme
+    // ─────────────────────────────────────────────────────────────
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val doc = app.get(data).document
+        val doc = runCatching { app.get(data).document }.getOrNull() ?: return false
 
         val playPage = doc.selectFirst("a[href*='/play']")?.attr("href")
             ?: doc.selectFirst("iframe")?.attr("src")
             ?: return false
 
-        val playUrl = fixUrlNull(playPage) ?: return false
+        val playUrl = fixRelativeUrl(playPage) ?: return false
 
         return loadExtractor(playUrl, subtitleCallback, callback)
     }
 
-    private fun fixUrlNull(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        if (url.contains('"') || url.contains('<') || url.contains('>') || url.contains(' ')) return null
-        return when {
-            url.startsWith("http://") || url.startsWith("https://") -> url
-            url.startsWith("/") -> "$mainUrl$url"
-            else -> "$mainUrl/$url"
-        }
-    }
+    // ─────────────────────────────────────────────────────────────
+    // Yardımcılar
+    // ─────────────────────────────────────────────────────────────
 
     private fun normalizeString(input: String) = input
         .replace('ı', 'i').replace('ğ', 'g').replace('ü', 'u')
