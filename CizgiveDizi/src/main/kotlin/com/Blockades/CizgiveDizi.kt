@@ -5,6 +5,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import okhttp3.Request
+import org.json.JSONArray
 import org.jsoup.nodes.Element
 
 class CizgiveDizi : MainAPI() {
@@ -23,40 +25,45 @@ class CizgiveDizi : MainAPI() {
         "film" to "Filmler"
     )
 
-    // Ana sayfa
+    // Ana sayfa - BÜYÜK DOSYA HATASINI ÇÖZEN KISIM
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) "$mainUrl/" else "$mainUrl/?page=$page"
-        val document = app.get(url).document
+        
+        // OkHttp'yi doğrudan kullanarak 5MB sınırını aşıyoruz
+        val okHttpClient = app.baseClient
+        val httpRequest = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Android)")
+            .build()
+        
+        val response = okHttpClient.newCall(httpRequest).execute()
+        val bodyString = response.body?.string() // .text() yerine .body?.string()
+        
+        if (bodyString.isNullOrEmpty()) {
+            return null
+        }
 
+        val document = org.jsoup.Jsoup.parse(bodyString, url)
+        
         val poolDataScript = document.selectFirst("script#poolData")?.data()
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
-            // JSON'dan SearchResponse listesi al
-            val items: List<SearchResponse> = parsePoolData(poolDataScript)
-
-            // request.data bir String'dir ("cizgi", "anime", vb.), bu yüzden String karşılaştırması yapıyoruz.
-            val filteredItems: List<SearchResponse> = items.filter { searchResponse ->
-                // SearchResponse içindeki type kontrolü için özel bir alan yoksa,
-                // JSON'dan gelen type bilgisini ayrı bir yerde tutmamız gerekir.
-                // Bu yüzden aşağıdaki filtreleme, parsePoolData içinde yapılmalı.
-                // Şimdilik tüm listeyi döndürüyoruz.
-                true
+            val items = parsePoolData(poolDataScript)
+            val filteredItems = items.filter { searchResponse ->
+                true // Gerekirse burada filtreleme yapılabilir
             }
-
             if (filteredItems.isNotEmpty()) {
                 homePageList.add(HomePageList(request.name, filteredItems))
             }
         } else {
-            // HTML'den direkt çek (fallback)
-            val items: List<SearchResponse> = document.select("a.item").mapNotNull { element ->
+            val items = document.select("a.item").mapNotNull { element ->
                 element.toSearchResponse()
             }
             if (items.isNotEmpty()) {
                 homePageList.add(HomePageList(request.name, items))
             }
         }
-
         return newHomePageResponse(homePageList, hasNext = true)
     }
 
@@ -64,9 +71,8 @@ class CizgiveDizi : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse>? {
         val url = "$mainUrl/arama?q=$query"
         val document = app.get(url).document
-
-        // mapNotNull kullanarak nullable elemanları filtrele
-        val results: List<SearchResponse> = document.select("a.item").mapNotNull { element ->
+        
+        val results = document.select("a.item").mapNotNull { element ->
             element.toSearchResponse()
         }
 
@@ -79,7 +85,6 @@ class CizgiveDizi : MainAPI() {
                 }
             }
         }
-
         return results
     }
 
@@ -155,14 +160,9 @@ class CizgiveDizi : MainAPI() {
                 )
             }
         }
-
         return true
     }
 
-    /**
-     * HTML Element'ini SearchResponse'a çevirir.
-     * Nullable döndürür, bu yüzden çağırırken mapNotNull kullanılmalıdır.
-     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
@@ -189,13 +189,10 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    /**
-     * poolData JSON'unu parse eder ve SearchResponse listesi döndürür.
-     */
     private fun parsePoolData(jsonString: String): List<SearchResponse> {
         val items = mutableListOf<SearchResponse>()
         try {
-            val jsonArray = org.json.JSONArray(jsonString)
+            val jsonArray = JSONArray(jsonString)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 val dataset = obj.optJSONObject("dataset")
