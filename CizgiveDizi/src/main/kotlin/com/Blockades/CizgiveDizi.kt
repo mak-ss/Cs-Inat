@@ -31,6 +31,8 @@ class CizgiveDizi : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) "$mainUrl/" else "$mainUrl/?page=$page"
 
+        println("CizgiveDizi >>> getMainPage çağrıldı: $url (kategori=${request.data})")
+
         val okHttpClient = app.baseClient
         val httpRequest = Request.Builder()
             .url(url)
@@ -41,6 +43,7 @@ class CizgiveDizi : MainAPI() {
         val bodyString = response.body?.string()
 
         if (bodyString.isNullOrEmpty()) {
+            println("CizgiveDizi >>> getMainPage: body boş!")
             return null
         }
 
@@ -49,10 +52,10 @@ class CizgiveDizi : MainAPI() {
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
-            // --- POSTERLER BURADAN GELİYOR ---
+            println("CizgiveDizi >>> getMainPage: poolData bulundu, uzunluk=${poolDataScript.length}")
             val items = parsePoolData(poolDataScript)
+            println("CizgiveDizi >>> getMainPage: parsePoolData sonucu=${items.size} öğe")
 
-            // Türüne göre filtrele
             val filteredItems = items.filter { pair ->
                 pair.second == request.data
             }.map { pair ->
@@ -62,11 +65,10 @@ class CizgiveDizi : MainAPI() {
             if (filteredItems.isNotEmpty()) {
                 homePageList.add(HomePageList(request.name, filteredItems))
             } else {
-                // Eğer filtre boşsa hepsini göster
                 homePageList.add(HomePageList(request.name, items.map { it.first }))
             }
         } else {
-            // Fallback: HTML'den direkt çek
+            println("CizgiveDizi >>> getMainPage: poolData YOK, HTML fallback")
             val items = document.select("a.item").mapNotNull { element ->
                 element.toSearchResponse()
             }
@@ -81,11 +83,15 @@ class CizgiveDizi : MainAPI() {
     // Arama
     override suspend fun search(query: String): List<SearchResponse>? {
         val url = "$mainUrl/arama?q=$query"
+        println("CizgiveDizi >>> search çağrıldı: $url")
+
         val document = app.get(url).document
 
         val results = document.select("a.item").mapNotNull { element ->
             element.toSearchResponse()
         }
+
+        println("CizgiveDizi >>> search sonucu: ${results.size} öğe")
 
         if (results.isEmpty()) {
             val poolDataScript = document.selectFirst("script#poolData")?.data()
@@ -101,13 +107,16 @@ class CizgiveDizi : MainAPI() {
 
     // Detay sayfası
     override suspend fun load(url: String): LoadResponse? {
+        println("CizgiveDizi >>> load çağrıldı: $url")
+
         val document = app.get(url).document
 
         val title = document.selectFirst("h1")?.text()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Bilinmiyor"
 
-        // Poster: önce og:image, sonra sayfadaki poster-img
+        println("CizgiveDizi >>> load: title=$title")
+
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
             ?: document.selectFirst("img.poster-img")?.attr("src")
         val finalPoster = fixPoster(poster)
@@ -117,12 +126,19 @@ class CizgiveDizi : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
 
-        document.select("div.bolum-list a, div.episode-list a, a.bolum").forEach { element ->
+        val episodeElements = document.select("div.bolum-list a, div.episode-list a, a.bolum")
+        println("CizgiveDizi >>> load: episode element sayısı=${episodeElements.size}")
+
+        episodeElements.forEach { element ->
             val episodeName = element.text()
             val episodeUrl = element.attr("href")
             if (episodeUrl.isNotEmpty()) {
+                // FIX: episodeUrl zaten tam URL ise $mainUrl ekleme
+                val fullEpisodeUrl = if (episodeUrl.startsWith("http")) episodeUrl
+                                     else "$mainUrl$episodeUrl"
+                println("CizgiveDizi >>> load: episode='$episodeName' -> $fullEpisodeUrl")
                 episodes.add(
-                    newEpisode("$mainUrl$episodeUrl") {
+                    newEpisode(fullEpisodeUrl) {
                         this.name = episodeName
                     }
                 )
@@ -130,6 +146,7 @@ class CizgiveDizi : MainAPI() {
         }
 
         if (episodes.isEmpty()) {
+            println("CizgiveDizi >>> load: episode bulunamadı, tek episode ekleniyor")
             episodes.add(
                 newEpisode(url) {
                     this.name = "İzle"
@@ -151,39 +168,54 @@ class CizgiveDizi : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        println("CizgiveDizi >>> loadLinks BAŞLADI: $data")
+
         val document = app.get(data).document
         var found = false
 
-        document.select("iframe, video source, a.video-link").forEach { element ->
+        val elements = document.select("iframe, video source, a.video-link")
+        println("CizgiveDizi >>> Bulunan element sayısı: ${elements.size}")
+
+        if (elements.isEmpty()) {
+            println("CizgiveDizi >>> UYARI: bölüm sayfasında iframe/source/video-link YOK!")
+            println("CizgiveDizi >>> Bölüm HTML (ilk 500 karakter):")
+            println(document.html().take(500))
+        }
+
+        elements.forEach { element ->
             val videoUrl = when {
                 element.tagName() == "iframe" -> element.attr("src")
                 element.tagName() == "source" -> element.attr("src")
                 else -> element.attr("href")
             }
 
+            println("CizgiveDizi >>> <${element.tagName()}> src/href = '$videoUrl'")
+
             if (videoUrl.isNotEmpty()) {
                 val fullUrl = if (videoUrl.startsWith("http")) videoUrl
                               else "$mainUrl$videoUrl"
 
-                // CloudStream'in extractor kütüphanesi devreye girer.
-                // Sibnet, Ok.ru, Vidmoly, Streamtape, Filemoon, Doodstream,
-                // Voe, Mixdrop, Streamlare vb. yüzlerce siteyi otomatik çözer.
-                loadExtractor(fullUrl, mainUrl, subtitleCallback, callback)
-                found = true
+                println("CizgiveDizi >>> loadExtractor çağrılıyor: $fullUrl")
+                try {
+                    loadExtractor(fullUrl, mainUrl, subtitleCallback, callback)
+                    println("CizgiveDizi >>> loadExtractor TAMAM: $fullUrl")
+                    found = true
+                } catch (e: Exception) {
+                    println("CizgiveDizi >>> loadExtractor HATA: ${e.message}")
+                }
             }
         }
+
+        println("CizgiveDizi >>> loadLinks BİTTİ, found=$found")
         return found
     }
 
     /**
      * AVIF posterleri wsrv.nl proxy'sinden geçirip JPEG'e çevirir.
-     * Android'in native decoder'ı AVIF'i açamadığı için gerekli.
      */
     private fun fixPoster(url: String?): String? {
         if (url.isNullOrEmpty()) return null
-        // Zaten proxy'lenmişse tekrar sarmalamayalım
         if (url.contains("wsrv.nl")) return url
-        // Sadece .avif için proxy kullan
         return if (url.contains(".avif", ignoreCase = true)) {
             "https://wsrv.nl/?url=${URLEncoder.encode(url, "UTF-8")}&output=jpg&w=500"
         } else {
@@ -193,19 +225,15 @@ class CizgiveDizi : MainAPI() {
 
     /**
      * HTML Element'ini SearchResponse'a çevirir.
-     * HTML'de data-poster olmadığı için img.poster-img'den poster çekiyoruz.
      */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
 
-        // Başlık: önce data-name, sonra p.title
         val title = this.attr("data-name").ifEmpty {
             this.selectFirst("p.title")?.text() ?: return null
         }
 
-        // --- POSTER DÜZELTMESİ ---
-        // Önce data-poster (JSON'dan gelirse), sonra img.poster-img src
         val poster = this.attr("data-poster").ifEmpty {
             this.selectFirst("img.poster-img")?.attr("src")
                 ?: this.selectFirst("img")?.attr("src")
@@ -228,7 +256,6 @@ class CizgiveDizi : MainAPI() {
 
     /**
      * poolData JSON'unu parse eder.
-     * Dönüş: List<Pair<SearchResponse, String>> - SearchResponse ve türü (cizgi, anime, dizi, film)
      */
     private fun parsePoolData(jsonString: String): List<Pair<SearchResponse, String>> {
         val items = mutableListOf<Pair<SearchResponse, String>>()
@@ -240,7 +267,6 @@ class CizgiveDizi : MainAPI() {
                 if (dataset != null) {
                     val name = dataset.optString("name", "")
                     val href = obj.optString("href", "")
-                    // --- POSTER BURADAN GELİYOR ---
                     val poster = obj.optString("poster", "")
                     val type = dataset.optString("type", "cizgi")
 
@@ -254,7 +280,6 @@ class CizgiveDizi : MainAPI() {
                         else -> TvType.Movie
                     }
 
-                    // Poster URL'sini tam URL yap (eğer başında http yoksa)
                     val fullPosterUrl = if (poster.startsWith("http")) {
                         poster
                     } else if (poster.isNotEmpty()) {
@@ -276,6 +301,7 @@ class CizgiveDizi : MainAPI() {
                 }
             }
         } catch (e: Exception) {
+            println("CizgiveDizi >>> parsePoolData HATA: ${e.message}")
             e.printStackTrace()
         }
         return items
