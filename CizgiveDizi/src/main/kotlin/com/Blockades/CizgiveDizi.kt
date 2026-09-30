@@ -106,60 +106,69 @@ class CizgiveDizi : MainAPI() {
     }
 
     // Detay sayfası
-    override suspend fun load(url: String): LoadResponse? {
-        println("CizgiveDizi >>> load çağrıldı: $url")
+   override suspend fun load(url: String): LoadResponse? {
+    println("CizgiveDizi >>> load çağrıldı: $url")
 
-        val document = app.get(url).document
+    val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text()
-            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
-            ?: "Bilinmiyor"
+    val title = document.selectFirst("h1")?.text()
+        ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+        ?: "Bilinmiyor"
 
-        println("CizgiveDizi >>> load: title=$title")
+    val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        ?: document.selectFirst("img.poster-img")?.attr("src")
+    val finalPoster = fixPoster(poster)
 
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: document.selectFirst("img.poster-img")?.attr("src")
-        val finalPoster = fixPoster(poster)
+    val description = document.selectFirst("meta[name=description]")?.attr("content")
+    val genres = document.select("div.genres a").map { it.text() }
 
-        val description = document.selectFirst("meta[name=description]")?.attr("content")
-        val genres = document.select("div.genres a").map { it.text() }
+    // Tür tespiti — URL'den veya sayfadan
+    val tvType: TvType = when {
+        url.contains("/film/") -> TvType.Movie
+        url.contains("/dizi/") -> TvType.TvSeries
+        url.contains("/anime/") -> TvType.Anime
+        url.contains("/cizgi/") -> TvType.Cartoon
+        else -> TvType.Movie
+    }
 
-        val episodes = mutableListOf<Episode>()
+    val episodes = mutableListOf<Episode>()
 
-        val episodeElements = document.select("div.bolum-list a, div.episode-list a, a.bolum")
-        println("CizgiveDizi >>> load: episode element sayısı=${episodeElements.size}")
+    val episodeElements = document.select("div.bolum-list a, div.episode-list a, a.bolum")
+    println("CizgiveDizi >>> load: episode element sayısı=${episodeElements.size}")
 
-        episodeElements.forEach { element ->
-            val episodeName = element.text()
-            val episodeUrl = element.attr("href")
-            if (episodeUrl.isNotEmpty()) {
-                // FIX: episodeUrl zaten tam URL ise $mainUrl ekleme
-                val fullEpisodeUrl = if (episodeUrl.startsWith("http")) episodeUrl
-                                     else "$mainUrl$episodeUrl"
-                println("CizgiveDizi >>> load: episode='$episodeName' -> $fullEpisodeUrl")
-                episodes.add(
-                    newEpisode(fullEpisodeUrl) {
-                        this.name = episodeName
-                    }
-                )
-            }
-        }
-
-        if (episodes.isEmpty()) {
-            println("CizgiveDizi >>> load: episode bulunamadı, tek episode ekleniyor")
+    episodeElements.forEach { element ->
+        val episodeName = element.text()
+        val episodeUrl = element.attr("href")
+        if (episodeUrl.isNotEmpty()) {
+            val fullEpisodeUrl = if (episodeUrl.startsWith("http")) episodeUrl
+                                 else "$mainUrl$episodeUrl"
+            println("CizgiveDizi >>> load: episode='$episodeName' -> $fullEpisodeUrl")
             episodes.add(
-                newEpisode(url) {
-                    this.name = "İzle"
+                newEpisode(fullEpisodeUrl) {
+                    this.name = episodeName
                 }
             )
         }
+    }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+    // Eğer episode bulunduysa DİZİ olarak dön, movie olarak değil!
+    if (episodes.isNotEmpty()) {
+        println("CizgiveDizi >>> load: ${episodes.size} episode ile DİZİ olarak dönülüyor")
+        return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = finalPoster
             this.plot = description
             this.tags = genres
         }
     }
+
+    // Episode yoksa film olarak dön
+    println("CizgiveDizi >>> load: episode yok, FİLM olarak dönülüyor")
+    return newMovieLoadResponse(title, url, tvType, url) {
+        this.posterUrl = finalPoster
+        this.plot = description
+        this.tags = genres
+    }
+}
 
     // Link çıkarma
     override suspend fun loadLinks(
