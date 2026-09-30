@@ -4,6 +4,7 @@ package com.Blockades
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.Request
 import org.json.JSONArray
@@ -151,6 +152,7 @@ class CizgiveDizi : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
+        var found = false
 
         document.select("iframe, video source, a.video-link").forEach { element ->
             val videoUrl = when {
@@ -160,19 +162,17 @@ class CizgiveDizi : MainAPI() {
             }
 
             if (videoUrl.isNotEmpty()) {
-                callback(
-                    newExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = videoUrl,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = mainUrl
-                    }
-                )
+                val fullUrl = if (videoUrl.startsWith("http")) videoUrl
+                              else "$mainUrl$videoUrl"
+
+                // CloudStream'in extractor kütüphanesi devreye girer.
+                // Sibnet, Ok.ru, Vidmoly, Streamtape, Filemoon, Doodstream,
+                // Voe, Mixdrop, Streamlare vb. yüzlerce siteyi otomatik çözer.
+                loadExtractor(fullUrl, mainUrl, subtitleCallback, callback)
+                found = true
             }
         }
-        return true
+        return found
     }
 
     /**
