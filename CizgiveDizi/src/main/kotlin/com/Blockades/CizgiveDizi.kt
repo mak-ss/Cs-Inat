@@ -3,7 +3,8 @@ package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.SubtitleFile
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
 
 class CizgiveDizi : MainAPI() {
@@ -34,7 +35,7 @@ class CizgiveDizi : MainAPI() {
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
-            // JSON'u parse et (basit bir yaklaşımla)
+            // JSON'u parse et
             val items = parsePoolData(poolDataScript)
             
             // Türe göre filtrele
@@ -67,7 +68,7 @@ class CizgiveDizi : MainAPI() {
 
     // Arama fonksiyonu
     override suspend fun search(query: String): List<SearchResponse>? {
-        val url = "$mainUrl/arama?q=$query" // HTML'de arama formu var, URL'yi kontrol edin
+        val url = "$mainUrl/arama?q=$query"
         val document = app.get(url).document
         
         // Arama sonuçlarını HTML'den al
@@ -105,7 +106,7 @@ class CizgiveDizi : MainAPI() {
         // Bölümleri veya film linklerini al
         val episodes = mutableListOf<Episode>()
 
-        // HTML'de bölüm listesi yapısını kontrol edin (genelde "bolum" veya "episode" class'ı olur)
+        // HTML'de bölüm listesi yapısını kontrol edin
         document.select("div.bolum-list a, div.episode-list a, a.bolum").forEach { element ->
             val episodeName = element.text()
             val episodeUrl = element.attr("href")
@@ -134,7 +135,7 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    // Video linklerini çıkarma
+    // Video linklerini çıkarma - DÜZELTİLDİ
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -143,7 +144,7 @@ class CizgiveDizi : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // HTML'deki video kaynaklarını bul (iframe, video tag, vs.)
+        // HTML'deki video kaynaklarını bul
         document.select("iframe, video source, a.video-link").forEach { element ->
             val videoUrl = when {
                 element.tagName() == "iframe" -> element.attr("src")
@@ -152,11 +153,13 @@ class CizgiveDizi : MainAPI() {
             }
 
             if (videoUrl.isNotEmpty()) {
+                // --- DÜZELTME: newExtractorLink ve ExtractorLinkType kullanımı ---
                 callback(
                     newExtractorLink(
                         source = this.name,
                         name = this.name,
-                        url = videoUrl
+                        url = videoUrl,
+                        type = ExtractorLinkType.VIDEO
                     ) {
                         this.referer = mainUrl
                         this.quality = ExtractorLink.QUALITY.HD
@@ -195,11 +198,10 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    // poolData JSON'unu parse et (basit yaklaşım)
+    // poolData JSON'unu parse et
     private fun parsePoolData(jsonString: String): List<PoolItem> {
         val items = mutableListOf<PoolItem>()
         try {
-            // JSON array olarak parse et
             val jsonArray = org.json.JSONArray(jsonString)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
@@ -220,24 +222,25 @@ class CizgiveDizi : MainAPI() {
         }
         return items
     }
+}
 
-    data class PoolItem(
-        val name: String,
-        val href: String,
-        val poster: String,
-        val type: String
-    ) {
-        fun toSearchResponse(): SearchResponse {
-            val tvType = when (type) {
-                "film" -> TvType.Movie
-                "dizi" -> TvType.TvSeries
-                "anime" -> TvType.Anime
-                "cizgi" -> TvType.Cartoon
-                else -> TvType.Movie
-            }
-            return newMovieSearchResponse(name, "https://cizgivedizi.com$href", tvType) {
-                this.posterUrl = poster
-            }
+// --- DÜZELTME: PoolItem sınıfı artık CizgiveDizi sınıfının içinde değil, dışında (static) ---
+data class PoolItem(
+    val name: String,
+    val href: String,
+    val poster: String,
+    val type: String
+) {
+    fun toSearchResponse(): SearchResponse {
+        val tvType = when (type) {
+            "film" -> TvType.Movie
+            "dizi" -> TvType.TvSeries
+            "anime" -> TvType.Anime
+            "cizgi" -> TvType.Cartoon
+            else -> TvType.Movie
+        }
+        return newMovieSearchResponse(name, "https://cizgivedizi.com$href", tvType) {
+            this.posterUrl = poster
         }
     }
 }
