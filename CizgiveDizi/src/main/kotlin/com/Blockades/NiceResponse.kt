@@ -12,10 +12,6 @@ class NiceResponse(private val response: Response) {
     val code: Int
         get() = response.code
 
-    /**
-     * Yanıt gövdesini güvenli bir şekilde String olarak döndürür.
-     * 5MB üzeri dosyalar için source().readUtf8() kullanılır.
-     */
     fun getBodyAsString(): String? {
         return if (isSuccessful) {
             val body = response.body
