@@ -1,68 +1,44 @@
 // CizgiveDizi.kt
 package com.Blockades
 
-import com.Blockades.NiceResponse
-import com.Blockades.NetworkModule // Ağ modülünüz
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.Request
-import org.json.JSONObject
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.SubtitleFile
 
-class CizgiveDizi {
+class CizgiveDizi : MainAPI() {
 
-    /**
-     * Dizi verilerini API'den çeker.
-     * Loglardaki "CizgiveDizi.kt 33" hatasını çözer.
-     */
-    suspend fun fetchDiziData(url: String): String? = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "Mozilla/5.0 (Android)")
-            .build()
+    override var mainUrl = "https://cizgivedizi.com" // Kendi sitenizin URL'sini yazın
+    override var name = "CizgiveDizi"
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override var lang = "tr"
+    override val hasMainPage = true
 
-        try {
-            // NetworkModule'deki OkHttpClient'ı kullan
-            val response = NetworkModule.okHttpClient.newCall(request).execute()
-            
-            // NiceResponse sınıfına sararak güvenli okuma yap
-            val niceResponse = NiceResponse(response)
-            
-            if (niceResponse.isSuccessful) {
-                // --- HATA ÇÖZÜMÜ: getBodyAsString() artık büyük dosyaları okuyabilir ---
-                val body = niceResponse.getBodyAsString()
-                niceResponse.close() // Kaynağı kapat
-                body
-            } else {
-                val errorMsg = "Hata: ${niceResponse.code}"
-                niceResponse.close()
-                errorMsg
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            "Bağlantı Hatası: ${e.message}"
-        }
+    // Ana sayfa içeriğini yükle
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        // Buraya ana sayfa mantığınızı yazın
+        return null
     }
 
-    /**
-     * Gelen JSON verisini ayrıştırır.
-     * Loglardaki "CizgiveDizi.kt 14" civarı.
-     */
-    suspend fun parseDiziJson(jsonString: String): List<String> {
-        val diziListesi = mutableListOf<String>()
-        try {
-            val jsonObject = JSONObject(jsonString)
-            val diziler = jsonObject.optJSONArray("diziler") // API'nize göre değiştirin
-            
-            if (diziler != null) {
-                for (i in 0 until diziler.length()) {
-                    val dizi = diziler.getJSONObject(i)
-                    val isim = dizi.optString("isim")
-                    diziListesi.add(isim)
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return diziListesi
+    // Arama fonksiyonu
+    override suspend fun search(query: String): List<SearchResponse>? {
+        // Buraya arama mantığınızı yazın
+        return null
+    }
+
+    // Detay yükleme fonksiyonu
+    override suspend fun load(url: String): LoadResponse? {
+        // Buraya detay yükleme mantığınızı yazın
+        return null
+    }
+
+    // Video linklerini çıkarma fonksiyonu
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        // Buraya link çıkarma mantığınızı yazın
+        return true
     }
 }
