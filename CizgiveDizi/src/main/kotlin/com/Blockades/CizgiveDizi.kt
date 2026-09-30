@@ -25,38 +25,46 @@ class CizgiveDizi : MainAPI() {
         "film" to "Filmler"
     )
 
-    // Ana sayfa - BÜYÜK DOSYA HATASINI ÇÖZEN KISIM
+    // Ana sayfa
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) "$mainUrl/" else "$mainUrl/?page=$page"
-        
-        // OkHttp'yi doğrudan kullanarak 5MB sınırını aşıyoruz
+
         val okHttpClient = app.baseClient
         val httpRequest = Request.Builder()
             .url(url)
             .header("User-Agent", "Mozilla/5.0 (Android)")
             .build()
-        
+
         val response = okHttpClient.newCall(httpRequest).execute()
-        val bodyString = response.body?.string() // .text() yerine .body?.string()
-        
+        val bodyString = response.body?.string()
+
         if (bodyString.isNullOrEmpty()) {
             return null
         }
 
         val document = org.jsoup.Jsoup.parse(bodyString, url)
-        
         val poolDataScript = document.selectFirst("script#poolData")?.data()
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
+            // --- POSTERLER BURADAN GELİYOR ---
             val items = parsePoolData(poolDataScript)
-            val filteredItems = items.filter { searchResponse ->
-                true // Gerekirse burada filtreleme yapılabilir
+
+            // Türüne göre filtrele
+            val filteredItems = items.filter { pair ->
+                pair.second == request.data
+            }.map { pair ->
+                pair.first
             }
+
             if (filteredItems.isNotEmpty()) {
                 homePageList.add(HomePageList(request.name, filteredItems))
+            } else {
+                // Eğer filtre boşsa hepsini göster
+                homePageList.add(HomePageList(request.name, items.map { it.first }))
             }
         } else {
+            // Fallback: HTML'den direkt çek
             val items = document.select("a.item").mapNotNull { element ->
                 element.toSearchResponse()
             }
@@ -64,6 +72,7 @@ class CizgiveDizi : MainAPI() {
                 homePageList.add(HomePageList(request.name, items))
             }
         }
+
         return newHomePageResponse(homePageList, hasNext = true)
     }
 
@@ -71,7 +80,7 @@ class CizgiveDizi : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse>? {
         val url = "$mainUrl/arama?q=$query"
         val document = app.get(url).document
-        
+
         val results = document.select("a.item").mapNotNull { element ->
             element.toSearchResponse()
         }
@@ -80,9 +89,9 @@ class CizgiveDizi : MainAPI() {
             val poolDataScript = document.selectFirst("script#poolData")?.data()
             if (poolDataScript != null) {
                 val items = parsePoolData(poolDataScript)
-                return items.filter { searchResponse ->
-                    searchResponse.name.contains(query, ignoreCase = true)
-                }
+                return items.filter { pair ->
+                    pair.first.name.contains(query, ignoreCase = true)
+                }.map { it.first }
             }
         }
         return results
@@ -96,6 +105,7 @@ class CizgiveDizi : MainAPI() {
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Bilinmiyor"
 
+        // Poster: önce og:image, sonra sayfadaki poster-img
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
             ?: document.selectFirst("img.poster-img")?.attr("src")
 
@@ -163,16 +173,24 @@ class CizgiveDizi : MainAPI() {
         return true
     }
 
+    /**
+     * HTML Element'ini SearchResponse'a çevirir.
+     * HTML'de data-poster olmadığı için img.poster-img'den poster çekiyoruz.
+     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
 
+        // Başlık: önce data-name, sonra p.title
         val title = this.attr("data-name").ifEmpty {
             this.selectFirst("p.title")?.text() ?: return null
         }
 
+        // --- POSTER DÜZELTMESİ ---
+        // Önce data-poster (JSON'dan gelirse), sonra img.poster-img src
         val poster = this.attr("data-poster").ifEmpty {
             this.selectFirst("img.poster-img")?.attr("src")
+                ?: this.selectFirst("img")?.attr("src")
         }
 
         val type = this.attr("data-type")
@@ -189,8 +207,12 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    private fun parsePoolData(jsonString: String): List<SearchResponse> {
-        val items = mutableListOf<SearchResponse>()
+    /**
+     * poolData JSON'unu parse eder.
+     * Dönüş: List<Pair<SearchResponse, String>> - SearchResponse ve türü (cizgi, anime, dizi, film)
+     */
+    private fun parsePoolData(jsonString: String): List<Pair<SearchResponse, String>> {
+        val items = mutableListOf<Pair<SearchResponse, String>>()
         try {
             val jsonArray = JSONArray(jsonString)
             for (i in 0 until jsonArray.length()) {
@@ -199,8 +221,11 @@ class CizgiveDizi : MainAPI() {
                 if (dataset != null) {
                     val name = dataset.optString("name", "")
                     val href = obj.optString("href", "")
+                    // --- POSTER BURADAN GELİYOR ---
                     val poster = obj.optString("poster", "")
                     val type = dataset.optString("type", "cizgi")
+
+                    if (name.isEmpty() || href.isEmpty()) continue
 
                     val tvType: TvType = when (type) {
                         "film" -> TvType.Movie
@@ -210,11 +235,24 @@ class CizgiveDizi : MainAPI() {
                         else -> TvType.Movie
                     }
 
-                    items.add(
-                        newMovieSearchResponse(name, "$mainUrl$href", tvType) {
-                            this.posterUrl = poster
-                        }
-                    )
+                    // Poster URL'sini tam URL yap (eğer başında http yoksa)
+                    val fullPosterUrl = if (poster.startsWith("http")) {
+                        poster
+                    } else if (poster.isNotEmpty()) {
+                        "$mainUrl$poster"
+                    } else {
+                        null
+                    }
+
+                    val searchResponse = newMovieSearchResponse(
+                        name,
+                        if (href.startsWith("http")) href else "$mainUrl$href",
+                        tvType
+                    ) {
+                        this.posterUrl = fullPosterUrl
+                    }
+
+                    items.add(Pair(searchResponse, type))
                 }
             }
         } catch (e: Exception) {
