@@ -138,8 +138,6 @@ class CizgiveDizi : MainAPI() {
             }
 
             if (videoUrl.isNotEmpty()) {
-                // DÜZELTME: newExtractorLink içinde suspend lambda kullanımı.
-                // ExtractorLink.QUALITY yerine, quality değeri doğrudan set edilir.
                 callback(
                     newExtractorLink(
                         source = this.name,
@@ -148,10 +146,6 @@ class CizgiveDizi : MainAPI() {
                         type = ExtractorLinkType.VIDEO
                     ) {
                         this.referer = mainUrl
-                        // Kalite belirtmek için doğrudan string veya enum kullanın.
-                        // CloudStream'de kalite genellikle integer bir değerdir (örn: 1080, 720).
-                        // Eğer kalite bilgisi yoksa "Unknown" olarak kalmasına izin verin.
-                        // this.quality = 1080 // Örnek: Kaliteyi 1080p olarak ayarla
                     }
                 )
             }
@@ -160,6 +154,9 @@ class CizgiveDizi : MainAPI() {
         return true
     }
 
+    /**
+     * HTML Element'ini SearchResponse'a çevirir.
+     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
@@ -186,21 +183,34 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    private fun parsePoolData(jsonString: String): List<PoolItem> {
-        val items = mutableListOf<PoolItem>()
+    /**
+     * poolData JSON'unu parse eder ve doğrudan SearchResponse listesi döndürür.
+     */
+    private fun parsePoolData(jsonString: String): List<SearchResponse> {
+        val items = mutableListOf<SearchResponse>()
         try {
             val jsonArray = org.json.JSONArray(jsonString)
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
                 val dataset = obj.optJSONObject("dataset")
                 if (dataset != null) {
+                    val name = dataset.optString("name", "")
+                    val href = obj.optString("href", "")
+                    val poster = obj.optString("poster", "")
+                    val type = dataset.optString("type", "cizgi")
+
+                    val tvType = when (type) {
+                        "film" -> TvType.Movie
+                        "dizi" -> TvType.TvSeries
+                        "anime" -> TvType.Anime
+                        "cizgi" -> TvType.Cartoon
+                        else -> TvType.Movie
+                    }
+
                     items.add(
-                        PoolItem(
-                            name = dataset.optString("name", ""),
-                            href = obj.optString("href", ""),
-                            poster = obj.optString("poster", ""),
-                            type = dataset.optString("type", "cizgi")
-                        )
+                        newMovieSearchResponse(name, "$mainUrl$href", tvType) {
+                            this.posterUrl = poster
+                        }
                     )
                 }
             }
@@ -208,27 +218,5 @@ class CizgiveDizi : MainAPI() {
             e.printStackTrace()
         }
         return items
-    }
-}
-
-// DÜZELTME: PoolItem sınıfı inner class olmadığı için ve toSearchResponse fonksiyonu
-// dışarıdan erişilebilir olması için CizgiveDizi'nin dışında tanımlandı.
-data class PoolItem(
-    val name: String,
-    val href: String,
-    val poster: String,
-    val type: String
-) {
-    fun toSearchResponse(): SearchResponse {
-        val tvType = when (type) {
-            "film" -> TvType.Movie
-            "dizi" -> TvType.TvSeries
-            "anime" -> TvType.Anime
-            "cizgi" -> TvType.Cartoon
-            else -> TvType.Movie
-        }
-        return newMovieSearchResponse(name, "https://cizgivedizi.com$href", tvType) {
-            this.posterUrl = poster
-        }
     }
 }
