@@ -16,7 +16,6 @@ class CizgiveDizi : MainAPI() {
     override val hasMainPage = true
     override val hasQuickSearch = true
 
-    // Ana sayfa bölümleri
     override val mainPage = mainPageOf(
         "cizgi" to "Çizgi Diziler",
         "anime" to "Animeler",
@@ -24,21 +23,17 @@ class CizgiveDizi : MainAPI() {
         "film" to "Filmler"
     )
 
-    // Ana sayfa içeriğini yükle
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) "$mainUrl/" else "$mainUrl/?page=$page"
         val document = app.get(url).document
 
-        // HTML'deki poolData JSON'unu al
         val poolDataScript = document.selectFirst("script#poolData")?.data()
-        
+
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
-            // JSON'u parse et
             val items = parsePoolData(poolDataScript)
-            
-            // Türe göre filtrele
+
             val filteredItems = when (request.data) {
                 "cizgi" -> items.filter { it.type == "cizgi" }
                 "anime" -> items.filter { it.type == "anime" }
@@ -56,7 +51,6 @@ class CizgiveDizi : MainAPI() {
                 )
             }
         } else {
-            // Fallback: HTML'den direkt çek
             val items = document.select("a.item").mapNotNull { it.toSearchResponse() }
             if (items.isNotEmpty()) {
                 homePageList.add(HomePageList(request.name, items))
@@ -66,33 +60,29 @@ class CizgiveDizi : MainAPI() {
         return newHomePageResponse(homePageList, hasNext = true)
     }
 
-    // Arama fonksiyonu
     override suspend fun search(query: String): List<SearchResponse>? {
         val url = "$mainUrl/arama?q=$query"
         val document = app.get(url).document
-        
-        // Arama sonuçlarını HTML'den al
+
         val results = document.select("a.item").mapNotNull { it.toSearchResponse() }
-        
-        // Eğer HTML'de sonuç yoksa, poolData'dan ara
+
         if (results.isEmpty()) {
             val poolDataScript = document.selectFirst("script#poolData")?.data()
             if (poolDataScript != null) {
                 val items = parsePoolData(poolDataScript)
-                return items.filter { 
-                    it.name.contains(query, ignoreCase = true) 
+                return items.filter {
+                    it.name.contains(query, ignoreCase = true)
                 }.map { it.toSearchResponse() }
             }
         }
-        
+
         return results
     }
 
-    // Detay yükleme fonksiyonu
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text() 
+        val title = document.selectFirst("h1")?.text()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")
             ?: "Bilinmiyor"
 
@@ -103,10 +93,8 @@ class CizgiveDizi : MainAPI() {
 
         val genres = document.select("div.genres a").map { it.text() }
 
-        // Bölümleri veya film linklerini al
         val episodes = mutableListOf<Episode>()
 
-        // HTML'de bölüm listesi yapısını kontrol edin
         document.select("div.bolum-list a, div.episode-list a, a.bolum").forEach { element ->
             val episodeName = element.text()
             val episodeUrl = element.attr("href")
@@ -119,7 +107,6 @@ class CizgiveDizi : MainAPI() {
             }
         }
 
-        // Eğer bölüm yoksa, tek film olarak ekle
         if (episodes.isEmpty()) {
             episodes.add(
                 newEpisode(url) {
@@ -135,7 +122,6 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    // Video linklerini çıkarma - DÜZELTİLDİ
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -144,7 +130,6 @@ class CizgiveDizi : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // HTML'deki video kaynaklarını bul
         document.select("iframe, video source, a.video-link").forEach { element ->
             val videoUrl = when {
                 element.tagName() == "iframe" -> element.attr("src")
@@ -153,7 +138,8 @@ class CizgiveDizi : MainAPI() {
             }
 
             if (videoUrl.isNotEmpty()) {
-                // --- DÜZELTME: newExtractorLink ve ExtractorLinkType kullanımı ---
+                // DÜZELTME: newExtractorLink içinde suspend lambda kullanımı.
+                // ExtractorLink.QUALITY yerine, quality değeri doğrudan set edilir.
                 callback(
                     newExtractorLink(
                         source = this.name,
@@ -162,7 +148,10 @@ class CizgiveDizi : MainAPI() {
                         type = ExtractorLinkType.VIDEO
                     ) {
                         this.referer = mainUrl
-                        this.quality = ExtractorLink.QUALITY.HD
+                        // Kalite belirtmek için doğrudan string veya enum kullanın.
+                        // CloudStream'de kalite genellikle integer bir değerdir (örn: 1080, 720).
+                        // Eğer kalite bilgisi yoksa "Unknown" olarak kalmasına izin verin.
+                        // this.quality = 1080 // Örnek: Kaliteyi 1080p olarak ayarla
                     }
                 )
             }
@@ -171,15 +160,14 @@ class CizgiveDizi : MainAPI() {
         return true
     }
 
-    // HTML Element'ini SearchResponse'a çevir
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
 
-        val title = this.attr("data-name").ifEmpty { 
-            this.selectFirst("p.title")?.text() ?: return null 
+        val title = this.attr("data-name").ifEmpty {
+            this.selectFirst("p.title")?.text() ?: return null
         }
-        
+
         val poster = this.attr("data-poster").ifEmpty {
             this.selectFirst("img.poster-img")?.attr("src")
         }
@@ -198,7 +186,6 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    // poolData JSON'unu parse et
     private fun parsePoolData(jsonString: String): List<PoolItem> {
         val items = mutableListOf<PoolItem>()
         try {
@@ -224,7 +211,8 @@ class CizgiveDizi : MainAPI() {
     }
 }
 
-// --- DÜZELTME: PoolItem sınıfı artık CizgiveDizi sınıfının içinde değil, dışında (static) ---
+// DÜZELTME: PoolItem sınıfı inner class olmadığı için ve toSearchResponse fonksiyonu
+// dışarıdan erişilebilir olması için CizgiveDizi'nin dışında tanımlandı.
 data class PoolItem(
     val name: String,
     val href: String,
