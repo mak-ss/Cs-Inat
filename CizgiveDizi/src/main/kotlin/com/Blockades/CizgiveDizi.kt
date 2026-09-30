@@ -3,9 +3,7 @@ package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.Request
 import org.json.JSONArray
 import org.jsoup.nodes.Element
@@ -27,11 +25,8 @@ class CizgiveDizi : MainAPI() {
         "film" to "Filmler"
     )
 
-    // Ana sayfa
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) "$mainUrl/" else "$mainUrl/?page=$page"
-
-        println("CizgiveDizi >>> getMainPage çağrıldı: $url (kategori=${request.data})")
 
         val okHttpClient = app.baseClient
         val httpRequest = Request.Builder()
@@ -42,20 +37,14 @@ class CizgiveDizi : MainAPI() {
         val response = okHttpClient.newCall(httpRequest).execute()
         val bodyString = response.body?.string()
 
-        if (bodyString.isNullOrEmpty()) {
-            println("CizgiveDizi >>> getMainPage: body boş!")
-            return null
-        }
+        if (bodyString.isNullOrEmpty()) return null
 
         val document = org.jsoup.Jsoup.parse(bodyString, url)
         val poolDataScript = document.selectFirst("script#poolData")?.data()
         val homePageList = mutableListOf<HomePageList>()
 
         if (poolDataScript != null) {
-            println("CizgiveDizi >>> getMainPage: poolData bulundu, uzunluk=${poolDataScript.length}")
             val items = parsePoolData(poolDataScript)
-            println("CizgiveDizi >>> getMainPage: parsePoolData sonucu=${items.size} öğe")
-
             val filteredItems = items.filter { pair ->
                 pair.second == request.data
             }.map { pair ->
@@ -68,7 +57,6 @@ class CizgiveDizi : MainAPI() {
                 homePageList.add(HomePageList(request.name, items.map { it.first }))
             }
         } else {
-            println("CizgiveDizi >>> getMainPage: poolData YOK, HTML fallback")
             val items = document.select("a.item").mapNotNull { element ->
                 element.toSearchResponse()
             }
@@ -80,18 +68,13 @@ class CizgiveDizi : MainAPI() {
         return newHomePageResponse(homePageList, hasNext = true)
     }
 
-    // Arama
     override suspend fun search(query: String): List<SearchResponse>? {
         val url = "$mainUrl/arama?q=$query"
-        println("CizgiveDizi >>> search çağrıldı: $url")
-
         val document = app.get(url).document
 
         val results = document.select("a.item").mapNotNull { element ->
             element.toSearchResponse()
         }
-
-        println("CizgiveDizi >>> search sonucu: ${results.size} öğe")
 
         if (results.isEmpty()) {
             val poolDataScript = document.selectFirst("script#poolData")?.data()
@@ -105,93 +88,70 @@ class CizgiveDizi : MainAPI() {
         return results
     }
 
-    // Detay sayfası
-   override suspend fun load(url: String): LoadResponse? {
-    val document = app.get(url).document
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url).document
 
-    val title = document.selectFirst("h1")?.text()
-        ?: document.selectFirst("meta[property=og:title]")?.attr("content")
-        ?: "Bilinmiyor"
+        val title = document.selectFirst("h1")?.text()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+            ?: "Bilinmiyor"
 
-    val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        ?: document.selectFirst("img.poster-img")?.attr("src")
-    val finalPoster = fixPoster(poster)
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+            ?: document.selectFirst("img.poster-img")?.attr("src")
+        val finalPoster = fixPoster(poster)
 
-    val description = document.selectFirst("meta[name=description]")?.attr("content")
-    val genres = document.select("div.genres a").map { it.text() }
+        val description = document.selectFirst("meta[name=description]")?.attr("content")
+        val genres = document.select("div.genres a").map { it.text() }
 
-    // Tür tespiti
-    val tvType: TvType = when {
-        url.contains("/film/") -> TvType.Movie
-        url.contains("/dizi/") -> TvType.TvSeries
-        url.contains("/anime/") -> TvType.Anime
-        url.contains("/cizgi/") -> TvType.Cartoon
-        else -> TvType.TvSeries
-    }
+        val tvType: TvType = when {
+            url.contains("/film/") -> TvType.Movie
+            url.contains("/dizi/") -> TvType.TvSeries
+            url.contains("/anime/") -> TvType.Anime
+            url.contains("/cizgi/") -> TvType.Cartoon
+            else -> TvType.TvSeries
+        }
 
-    // Episode'ları topla
-    val episodes = mutableListOf<Episode>()
-    val episodeElements = document.select("div.bolum-list a, div.episode-list a, a.bolum")
+        val episodes = mutableListOf<Episode>()
+        val episodeElements = document.select("div.bolum-list a, div.episode-list a, a.bolum")
 
-    episodeElements.forEach { element ->
-        val episodeName = element.text()
-        val episodeUrl = element.attr("href")
-        if (episodeUrl.isNotEmpty()) {
-            val fullEpisodeUrl = if (episodeUrl.startsWith("http")) episodeUrl
-                                 else "$mainUrl$episodeUrl"
-            episodes.add(
-                newEpisode(fullEpisodeUrl) {
-                    this.name = episodeName
-                }
-            )
+        episodeElements.forEach { element ->
+            val episodeName = element.text()
+            val episodeUrl = element.attr("href")
+            if (episodeUrl.isNotEmpty()) {
+                val fullEpisodeUrl = if (episodeUrl.startsWith("http")) episodeUrl
+                                     else "$mainUrl$episodeUrl"
+                episodes.add(
+                    newEpisode(fullEpisodeUrl) {
+                        this.name = episodeName
+                    }
+                )
+            }
+        }
+
+        return if (episodes.isNotEmpty()) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
+                this.posterUrl = finalPoster
+                this.plot = description
+                this.tags = genres
+            }
+        } else {
+            newMovieLoadResponse(title, url, tvType, url) {
+                this.posterUrl = finalPoster
+                this.plot = description
+                this.tags = genres
+            }
         }
     }
 
-    // ⚠️ KRİTİK: Episode varsa DİZİ olarak dön!
-    return if (episodes.isNotEmpty()) {
-        newTvSeriesLoadResponse(title, url, tvType, episodes) {
-            this.posterUrl = finalPoster
-            this.plot = description
-            this.tags = genres
-        }
-    } else {
-        newMovieLoadResponse(title, url, tvType, url) {
-            this.posterUrl = finalPoster
-            this.plot = description
-            this.tags = genres
-        }
-    }
-}
-
-    // Episode yoksa film olarak dön
-    println("CizgiveDizi >>> load: episode yok, FİLM olarak dönülüyor")
-    return newMovieLoadResponse(title, url, tvType, url) {
-        this.posterUrl = finalPoster
-        this.plot = description
-        this.tags = genres
-    }
-}
-
-    // Link çıkarma
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        println("CizgiveDizi >>> loadLinks BAŞLADI: $data")
-
         val document = app.get(data).document
         var found = false
 
         val elements = document.select("iframe, video source, a.video-link")
-        println("CizgiveDizi >>> Bulunan element sayısı: ${elements.size}")
-
-        if (elements.isEmpty()) {
-            println("CizgiveDizi >>> UYARI: bölüm sayfasında iframe/source/video-link YOK!")
-            println("CizgiveDizi >>> Bölüm HTML (ilk 500 karakter):")
-            println(document.html().take(500))
-        }
 
         elements.forEach { element ->
             val videoUrl = when {
@@ -200,30 +160,22 @@ class CizgiveDizi : MainAPI() {
                 else -> element.attr("href")
             }
 
-            println("CizgiveDizi >>> <${element.tagName()}> src/href = '$videoUrl'")
-
             if (videoUrl.isNotEmpty()) {
                 val fullUrl = if (videoUrl.startsWith("http")) videoUrl
                               else "$mainUrl$videoUrl"
 
-                println("CizgiveDizi >>> loadExtractor çağrılıyor: $fullUrl")
                 try {
                     loadExtractor(fullUrl, mainUrl, subtitleCallback, callback)
-                    println("CizgiveDizi >>> loadExtractor TAMAM: $fullUrl")
                     found = true
                 } catch (e: Exception) {
-                    println("CizgiveDizi >>> loadExtractor HATA: ${e.message}")
+                    // yut
                 }
             }
         }
 
-        println("CizgiveDizi >>> loadLinks BİTTİ, found=$found")
         return found
     }
 
-    /**
-     * AVIF posterleri wsrv.nl proxy'sinden geçirip JPEG'e çevirir.
-     */
     private fun fixPoster(url: String?): String? {
         if (url.isNullOrEmpty()) return null
         if (url.contains("wsrv.nl")) return url
@@ -234,9 +186,6 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    /**
-     * HTML Element'ini SearchResponse'a çevirir.
-     */
     private fun Element.toSearchResponse(): SearchResponse? {
         val href = this.attr("href")
         if (href.isEmpty()) return null
@@ -265,9 +214,6 @@ class CizgiveDizi : MainAPI() {
         }
     }
 
-    /**
-     * poolData JSON'unu parse eder.
-     */
     private fun parsePoolData(jsonString: String): List<Pair<SearchResponse, String>> {
         val items = mutableListOf<Pair<SearchResponse, String>>()
         try {
@@ -312,8 +258,7 @@ class CizgiveDizi : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            println("CizgiveDizi >>> parsePoolData HATA: ${e.message}")
-            e.printStackTrace()
+            // yut
         }
         return items
     }
