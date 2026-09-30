@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.Request
 import org.json.JSONArray
 import org.jsoup.nodes.Element
+import java.net.URLEncoder
 
 class CizgiveDizi : MainAPI() {
 
@@ -108,6 +109,7 @@ class CizgiveDizi : MainAPI() {
         // Poster: önce og:image, sonra sayfadaki poster-img
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
             ?: document.selectFirst("img.poster-img")?.attr("src")
+        val finalPoster = fixPoster(poster)
 
         val description = document.selectFirst("meta[name=description]")?.attr("content")
         val genres = document.select("div.genres a").map { it.text() }
@@ -135,7 +137,7 @@ class CizgiveDizi : MainAPI() {
         }
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = poster
+            this.posterUrl = finalPoster
             this.plot = description
             this.tags = genres
         }
@@ -174,6 +176,22 @@ class CizgiveDizi : MainAPI() {
     }
 
     /**
+     * AVIF posterleri wsrv.nl proxy'sinden geçirip JPEG'e çevirir.
+     * Android'in native decoder'ı AVIF'i açamadığı için gerekli.
+     */
+    private fun fixPoster(url: String?): String? {
+        if (url.isNullOrEmpty()) return null
+        // Zaten proxy'lenmişse tekrar sarmalamayalım
+        if (url.contains("wsrv.nl")) return url
+        // Sadece .avif için proxy kullan
+        return if (url.contains(".avif", ignoreCase = true)) {
+            "https://wsrv.nl/?url=${URLEncoder.encode(url, "UTF-8")}&output=jpg&w=500"
+        } else {
+            url
+        }
+    }
+
+    /**
      * HTML Element'ini SearchResponse'a çevirir.
      * HTML'de data-poster olmadığı için img.poster-img'den poster çekiyoruz.
      */
@@ -192,6 +210,7 @@ class CizgiveDizi : MainAPI() {
             this.selectFirst("img.poster-img")?.attr("src")
                 ?: this.selectFirst("img")?.attr("src")
         }
+        val finalPoster = fixPoster(poster)
 
         val type = this.attr("data-type")
         val tvType: TvType = when (type) {
@@ -203,7 +222,7 @@ class CizgiveDizi : MainAPI() {
         }
 
         return newMovieSearchResponse(title, "$mainUrl$href", tvType) {
-            this.posterUrl = poster
+            this.posterUrl = finalPoster
         }
     }
 
@@ -243,13 +262,14 @@ class CizgiveDizi : MainAPI() {
                     } else {
                         null
                     }
+                    val finalPosterUrl = fixPoster(fullPosterUrl)
 
                     val searchResponse = newMovieSearchResponse(
                         name,
                         if (href.startsWith("http")) href else "$mainUrl$href",
                         tvType
                     ) {
-                        this.posterUrl = fullPosterUrl
+                        this.posterUrl = finalPosterUrl
                     }
 
                     items.add(Pair(searchResponse, type))
