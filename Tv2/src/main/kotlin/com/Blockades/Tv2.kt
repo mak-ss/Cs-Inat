@@ -1,6 +1,6 @@
-// ! Bu araç @kerimmkirac tarafından | @kerimmkirac için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
-package com.kerimmkirac
+package com.Blockades
 
 import android.util.Log
 import org.jsoup.nodes.Element
