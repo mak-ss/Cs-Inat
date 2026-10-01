@@ -12,7 +12,7 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
     **/
-    status  = 1 // will be 3 if unspecified
+    status  = 0 // will be 3 if unspecified
     tvTypes = listOf("TvSeries")
     iconUrl = "https://upload.wikimedia.org/wikipedia/tr/a/ae/Tv2_logo_%282026%29.png?utm_source=tr.wikipedia.org&utm_campaign=index&utm_content=original"
 }
