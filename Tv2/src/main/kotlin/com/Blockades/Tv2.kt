@@ -1,8 +1,6 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @kerimmkirac tarafından | @kerimmkirac için yazılmıştır.
 
-package com.Blockades
-
-
+package com.kerimmkirac
 
 import android.util.Log
 import org.jsoup.nodes.Element
@@ -23,7 +21,8 @@ class Tv2 : MainAPI() {
     override val hasQuickSearch       = false
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    override var iconUrl              = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSHCVVtAfWKc0F4y9Q35Un31VPzfErgIMKHucR2Xaxafg&s=10"
+    // Logo URL'si - override olmadan normal değişken
+    private val logoUrl               = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSHCVVtAfWKc0F4y9Q35Un31VPzfErgIMKHucR2Xaxafg&s=10"
 
     private var allContentCache: List<SearchResponse> = emptyList()
     private var cacheTime: Long = 0
@@ -51,7 +50,7 @@ class Tv2 : MainAPI() {
                 "LIVE_STREAM",
                 TvType.Live
             ) {
-                this.posterUrl = iconUrl
+                this.posterUrl = logoUrl
             }
             return newHomePageResponse(request.name, listOf(liveResponse), hasNext = false)
         }
@@ -211,11 +210,14 @@ class Tv2 : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         // Canlı yayın
         if (url == "LIVE_STREAM") {
-            return newLiveStreamLoadResponse(
+            return newMovieLoadResponse(
                 "Tv2 Canlı Yayın",
                 "LIVE_STREAM",
-                iconUrl
-            )
+                TvType.Live,
+                "LIVE_STREAM"
+            ) {
+                this.posterUrl = logoUrl
+            }
         }
 
         val document = app.get(url).document
@@ -239,8 +241,7 @@ class Tv2 : MainAPI() {
 
         if (isMovie) {
             // Film sayfasından video URL'sini al
-            val videoUrl = extractVideoUrl(document)
-                ?: url // fallback
+            val videoUrl = extractVideoUrl(document) ?: url
 
             return newMovieLoadResponse(title, url, TvType.Movie, videoUrl) {
                 this.posterUrl = poster
