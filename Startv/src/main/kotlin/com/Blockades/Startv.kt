@@ -14,7 +14,7 @@ class StarTv : MainAPI() {
     override var name = "Star TV"
     override val hasMainPage = true
     override var lang = "tr"
-    override val hasQuickSearch = false
+    override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
 
     private val headers = mapOf(
@@ -172,13 +172,11 @@ class StarTv : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         Log.d(name, "load: $url")
 
-        // Canlı yayın
+        // ★ DÜZELTME: Canlı yayın artık LiveStreamLoadResponse döndürüyor.
+        // TvType.Live için newTvSeriesLoadResponse kullanmak yanlış response tipi
+        // ürettiğinden canlı yayın açılırken hata/uyumsuzluk yaratıyordu.
         if (url.contains("/canli-yayin")) {
-            val episode = newEpisode(url) {
-                this.name = "Star TV Canlı"
-                this.posterUrl = logoUrl
-            } ?: return null
-            return newTvSeriesLoadResponse("Star TV Canlı", url, TvType.Live, listOf(episode)) {
+            return newLiveStreamLoadResponse("Star TV Canlı", url) {
                 this.posterUrl = logoUrl
             }
         }
@@ -210,43 +208,46 @@ class StarTv : MainAPI() {
     private suspend fun loadEpisodePage(url: String): LoadResponse? {
         val document = app.get(url, headers = headers).document
 
-        var title: String? = document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
-        var poster: String? = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        var description: String? = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
+        var foundTitle: String? = document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+        var foundPoster: String? = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+        var foundDesc: String? = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
         // JSON-LD'den ek bilgi
         document.select("script[type=application/ld+json]").forEach { script ->
             try {
                 val json = JSONObject(script.data())
                 if (json.optString("@type") == "VideoObject") {
-                    if (title.isNullOrEmpty()) {
-                        title = json.optString("name").substringBefore("|").trim()
+                    if (foundTitle.isNullOrEmpty()) {
+                        foundTitle = json.optString("name").substringBefore("|").trim()
                     }
-                    if (poster.isNullOrEmpty()) {
-                        poster = fixUrlNull(json.optString("thumbnailUrl"))
+                    if (foundPoster.isNullOrEmpty()) {
+                        foundPoster = fixUrlNull(json.optString("thumbnailUrl"))
                     }
-                    if (description.isNullOrEmpty()) {
-                        description = json.optString("description").trim()
+                    if (foundDesc.isNullOrEmpty()) {
+                        foundDesc = json.optString("description").trim()
                     }
                 }
             } catch (_: Exception) {}
         }
 
-        if (title.isNullOrEmpty()) return null
+        val finalTitle = foundTitle ?: return null
+        // ★ DÜZELTME: !! yerine güvenli yerel değişken kullanımı
+        val finalPoster = foundPoster
+        val finalDesc = foundDesc
 
-        // ★ DÜZELTME: Başlıktan çıkmazsa URL'den çıkar
-        val epNum = Regex("(\\d+)\\.\\s*Bölüm").find(title!!)?.groupValues?.get(1)?.toIntOrNull()
+        // Başlıktan çıkmazsa URL'den çıkar
+        val epNum = Regex("(\\d+)\\.\\s*Bölüm").find(finalTitle)?.groupValues?.get(1)?.toIntOrNull()
             ?: Regex("/(\\d+)-bolum").find(url)?.groupValues?.get(1)?.toIntOrNull()
 
         val episode = newEpisode(url) {
-            this.name = title!!
+            this.name = finalTitle
             this.episode = epNum
-            this.posterUrl = poster
+            this.posterUrl = finalPoster
         } ?: return null
 
-        return newTvSeriesLoadResponse(title!!, url, TvType.TvSeries, listOf(episode)) {
-            this.posterUrl = poster
-            this.plot = description
+        return newTvSeriesLoadResponse(finalTitle, url, TvType.TvSeries, listOf(episode)) {
+            this.posterUrl = finalPoster
+            this.plot = finalDesc
         }
     }
 
@@ -295,7 +296,7 @@ class StarTv : MainAPI() {
         return allEpisodes
     }
 
-    // ★ DÜZELTME: Video URL doğrulama
+    // ★ Video URL doğrulama
     private fun isValidVideoUrl(url: String): Boolean {
         val lower = url.lowercase()
 
@@ -334,7 +335,7 @@ class StarTv : MainAPI() {
         Log.d(name, "loadLinks: $data")
         var found = false
 
-        // ★ DÜZELTME: Canlı yayın linkleri artık dinamik olarak çekiliyor
+        // Canlı yayın linkleri dinamik olarak çekiliyor
         if (data.contains("/canli-yayin")) {
             return loadLiveStreams(data, callback)
         }
@@ -351,7 +352,6 @@ class StarTv : MainAPI() {
                         if (contentUrl.isNotEmpty() && contentUrl.startsWith("http")) {
                             Log.d(name, "JSON-LD contentUrl: $contentUrl")
 
-                            // ★ DÜZELTME: Doğrulama
                             if (!isValidVideoUrl(contentUrl)) {
                                 Log.d(name, "JSON-LD geçersiz video URL atlandı: $contentUrl")
                                 return@forEach
@@ -382,7 +382,6 @@ class StarTv : MainAPI() {
                     Regex("""(https?://[^"'\s<>]*akamaized\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
                     Regex("""(https?://[^"'\s<>]+/smil:[^"'\s<>]+)"""),
                     Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
-                    // ★ DÜZELTME: .mp4 için sıkılaştırılmış regex
                     Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)"""),
                     Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist)"\s*:\s*")([^"]+)""")
                 )
@@ -400,7 +399,6 @@ class StarTv : MainAPI() {
                                 .replace("\\u003F", "?")
                                 .replace("\\u002E", ".")
 
-                            // ★ DÜZELTME: Doğrulama
                             if (!rawUrl.startsWith("http") || !isValidVideoUrl(rawUrl)) {
                                 Log.d(name, "Regex geçersiz video URL atlandı: $rawUrl")
                                 continue
@@ -453,7 +451,6 @@ class StarTv : MainAPI() {
 
                     // 3b. Manuel iframe kazıma
                     findMediaInIframe(embedUrl, data)?.let { url ->
-                        // ★ DÜZELTME: Doğrulama
                         if (!isValidVideoUrl(url)) {
                             Log.d(name, "Manuel iframe geçersiz video URL atlandı: $url")
                             return@let
@@ -485,7 +482,7 @@ class StarTv : MainAPI() {
         return found
     }
 
-    // ★ DÜZELTME: Canlı yayın linklerini sayfadan dinamik çıkar
+    // ★ Canlı yayın linklerini sayfadan dinamik çıkar
     private suspend fun loadLiveStreams(
         pageUrl: String,
         callback: (ExtractorLink) -> Unit
@@ -630,7 +627,6 @@ class StarTv : MainAPI() {
             Regex("""(https?://[^"'\s<>]*akamaized\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
             Regex("""(https?://[^"'\s<>]+/smil:[^"'\s<>]+)"""),
             Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
-            // ★ DÜZELTME: .mp4 için sıkılaştırılmış regex
             Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)"""),
             Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist)"\s*:\s*")([^"]+)""")
         )
@@ -638,7 +634,6 @@ class StarTv : MainAPI() {
         for (pattern in patterns) {
             pattern.find(decoded)?.let { match ->
                 val url = match.groupValues[1]
-                // ★ DÜZELTME: Doğrulama
                 if (url.startsWith("http") && isValidVideoUrl(url)) {
                     return url
                 }
