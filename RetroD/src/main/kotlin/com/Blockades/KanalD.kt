@@ -11,7 +11,7 @@ import java.util.*
 
 class KanalD : MainAPI() {
     override var mainUrl              = "https://www.kanald.com.tr"
-    override var name                 = "Kanal D"
+    override var name                 = "Retro-D"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = false
@@ -22,11 +22,7 @@ class KanalD : MainAPI() {
     private val cacheValidityDuration = 30 * 60 * 1000
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/retro-d/"            to "Retro Diziler",
-        "${mainUrl}/retro-d/romantik/"   to "Romantik",
-        "${mainUrl}/retro-d/dram/"       to "Dram",
-        "${mainUrl}/retro-d/aksiyon/"    to "Aksiyon",
-        "${mainUrl}/retro-d/komedi/"     to "Komedi"
+        "${mainUrl}/retro-d/"            to "Retro Diziler"   
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -120,9 +116,12 @@ class KanalD : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1.retro-category-page-title, h1")?.text()?.trim() ?: return null
+        val title = document.selectFirst("h1.program-title")?.text()?.trim()
+            ?: document.selectFirst("h1")?.text()?.trim()
+            ?: return null
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
+        val description = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
         val episodes = getEpisodes(document, url)
 
@@ -135,15 +134,15 @@ class KanalD : MainAPI() {
     private suspend fun getEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
         try {
-            // Bölüm listesi için sayfa içindeki tüm poster-card'ları seç
-            val episodeLinks = document.select("a.poster-card[href*='/bolumler/'], a.poster-card[href*='/retro-d/']")
+            // Bölüm listesi için sayfa içindeki tüm story-card'ları seç
+            val episodeLinks = document.select("div.swiper-slide a.story-card, section.listing-holder a.story-card")
 
             // Eğer ana sayfada bölüm yoksa, /bolumler sayfasına git
             val items = if (episodeLinks.isEmpty()) {
                 val episodePageUrl = if (baseUrl.contains("/bolumler")) baseUrl else "$baseUrl/bolumler"
                 try {
                     app.get(episodePageUrl).document
-                        .select("a.poster-card")
+                        .select("section.listing-holder a.story-card")
                 } catch (e: Exception) {
                     emptyList()
                 }
