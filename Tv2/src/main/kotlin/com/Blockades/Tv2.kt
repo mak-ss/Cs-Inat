@@ -39,7 +39,7 @@ class Tv2 : MainAPI() {
         "${mainUrl}/diziler"      to "Diziler",
         "${mainUrl}/programlar"   to "Programlar",
         "${mainUrl}/filmler"      to "Filmler",
-        "LIVE"                    to "Canlı Yayın"
+        "${mainUrl}/canli-yayin"                    to "Canlı Yayın"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
