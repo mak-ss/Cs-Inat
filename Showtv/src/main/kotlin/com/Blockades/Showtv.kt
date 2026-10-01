@@ -62,46 +62,21 @@ class ShowTv : MainAPI() {
         try {
             val doc = app.get(request.data, headers = headers).document
 
-            // ★ SADECE ilgili sayfanın içerik alanındaki kartları al
-            // Nav menüsünü TAMAMEN dışlıyoruz, çünkü her sayfada aynı.
-            val selectors = listOf(
-                "main a[href*='/dizi/tanitim/']",
-                "main a[href*='/programlar/tanitim/']",
-                "main a[href*='/dizi/arsiv/']",
-                "main a[href*='/programlar/arsiv/']",
-                "section a[href*='/dizi/tanitim/']",
-                "section a[href*='/programlar/tanitim/']",
-                "section a[href*='/dizi/arsiv/']",
-                "section a[href*='/programlar/arsiv/']",
-                "div[class*=list] a[href*='/dizi/tanitim/']",
-                "div[class*=list] a[href*='/programlar/tanitim/']",
-                "div[class*=list] a[href*='/dizi/arsiv/']",
-                "div[class*=list] a[href*='/programlar/arsiv/']",
-                "div[class*=grid] a[href*='/dizi/tanitim/']",
-                "div[class*=grid] a[href*='/programlar/tanitim/']"
+            // ★ Tüm dizi/program kartlarını al
+            val allLinks = doc.select(
+                "a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], " +
+                "a[href*='/dizi/arsiv/'], a[href*='/programlar/arsiv/']"
             )
 
-            for (selector in selectors) {
-                doc.select(selector).forEach { element ->
-                    element.toSearchResponse()?.let { results.add(it) }
-                }
-                if (results.isNotEmpty()) break
-            }
+            Log.d(name, "getMainPage [${request.name}]: toplam ${allLinks.size} ham link")
 
-            // ★ Hâlâ boşsa: sayfadaki tüm kartları al ama nav/header/footer'ı çıkar
-            if (results.isEmpty()) {
-                doc.select("a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], " +
-                           "a[href*='/dizi/arsiv/'], a[href*='/programlar/arsiv/']")
-                    .filter { el ->
-                        // Nav menü, header ve footer'daki linkleri dışla
-                        val parentTag = el.parents().joinToString(" ") { it.tagName() }
-                        !parentTag.contains("nav") &&
-                        !parentTag.contains("header") &&
-                        !parentTag.contains("footer")
-                    }
-                    .forEach { element ->
-                        element.toSearchResponse()?.let { results.add(it) }
-                    }
+            allLinks.forEach { element ->
+                // Nav/header/footer içindeki linkleri atla (her sayfada tekrar eden menü)
+                val parents = element.parents().map { it.tagName().lowercase() }
+                val isInNav = parents.any { it == "nav" || it == "header" || it == "footer" }
+                if (isInNav) return@forEach
+
+                element.toSearchResponse()?.let { results.add(it) }
             }
 
             Log.d(name, "getMainPage [${request.name}]: ${results.size} öğe bulundu")
@@ -120,26 +95,33 @@ class ShowTv : MainAPI() {
         val href = this.attr("href").takeIf { it.isNotBlank() } ?: return null
         val fullUrl = fixUrlNull(href) ?: return null
 
-        // Tanıtım, arşiv veya dizi/program detay linki olabilir
-        val isValid = fullUrl.contains("/tanitim/") ||
-                      fullUrl.contains("/arsiv/") ||
-                      fullUrl.contains("/dizi/") ||
-                      fullUrl.contains("/programlar/")
-        if (!isValid) return null
+        // Sadece tanıtım/arşiv linkleri
+        if (!fullUrl.contains("/tanitim/") && !fullUrl.contains("/arsiv/")) return null
 
-        // Başlık
-        val title = this.selectFirst("figcaption span.font-bold, figcaption span.text-xl, figcaption .title, h2, h3, .card-title, .title")
-            ?.text()?.trim()?.takeIf { it.isNotEmpty() }
+        // ★ Kart kapsayıcısını bul (link'in kendisi veya en yakın kart elementi)
+        val card = this.closest("figure, article, li, div[class*=card], div[class*=item], div[class*=box]") ?: this
+
+        // ★ Başlık – çok geniş seçici listesi
+        val title = card.selectFirst(
+            "figcaption, .title, .name, h2, h3, h4, " +
+            "span[class*=title], span[class*=name], p[class*=title]"
+        )?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
-            ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
+            ?: card.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
             ?: return null
 
-        // Poster
-        val img = this.selectFirst("img")
+        // ★ Poster – link içinde veya kart içinde img ara, birden fazla attribute dene
+        val img = this.selectFirst("img") ?: card.selectFirst("img")
         val poster: String? = img?.let {
             val dataSrc = it.attr("data-src")
+            val dataLazy = it.attr("data-lazy-src")
             val src = it.attr("src")
-            val raw = if (dataSrc.isNotEmpty()) dataSrc else src
+            val raw = when {
+                dataSrc.isNotEmpty() -> dataSrc
+                dataLazy.isNotEmpty() -> dataLazy
+                src.isNotEmpty() -> src
+                else -> ""
+            }
             fixUrlNull(raw)
         }
 
