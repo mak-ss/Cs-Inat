@@ -1,6 +1,6 @@
 // ! Bu araç @UmayTrade tarafından Show TV için yazılmıştır.
 
-package com.UmayTrade
+package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
