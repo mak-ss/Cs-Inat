@@ -1,6 +1,6 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır. (Kanal D için uyarlanmıştır)
+// ! Bu araç @kerimmkirac tarafından | @kerimmkirac için yazılmıştır. (Kanal D için uyarlanmıştır)
 
-package com.Blockades
+package com.kerimmkirac
 
 import android.util.Log
 import org.jsoup.nodes.Element
@@ -28,18 +28,23 @@ class KanalD : MainAPI() {
         "${mainUrl}/diziler/arsiv"  to "Kanal D Arşiv"
     )
 
+    // Ortak seçici: tüm liste sayfaları için genişletilmiş
+    private val listSelectors = (
+        "section.listing-holder .item, " +
+        "section.listing-holder .story-card, " +
+        "div.listing-holder > div, " +
+        "a.story-card, " +
+        "a[href*='/retro-d/'], " +
+        "a[href*='/diziler/']"
+    )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
+        val items = document.select(listSelectors)
+        Log.d("KanalD", "getMainPage(${request.name}) seçici ${items.size} öğe buldu")
 
-        // Kanal D liste sayfalarındaki içerik seçicileri
-        val items = document.select(
-            "section.listing-holder .item, " +
-            "section.listing-holder .story-card, " +
-            "div.listing-holder > div, " +
-            "a.story-card[href*='/retro-d/'], " +
-            "a.story-card[href*='/diziler/']"
-        )
         val results = items.mapNotNull { it.toMainPageResult() }.distinctBy { it.url }
+        Log.d("KanalD", "getMainPage(${request.name}) -> ${results.size} sonuç")
 
         return newHomePageResponse(
             listOf(HomePageList(request.name, results))
@@ -51,15 +56,6 @@ class KanalD : MainAPI() {
         val link = if (this.tagName() == "a") this else this.selectFirst("a") ?: return null
         val href = fixUrlNull(link.attr("href")) ?: return null
 
-        // Sadece dizi/program/retro-d/arşiv sayfalarını al
-        val isRetroD = href.contains("/retro-d/")
-        val isArsiv  = href.contains("/diziler/") && href.trimEnd('/') != "${mainUrl}/diziler/arsiv"
-        if (!isRetroD && !isArsiv && !href.matches(Regex(".*kanald\\.com\\.tr/[^/]+$"))) return null
-
-        if (href.contains("/bolumler") || href.contains("/fragmanlar") ||
-            href.contains("/ozetler") || href.contains("/foto-galeri") ||
-            href.contains("/haber") || href.contains("/oyuncular")) return null
-
         // Liste/ana sayfa linklerini atla
         val trimmed = href.trimEnd('/')
         if (trimmed == "${mainUrl}/retro-d" ||
@@ -67,16 +63,32 @@ class KanalD : MainAPI() {
             trimmed == "${mainUrl}/diziler/arsiv" ||
             trimmed == "${mainUrl}/programlar") return null
 
-        // Başlık
-        val title = this.selectFirst("figcaption p, figcaption .title, h3.title, .caption .title")?.text()?.trim()
-            ?.takeIf { it.isNotEmpty() }
+        // İstenmeyen alt sayfa linklerini atla
+        if (href.contains("/bolumler") || href.contains("/fragmanlar") ||
+            href.contains("/ozetler") || href.contains("/foto-galeri") ||
+            href.contains("/haber") || href.contains("/oyuncular") ||
+            href.contains("/kategoriler")) return null
+
+        // Sadece içerik sayfası gibi görünen linkleri kabul et
+        val isRetroD = href.contains("/retro-d/")
+        val isDizi   = href.contains("/diziler/")
+        val isNormal = href.matches(Regex(".*kanald\\.com\\.tr/[^/]+/?$"))
+        if (!isRetroD && !isDizi && !isNormal) return null
+
+        // Başlık: sırayla figcaption, h3, img alt, link title, link text
+        val title = this.selectFirst("figcaption p, figcaption .title, h3.title, .caption .title, h2, h3")
+            ?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
             ?: link.attr("title").trim().takeIf { it.isNotEmpty() }
+            ?: link.text().trim().takeIf { it.isNotEmpty() }
             ?: return null
 
-        // Poster
-        val poster = this.selectFirst("img")?.let { img ->
-            fixUrlNull(img.attr("data-src").ifEmpty { img.attr("src") })
+        // Poster: data-src veya src, yoksa link içindeki img
+        val poster = (this.selectFirst("img") ?: link.selectFirst("img"))?.let { img ->
+            fixUrlNull(
+                img.attr("data-src").ifEmpty { img.attr("src") }
+                    .ifEmpty { img.attr("data-lazy-src") }
+            )
         }
 
         return newMovieSearchResponse(title, href, TvType.TvSeries) {
@@ -101,13 +113,8 @@ class KanalD : MainAPI() {
             for (pageUrl in pagesToScan) {
                 try {
                     val document = app.get(pageUrl).document
-                    val items = document.select(
-                        "section.listing-holder .item, " +
-                        "section.listing-holder .story-card, " +
-                        "div.listing-holder > div, " +
-                        "a.story-card[href*='/retro-d/'], " +
-                        "a.story-card[href*='/diziler/']"
-                    )
+                    val items = document.select(listSelectors)
+                    Log.d("KanalD", "$pageUrl -> ${items.size} öğe")
                     items.forEach { element ->
                         element.toMainPageResult()?.let { allContent.add(it) }
                     }
@@ -119,6 +126,7 @@ class KanalD : MainAPI() {
             val uniqueContent = allContent.distinctBy { it.url }
             allContentCache = uniqueContent
             cacheTime = currentTime
+            Log.d("KanalD", "Toplam cache içerik: ${uniqueContent.size}")
             return uniqueContent
         } catch (e: Exception) {
             Log.e("KanalD", "İçerik toplanırken hata: ${e.message}")
@@ -140,7 +148,9 @@ class KanalD : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
+        val title = document.selectFirst("h1")?.text()?.trim()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: return null
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
         val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
@@ -155,36 +165,40 @@ class KanalD : MainAPI() {
     private suspend fun getEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
         try {
-            val isRetroD = baseUrl.contains("/retro-d")
-            val isArsiv  = baseUrl.contains("/diziler/") && !baseUrl.endsWith("/diziler/arsiv")
+            // Bölüm seçicileri: /bolumler linkleri, retro-d ise kendi linkleri
+            val episodeSelector = (
+                "section.listing-holder a.story-card, " +
+                "section.listing-holder a[href*='/bolumler/'], " +
+                "a.story-card[href*='/bolumler/'], " +
+                "a[href*='/bolumler/'], " +
+                "a[href*='/retro-d/']"
+            )
 
-            val selector = when {
-                isRetroD -> "section.listing-holder a.story-card[href*='/retro-d/'], a.story-card[href*='/retro-d/']"
-                isArsiv  -> "section.listing-holder a.story-card, section.listing-holder a[href*='/bolumler/']"
-                else     -> "section.listing-holder a.story-card, section.listing-holder a[href*='/bolumler/']"
+            var episodeLinks = document.select(episodeSelector)
+
+            // Hiç bölüm bulunamadıysa /bolumler alt sayfasını dene
+            if (episodeLinks.isEmpty() && !baseUrl.contains("/bolumler")) {
+                val episodePageUrl = "$baseUrl/bolumler"
+                try {
+                    episodeLinks = app.get(episodePageUrl).document.select(episodeSelector)
+                } catch (e: Exception) {
+                    Log.e("KanalD", "Bölümler sayfası hatası: ${e.message}")
+                }
             }
 
-            val episodeLinks = document.select(selector)
-
-            val items = if (episodeLinks.isEmpty() && !isRetroD) {
-                val episodePageUrl = if (baseUrl.contains("/bolumler")) baseUrl else "$baseUrl/bolumler"
-                try {
-                    app.get(episodePageUrl).document
-                        .select("section.listing-holder a.story-card, section.listing-holder a[href*='/bolumler/']")
-                } catch (e: Exception) {
-                    emptyList()
-                }
-            } else episodeLinks
-
-            items.distinctBy { it.attr("href") }.forEachIndexed { index, element ->
+            episodeLinks.distinctBy { it.attr("href") }.forEachIndexed { index, element ->
                 val href = fixUrlNull(element.attr("href")) ?: return@forEachIndexed
                 val trimmed = href.trimEnd('/')
                 if (trimmed == baseUrl.trimEnd('/')) return@forEachIndexed
-                if (trimmed == "${mainUrl}/retro-d") return@forEachIndexed
-                if (trimmed == "${mainUrl}/diziler/arsiv") return@forEachIndexed
+                if (trimmed == "${mainUrl}/retro-d" ||
+                    trimmed == "${mainUrl}/diziler" ||
+                    trimmed == "${mainUrl}/diziler/arsiv" ||
+                    trimmed == "${mainUrl}/programlar") return@forEachIndexed
 
-                val epName = element.selectFirst("figcaption .title, figcaption p, h3.title, .caption .title")?.text()?.trim()
-                    ?.takeIf { it.isNotEmpty() }
+                val epName = element.selectFirst("figcaption .title, figcaption p, h3.title, .caption .title, h2, h3")
+                    ?.text()?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: element.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: element.text().trim().takeIf { it.isNotEmpty() }
                     ?: "Bölüm ${index + 1}"
 
                 newEpisode(href) {
