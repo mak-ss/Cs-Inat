@@ -1,4 +1,4 @@
-// ! Bu araç @UmayTrade tarafından Show TV için yazılmıştır.
+// ! Bu araç @Blockades tarafından Show TV için yazılmıştır.
 
 package com.Blockades
 
@@ -62,24 +62,47 @@ class ShowTv : MainAPI() {
         try {
             val doc = app.get(request.data, headers = headers).document
 
-            // Ana sayfa menüsünden
-            doc.select("nav a[href*='/dizi/tanitim/'], nav a[href*='/programlar/tanitim/']")
-                .forEach { element ->
-                    element.toSearchResponse()?.let { results.add(it) }
-                }
+            // ★ SADECE ilgili sayfanın içerik alanındaki kartları al
+            // Nav menüsünü TAMAMEN dışlıyoruz, çünkü her sayfada aynı.
+            val selectors = listOf(
+                "main a[href*='/dizi/tanitim/']",
+                "main a[href*='/programlar/tanitim/']",
+                "main a[href*='/dizi/arsiv/']",
+                "main a[href*='/programlar/arsiv/']",
+                "section a[href*='/dizi/tanitim/']",
+                "section a[href*='/programlar/tanitim/']",
+                "section a[href*='/dizi/arsiv/']",
+                "section a[href*='/programlar/arsiv/']",
+                "div[class*=list] a[href*='/dizi/tanitim/']",
+                "div[class*=list] a[href*='/programlar/tanitim/']",
+                "div[class*=list] a[href*='/dizi/arsiv/']",
+                "div[class*=list] a[href*='/programlar/arsiv/']",
+                "div[class*=grid] a[href*='/dizi/tanitim/']",
+                "div[class*=grid] a[href*='/programlar/tanitim/']"
+            )
 
-            // Liste sayfasındaki kartlardan (arşiv sayfaları dahil)
-            doc.select("a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], " +
-                       "a[href*='/dizi/arsiv/'], a[href*='/programlar/arsiv/']")
-                .forEach { element ->
+            for (selector in selectors) {
+                doc.select(selector).forEach { element ->
                     element.toSearchResponse()?.let { results.add(it) }
                 }
+                if (results.isNotEmpty()) break
+            }
 
-            // Arşiv sayfalarında farklı kart yapısı olabilir
-            doc.select("div.archive-list a, ul.archive-list li a, .arsiv a")
-                .forEach { element ->
-                    element.toSearchResponse()?.let { results.add(it) }
-                }
+            // ★ Hâlâ boşsa: sayfadaki tüm kartları al ama nav/header/footer'ı çıkar
+            if (results.isEmpty()) {
+                doc.select("a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], " +
+                           "a[href*='/dizi/arsiv/'], a[href*='/programlar/arsiv/']")
+                    .filter { el ->
+                        // Nav menü, header ve footer'daki linkleri dışla
+                        val parentTag = el.parents().joinToString(" ") { it.tagName() }
+                        !parentTag.contains("nav") &&
+                        !parentTag.contains("header") &&
+                        !parentTag.contains("footer")
+                    }
+                    .forEach { element ->
+                        element.toSearchResponse()?.let { results.add(it) }
+                    }
+            }
 
             Log.d(name, "getMainPage [${request.name}]: ${results.size} öğe bulundu")
         } catch (e: Exception) {
@@ -98,10 +121,14 @@ class ShowTv : MainAPI() {
         val fullUrl = fixUrlNull(href) ?: return null
 
         // Tanıtım, arşiv veya dizi/program detay linki olabilir
-        if (!fullUrl.contains("/tanitim/") && !fullUrl.contains("/arsiv/")) return null
+        val isValid = fullUrl.contains("/tanitim/") ||
+                      fullUrl.contains("/arsiv/") ||
+                      fullUrl.contains("/dizi/") ||
+                      fullUrl.contains("/programlar/")
+        if (!isValid) return null
 
         // Başlık
-        val title = this.selectFirst("figcaption span.font-bold, figcaption span.text-xl, figcaption .title, h2, h3")
+        val title = this.selectFirst("figcaption span.font-bold, figcaption span.text-xl, figcaption .title, h2, h3, .card-title, .title")
             ?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
