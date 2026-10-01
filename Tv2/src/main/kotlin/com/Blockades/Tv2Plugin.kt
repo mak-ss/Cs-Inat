@@ -5,8 +5,8 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
-class ShowTvPlugin : Plugin() {
+class Tv2Plugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(ShowTv())
+        registerMainAPI(Tv2())
     }
 }
