@@ -1,4 +1,4 @@
-// ! Bu araç @Blockades tarafından Show TV için yazılmıştır.
+// ! Bu araç @Blockades tarafından Tv2 için yazılmıştır.
 
 package com.Blockades
 
@@ -9,13 +9,13 @@ import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.util.Locale
 
-class ShowTv : MainAPI() {
-    override var mainUrl = "https://www.showtv.com.tr"
-    override var name = "Show TV"
+class Tv2 : MainAPI() {
+    override var mainUrl = "https://www.tv2.com.tr"
+    override var name = "Tv2"
     override val hasMainPage = true
     override var lang = "tr"
     override val hasQuickSearch = false
-    override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
+    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Live)
 
     private val headers = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -25,22 +25,23 @@ class ShowTv : MainAPI() {
     )
 
     // ★ Logo
-    private val logoUrl = "https://w7.pngwing.com/pngs/192/666/png-transparent-turkey-show-tv-television-channel-show-tv-logo-television-text-logo-thumbnail.png"
+    private val logoUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSHCVVtAfWKc0F4y9Q35Un31VPzfErgIMKHucR2Xaxafg&s=10"
 
     // ★ Canlı yayın m3u8 linkleri
     private val liveStreams = listOf(
-        "https://ciner.daioncdn.net/showtv/showtv_1080p.m3u8?ex=1664766175&st=RBzhSuGauna0OGld-DJUVA&tv=1&sid=8sqrng4y9wo7&app=4bc856ef-4c68-4a94-bc87-37dfaaa66558&ce=3" to "Show TV 1080p",
-        "https://ciner.daioncdn.net/showtv/showtv_720p.m3u8?ex=1664766175&st=RBzhSuGauna0OGld-DJUVA&tv=1&sid=8sqrng4y9wo7&app=4bc856ef-4c68-4a94-bc87-37dfaaa66558&ce=3" to "Show TV 720p",
-        "https://ciner.daioncdn.net/showtv/showtv_480p.m3u8?ex=1664766175&st=RBzhSuGauna0OGld-DJUVA&tv=1&sid=8sqrng4y9wo7&app=4bc856ef-4c68-4a94-bc87-37dfaaa66558&ce=3" to "Show TV 480p"
+        "https://demiroren.daioncdn.net/teve2/teve2_1080p.m3u8?&sid=8sqx8frxe09f&app=6aab838a-437e-4a1b-bbd0-e30f79cdbbbd&ce=3" to "Tv2 1080p",
+        "https://demiroren.daioncdn.net/teve2/teve2_720p.m3u8?&sid=8sqx8frxe09f&app=6aab838a-437e-4a1b-bbd0-e30f79cdbbbd&ce=3" to "Tv2 720p",
+        "https://demiroren.daioncdn.net/teve2/teve2_480p.m3u8?&sid=8sqx8frxe09f&app=6aab838a-437e-4a1b-bbd0-e30f79cdbbbd&ce=3" to "Tv2 480p"
     )
 
     // ★ Ana sayfa menüsü – Canlı Yayın en başta, arşivler dahil
     override val mainPage = mainPageOf(
         "$mainUrl/canli-yayin" to "Canlı Yayın",
         "$mainUrl/diziler" to "Diziler",
-        "$mainUrl/diziler/arsivdeki-diziler" to "Arşivdeki Diziler",
+        "$mainUrl/diziler/arsiv" to "Arşivdeki Diziler",
         "$mainUrl/programlar" to "Programlar",
-        "$mainUrl/programlar/arsivdeki-programlar" to "Arşivdeki Programlar"
+        "$mainUrl/programlar/arsiv" to "Arşivdeki Programlar",
+        "$mainUrl/filmler" to "Filmler"
     )
 
     // ★ Ana sayfa
@@ -50,7 +51,7 @@ class ShowTv : MainAPI() {
         // Canlı Yayın sekmesi
         if (request.name == "Canlı Yayın") {
             results.add(
-                newMovieSearchResponse("Show TV Canlı", "$mainUrl/canli-yayin", TvType.Live) {
+                newMovieSearchResponse("Tv2 Canlı", "$mainUrl/canli-yayin", TvType.Live) {
                     this.posterUrl = logoUrl
                 }
             )
@@ -62,21 +63,34 @@ class ShowTv : MainAPI() {
         try {
             val doc = app.get(request.data, headers = headers).document
 
-            // ★ Tüm dizi/program kartlarını al
-            val allLinks = doc.select(
-                "a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], " +
-                "a[href*='/dizi/arsiv/'], a[href*='/programlar/arsiv/']"
-            )
+            // ★ Tv2 kart yapıları:
+            // - Dizi/Program: div.program-card içindeki a[href*='/diziler/'] veya a[href*='/programlar/']
+            // - Film: div.swiper-slide a.thumbnail veya section.section-thumbnails a.swiper-slide.item.thumbnail
+            // - Arşiv: a.swiper-slide.item.thumbnail
 
-            Log.d(name, "getMainPage [${request.name}]: toplam ${allLinks.size} ham link")
+            if (request.name == "Filmler") {
+                // Filmler için swiper-slide yapısı
+                doc.select("div.swiper-slide a.thumbnail, section.section-thumbnails a.swiper-slide.item.thumbnail")
+                    .forEach { element ->
+                        element.toFilmSearchResponse()?.let { results.add(it) }
+                    }
+            } else {
+                // Diziler, Programlar ve Arşivler için
+                // Öncelik 1: program-card yapısı
+                doc.select("div.program-card").forEach { card ->
+                    card.toProgramCardResponse()?.let { results.add(it) }
+                }
 
-            allLinks.forEach { element ->
-                // Nav/header/footer içindeki linkleri atla (her sayfada tekrar eden menü)
-                val parents = element.parents().map { it.tagName().lowercase() }
-                val isInNav = parents.any { it == "nav" || it == "header" || it == "footer" }
-                if (isInNav) return@forEach
+                // Öncelik 2: swiper-slide thumbnail yapısı (arşiv için)
+                doc.select("section.section-thumbnails a.swiper-slide.item.thumbnail, a.swiper-slide.item.thumbnail")
+                    .forEach { element ->
+                        // Nav/header/footer içindeki linkleri atla
+                        val parents = element.parents().map { it.tagName().lowercase() }
+                        val isInNav = parents.any { it == "nav" || it == "header" || it == "footer" }
+                        if (isInNav) return@forEach
 
-                element.toSearchResponse()?.let { results.add(it) }
+                        element.toArchiveSearchResponse()?.let { results.add(it) }
+                    }
             }
 
             Log.d(name, "getMainPage [${request.name}]: ${results.size} öğe bulundu")
@@ -90,32 +104,54 @@ class ShowTv : MainAPI() {
         )
     }
 
-    // ★ Link elementini SearchResponse'a çevirir
-    private fun Element.toSearchResponse(): SearchResponse? {
+    // ★ program-card elementini SearchResponse'a çevirir (Dizi/Program)
+    private fun Element.toProgramCardResponse(): SearchResponse? {
+        val linkEl = this.selectFirst("div.program-card-footer a") 
+            ?: this.selectFirst("div.program-detail a[href]")
+            ?: return null
+
+        val href = linkEl.attr("href").takeIf { it.isNotBlank() } ?: return null
+        val fullUrl = fixUrlNull(href) ?: return null
+
+        val title = this.selectFirst("div.program-card-footer a div.title")?.text()?.trim()
+            ?: this.selectFirst("div.detail-title")?.text()?.trim()
+            ?: linkEl.attr("title").trim().takeIf { it.isNotEmpty() }
+            ?: return null
+
+        // program-image style="background-image: url(...)"
+        val poster: String? = this.selectFirst("div.program-image")?.attr("style")
+            ?.substringAfter("url(")?.substringBefore(")")?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { fixUrlNull(it) }
+            ?: this.selectFirst("img")?.let { img ->
+                val dataSrc = img.attr("data-src")
+                val src = img.attr("src")
+                fixUrlNull(if (dataSrc.isNotEmpty()) dataSrc else src)
+            }
+
+        val type = if (fullUrl.contains("/filmler/")) TvType.Movie else TvType.TvSeries
+
+        return newMovieSearchResponse(title, fullUrl, type) {
+            this.posterUrl = poster
+        }
+    }
+
+    // ★ Filmler için swiper-slide elementini SearchResponse'a çevirir
+    private fun Element.toFilmSearchResponse(): SearchResponse? {
         val href = this.attr("href").takeIf { it.isNotBlank() } ?: return null
         val fullUrl = fixUrlNull(href) ?: return null
 
-        // Sadece tanıtım/arşiv linkleri
-        if (!fullUrl.contains("/tanitim/") && !fullUrl.contains("/arsiv/")) return null
+        if (!fullUrl.contains("/filmler/")) return null
 
-        // ★ Kart kapsayıcısını bul (link'in kendisi veya en yakın kart elementi)
-        val card = this.closest("figure, article, li, div[class*=card], div[class*=item], div[class*=box]") ?: this
-
-        // ★ Başlık – çok geniş seçici listesi
-        val title = card.selectFirst(
-            "figcaption, .title, .name, h2, h3, h4, " +
-            "span[class*=title], span[class*=name], p[class*=title]"
-        )?.text()?.trim()?.takeIf { it.isNotEmpty() }
+        val title = this.selectFirst("div.desc-movie h1.title")?.text()?.trim()
+            ?: this.selectFirst("div.desc-title")?.text()?.trim()
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
-            ?: card.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
             ?: return null
 
-        // ★ Poster – link içinde veya kart içinde img ara, birden fazla attribute dene
-        val img = this.selectFirst("img") ?: card.selectFirst("img")
-        val poster: String? = img?.let {
-            val dataSrc = it.attr("data-src")
-            val dataLazy = it.attr("data-lazy-src")
-            val src = it.attr("src")
+        val poster = this.selectFirst("img")?.let { img ->
+            val dataSrc = img.attr("data-src")
+            val dataLazy = img.attr("data-lazy-src")
+            val src = img.attr("src")
             val raw = when {
                 dataSrc.isNotEmpty() -> dataSrc
                 dataLazy.isNotEmpty() -> dataLazy
@@ -125,7 +161,47 @@ class ShowTv : MainAPI() {
             fixUrlNull(raw)
         }
 
-        return newMovieSearchResponse(title, fullUrl, TvType.TvSeries) {
+        return newMovieSearchResponse(title, fullUrl, TvType.Movie) {
+            this.posterUrl = poster
+        }
+    }
+
+    // ★ Arşiv için thumbnail elementini SearchResponse'a çevirir
+    private fun Element.toArchiveSearchResponse(): SearchResponse? {
+        val href = this.attr("href").takeIf { it.isNotBlank() } ?: return null
+        val fullUrl = fixUrlNull(href) ?: return null
+
+        // Sadece dizi/program/film arşiv linkleri
+        if (!fullUrl.contains("/diziler/") && !fullUrl.contains("/programlar/") && !fullUrl.contains("/filmler/")) {
+            return null
+        }
+
+        val title = this.selectFirst("div.desc-title")?.text()?.trim()
+            ?: this.selectFirst("div.title")?.text()?.trim()
+            ?: this.selectFirst("span.desc-info")?.text()?.trim()
+            ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
+            ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
+            ?: return null
+
+        val poster = this.selectFirst("img")?.let { img ->
+            val dataSrc = img.attr("data-src")
+            val dataLazy = img.attr("data-lazy-src")
+            val src = img.attr("src")
+            val raw = when {
+                dataSrc.isNotEmpty() -> dataSrc
+                dataLazy.isNotEmpty() -> dataLazy
+                src.isNotEmpty() -> src
+                else -> ""
+            }
+            fixUrlNull(raw)
+        }
+
+        val type = when {
+            fullUrl.contains("/filmler/") -> TvType.Movie
+            else -> TvType.TvSeries
+        }
+
+        return newMovieSearchResponse(title, fullUrl, type) {
             this.posterUrl = poster
         }
     }
@@ -136,32 +212,45 @@ class ShowTv : MainAPI() {
         val results = mutableListOf<SearchResponse>()
 
         try {
-            val searchUrl = "$mainUrl/arama?ara=${query.replace(" ", "+")}"
+            val searchUrl = "$mainUrl/arama?q=${query.replace(" ", "+")}"
             val doc = app.get(searchUrl, headers = headers).document
-            doc.select("a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], a[href*='/arsiv/']")
-                .forEach { element ->
-                    element.toSearchResponse()?.let { results.add(it) }
-                }
+
+            // Arama sonuçlarındaki kartları işle
+            doc.select("div.program-card").forEach { card ->
+                card.toProgramCardResponse()?.let { results.add(it) }
+            }
+
+            doc.select("a.thumbnail, a.swiper-slide.item.thumbnail").forEach { element ->
+                element.toArchiveSearchResponse()?.let { results.add(it) }
+            }
+
             Log.d(name, "Arama '$query': ${results.size} sonuç")
         } catch (e: Exception) {
             Log.e(name, "Arama hatası: ${e.message}")
         }
 
-        // Fallback: tüm listeden filtrele (arşivler dahil)
+        // Fallback: tüm listeden filtrele
         if (results.isEmpty()) {
             try {
                 val allContent = mutableListOf<SearchResponse>()
                 for (pageUrl in listOf(
                     "$mainUrl/diziler",
-                    "$mainUrl/diziler/arsivdeki-diziler",
+                    "$mainUrl/diziler/arsiv",
                     "$mainUrl/programlar",
-                    "$mainUrl/programlar/arsivdeki-programlar"
+                    "$mainUrl/programlar/arsiv",
+                    "$mainUrl/filmler"
                 )) {
                     try {
                         val doc = app.get(pageUrl, headers = headers).document
-                        doc.select("a[href*='/dizi/tanitim/'], a[href*='/programlar/tanitim/'], a[href*='/arsiv/']")
+
+                        doc.select("div.program-card").forEach { card ->
+                            card.toProgramCardResponse()?.let { allContent.add(it) }
+                        }
+
+                        doc.select("div.swiper-slide a.thumbnail, section.section-thumbnails a.swiper-slide.item.thumbnail")
                             .forEach { element ->
-                                element.toSearchResponse()?.let { allContent.add(it) }
+                                element.toFilmSearchResponse()?.let { allContent.add(it) }
+                                    ?: element.toArchiveSearchResponse()?.let { allContent.add(it) }
                             }
                     } catch (e: Exception) {
                         Log.e(name, "Liste hatası ($pageUrl): ${e.message}")
@@ -188,76 +277,54 @@ class ShowTv : MainAPI() {
         // Canlı yayın
         if (url.contains("/canli-yayin")) {
             val episode = newEpisode(url) {
-                this.name = "Show TV Canlı"
+                this.name = "Tv2 Canlı"
                 this.posterUrl = logoUrl
             } ?: return null
-            return newTvSeriesLoadResponse("Show TV Canlı", url, TvType.Live, listOf(episode)) {
+            return newTvSeriesLoadResponse("Tv2 Canlı", url, TvType.Live, listOf(episode)) {
                 this.posterUrl = logoUrl
             }
         }
 
-        // Bölüm sayfası mı?
-        if (url.contains("/tum_bolumler/") || url.contains("/videolar/")) {
-            return loadEpisodePage(url)
-        }
-
         val document = app.get(url, headers = headers).document
 
-        val title = document.selectFirst("h1")?.text()?.trim()
+        val title = document.selectFirst("div.program-detail a div.detail-title")?.text()?.trim()
+            ?: document.selectFirst("h1.title")?.text()?.trim()
+            ?: document.selectFirst("div.desc-wrapper h1.title")?.text()?.trim()
+            ?: document.selectFirst("div.desc-movie h1.title")?.text()?.trim()
             ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.trim()?.substringBefore("|")
             ?: return null
 
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
+            ?: document.selectFirst("div.program-image")?.attr("style")
+                ?.substringAfter("url(")?.substringBefore(")")?.let { fixUrlNull(it) }
+            ?: document.selectFirst("div.image-area img")?.attr("data-src")?.let { fixUrlNull(it) }
 
-        val episodes = getEpisodes(document, url)
-        Log.d(name, "Toplam ${episodes.size} bölüm: $title")
+        val description = document.selectFirst("div.detail-description")?.text()?.trim()
+            ?: document.selectFirst("div.desc-info")?.text()?.trim()
+            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            this.posterUrl = poster
-            this.plot = description
-        }
-    }
+        val isMovie = url.contains("/filmler/")
 
-    // ★ Bölüm sayfası (tek bölümlük dizi olarak)
-    private suspend fun loadEpisodePage(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers).document
+        if (isMovie) {
+            // Film: tek video olarak işle
+            val episode = newEpisode(url) {
+                this.name = title
+                this.posterUrl = poster
+            } ?: return null
 
-        var title: String? = document.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
-        var poster: String? = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
-        var description: String? = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.plot = description
+            }
+        } else {
+            // Dizi/Program: bölümleri çek
+            val episodes = getEpisodes(document, url)
+            Log.d(name, "Toplam ${episodes.size} bölüm: $title")
 
-        // JSON-LD'den ek bilgi
-        document.select("script[type=application/ld+json]").forEach { script ->
-            try {
-                val json = JSONObject(script.data())
-                if (json.optString("@type") == "VideoObject") {
-                    if (title.isNullOrEmpty()) {
-                        title = json.optString("name").substringBefore("|").trim()
-                    }
-                    if (poster.isNullOrEmpty()) {
-                        poster = fixUrlNull(json.optString("thumbnailUrl"))
-                    }
-                    if (description.isNullOrEmpty()) {
-                        description = json.optString("description").trim()
-                    }
-                }
-            } catch (_: Exception) {}
-        }
-
-        if (title.isNullOrEmpty()) return null
-
-        val epNum = Regex("(\\d+)\\.\\s*Bölüm").find(title!!)?.groupValues?.get(1)?.toIntOrNull()
-
-        val episode = newEpisode(url) {
-            this.name = title!!
-            this.episode = epNum
-            this.posterUrl = poster
-        } ?: return null
-
-        return newTvSeriesLoadResponse(title!!, url, TvType.TvSeries, listOf(episode)) {
-            this.posterUrl = poster
-            this.plot = description
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.plot = description
+            }
         }
     }
 
@@ -265,83 +332,65 @@ class ShowTv : MainAPI() {
     private suspend fun getEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
 
-        // Yöntem 1: "BÖLÜMLER" linkine git
+        // Bölümler sayfasına git
         try {
-            val bolumLink = document.selectFirst("nav a[title=BÖLÜMLER]")
-                ?.attr("href")?.takeIf { it.isNotBlank() }
+            val baseUrlTrimmed = baseUrl.trimEnd('/')
+            val bolumUrl = "$baseUrlTrimmed/bolumler"
+            Log.d(name, "Bölümler sayfası: $bolumUrl")
 
-            if (bolumLink != null) {
-                val bolumUrl = fixUrl(bolumLink)
-                Log.d(name, "Bölümler sayfası: $bolumUrl")
-                val bolumDoc = app.get(bolumUrl, headers = headers).document
-
-                // Program sayfaları: select'ten
-                val options = bolumDoc.select("select#seasonWithJs option[data-href], select option[data-href]")
-                if (options.isNotEmpty()) {
-                    Log.d(name, "Select'te ${options.size} bölüm")
-                    options.forEachIndexed { index, option ->
-                        val epUrl = fixUrlNull(option.attr("data-href")) ?: return@forEachIndexed
-                        val epName = option.text().trim().takeIf { it.isNotEmpty() } ?: "Bölüm ${index + 1}"
-                        val epNum = Regex("(\\d+)\\.").find(epName)?.groupValues?.get(1)?.toIntOrNull()
-                            ?: (options.size - index)
-
-                        newEpisode(epUrl) {
-                            this.name = epName
-                            this.episode = epNum
-                        }?.let { allEpisodes.add(it) }
-                    }
-                    return allEpisodes.sortedByDescending { it.episode ?: 0 }
-                }
-
-                // Dizi sayfaları: kartlardan
-                val episodeCards = bolumDoc.select("section#default-season ul > li.iterate, ul#iterableSection > li.iterate")
-                if (episodeCards.isNotEmpty()) {
-                    Log.d(name, "Kart listesinde ${episodeCards.size} bölüm")
-                    episodeCards.forEach { card ->
-                        val a = card.selectFirst("a[data-ajax-link], a[href*='/tum_bolumler/']") ?: return@forEach
-                        val epUrl = fixUrlNull(a.attr("href")) ?: return@forEach
-                        val epName = a.attr("title").trim().ifEmpty {
-                            a.selectFirst("span[data-ajax-title]")?.text()?.trim() ?: "Bölüm"
-                        }
-                        val epPoster: String? = a.selectFirst("img")?.let {
-                            val dataSrc = it.attr("data-src")
-                            val src = it.attr("src")
-                            fixUrlNull(if (dataSrc.isNotEmpty()) dataSrc else src)
-                        }
-                        val epNum = Regex("(\\d+)\\.\\s*Bölüm").find(epName)?.groupValues?.get(1)?.toIntOrNull()
-
-                        newEpisode(epUrl) {
-                            this.name = epName
-                            this.episode = epNum
-                            this.posterUrl = epPoster
-                        }?.let { allEpisodes.add(it) }
-                    }
-                    return allEpisodes.sortedByDescending { it.episode ?: 0 }
-                }
+            val bolumDoc = try {
+                app.get(bolumUrl, headers = headers).document
+            } catch (e: Exception) {
+                Log.e(name, "Bölümler sayfası yüklenemedi: ${e.message}")
+                document
             }
-        } catch (e: Exception) {
-            Log.e(name, "Bölüm sayfası hatası: ${e.message}")
-        }
 
-        // Yöntem 2: Detay sayfasındaki select
-        try {
-            val options = document.select("select#seasonWithJs option[data-href], select option[data-href]")
-            if (options.isNotEmpty()) {
-                Log.d(name, "Detay select'inde ${options.size} bölüm")
-                options.forEachIndexed { index, option ->
-                    val epUrl = fixUrlNull(option.attr("data-href")) ?: return@forEachIndexed
-                    val epName = option.text().trim().takeIf { it.isNotEmpty() } ?: "Bölüm ${index + 1}"
-                    val epNum = Regex("(\\d+)\\.").find(epName)?.groupValues?.get(1)?.toIntOrNull()
-                        ?: (options.size - index)
+            // Tv2 bölüm kartları: swiper-slide a.thumbnail veya section.section-thumbnails a.swiper-slide.item.thumbnail
+            val episodeCards = bolumDoc.select(
+                "div.swiper-slide a.thumbnail, " +
+                "section.section-thumbnails a.swiper-slide.item.thumbnail, " +
+                "a.swiper-slide.item.thumbnail, " +
+                "a[href*='/bolum/'], " +
+                "a[href*='/kisa-klipler/']"
+            )
+
+            if (episodeCards.isNotEmpty()) {
+                Log.d(name, "Bölüm kartlarında ${episodeCards.size} bölüm")
+
+                episodeCards.forEachIndexed { index, card ->
+                    val epHref = card.attr("href").takeIf { it.isNotBlank() } ?: return@forEachIndexed
+                    val epUrl = fixUrlNull(epHref) ?: return@forEachIndexed
+
+                    // Aynı URL'yi tekrar ekleme
+                    if (allEpisodes.any { it.data == epUrl }) return@forEachIndexed
+
+                    val epName = card.selectFirst("div.desc-title")?.text()?.trim()
+                        ?: card.selectFirst("div.title")?.text()?.trim()
+                        ?: card.selectFirst("span.desc-info")?.text()?.trim()
+                        ?: card.selectFirst("div.desc-movie h1.title")?.text()?.trim()
+                        ?: card.attr("title").trim().takeIf { it.isNotEmpty() }
+                        ?: "Bölüm ${index + 1}"
+
+                    val epPoster: String? = card.selectFirst("img")?.let {
+                        val dataSrc = it.attr("data-src")
+                        val src = it.attr("src")
+                        fixUrlNull(if (dataSrc.isNotEmpty()) dataSrc else src)
+                    }
+
+                    val epNum = Regex("(\\d+)\\.\\s*Bölüm").find(epName)?.groupValues?.get(1)?.toIntOrNull()
+                        ?: (index + 1)
 
                     newEpisode(epUrl) {
                         this.name = epName
                         this.episode = epNum
+                        this.posterUrl = epPoster
                     }?.let { allEpisodes.add(it) }
                 }
+
+                return allEpisodes.sortedByDescending { it.episode ?: 0 }
             }
         } catch (e: Exception) {
-            Log.e(name, "Detay select hatası: ${e.message}")
+            Log.e(name, "Bölüm sayfası hatası: ${e.message}")
         }
 
         return allEpisodes.sortedByDescending { it.episode ?: 0 }
@@ -392,16 +441,12 @@ class ShowTv : MainAPI() {
                         if (contentUrl.isNotEmpty() && contentUrl.startsWith("http")) {
                             Log.d(name, "JSON-LD contentUrl: $contentUrl")
 
-                            val m3u8Url = contentUrl
-                                .replace(Regex("_\\d+x\\d+\\.mp4$"), ".m3u8")
-                                .replace(".mp4", ".m3u8")
-
-                            val isHls = m3u8Url.contains(".m3u8")
+                            val isHls = contentUrl.contains(".m3u8")
                             callback.invoke(
                                 newExtractorLink(
                                     source = this.name,
                                     name = this.name,
-                                    url = m3u8Url,
+                                    url = contentUrl,
                                     type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                 ) {
                                     this.referer = mainUrl
@@ -414,10 +459,35 @@ class ShowTv : MainAPI() {
                 } catch (_: Exception) {}
             }
 
-            // Öncelik 2: Regex ile m3u8/mp4 ara
+            // Öncelik 2: data-url / data-video attribute'ları
+            if (!found) {
+                val videoEl = document.selectFirst("div[data-url], div[data-video], video source")
+                val rawUrl = videoEl?.attr("data-url")?.takeIf { it.isNotEmpty() }
+                    ?: videoEl?.attr("data-video")?.takeIf { it.isNotEmpty() }
+                    ?: videoEl?.attr("src")?.takeIf { it.isNotEmpty() }
+
+                if (!rawUrl.isNullOrEmpty()) {
+                    Log.d(name, "data-url: $rawUrl")
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = rawUrl,
+                            type = if (rawUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = mainUrl
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    found = true
+                }
+            }
+
+            // Öncelik 3: Regex ile m3u8/mp4 ara
             if (!found) {
                 val patterns = listOf(
                     Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+)\""),
+                    Regex("\"videoUrl\"\\s*:\\s*\"([^\"]+)\""),
                     Regex("(https?://[^\"'\\s]+\\.m3u8[^\"'\\s]*)"),
                     Regex("(https?://[^\"'\\s]+\\.mp4[^\"'\\s]*)")
                 )
@@ -427,19 +497,16 @@ class ShowTv : MainAPI() {
                         val match = pattern.find(content)
                         if (match != null) {
                             val rawUrl = match.groupValues[1].replace("\\/", "/")
-                            val videoUrl = rawUrl
-                                .replace(Regex("_\\d+x\\d+\\.mp4$"), ".m3u8")
-                                .replace(".mp4", ".m3u8")
-
-                            Log.d(name, "Regex: $videoUrl")
+                            Log.d(name, "Regex: $rawUrl")
                             callback.invoke(
                                 newExtractorLink(
                                     source = this.name,
                                     name = this.name,
-                                    url = videoUrl,
-                                    type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                    url = rawUrl,
+                                    type = if (rawUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                 ) {
                                     this.referer = mainUrl
+                                    this.quality = Qualities.Unknown.value
                                 }
                             )
                             found = true
@@ -450,9 +517,9 @@ class ShowTv : MainAPI() {
                 }
             }
 
-            // Öncelik 3: iframe embed
+            // Öncelik 4: iframe embed
             if (!found) {
-                val iframe = document.selectFirst("iframe[src*='embed'], iframe[src*='player']")
+                val iframe = document.selectFirst("iframe[src*='embed'], iframe[src*='player'], iframe[src*='daion']")
                 if (iframe != null) {
                     val embedUrl = fixUrl(iframe.attr("src"))
                     Log.d(name, "iframe: $embedUrl")
