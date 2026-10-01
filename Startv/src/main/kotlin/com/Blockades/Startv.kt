@@ -25,7 +25,7 @@ class StarTv : MainAPI() {
     )
 
     // ★ Logo
-    private val logoUrl = "https://upload.wikimedia.org/wikipedia/tr/2/20/Star_TV_logo.png"
+    private val logoUrl = "https://www.google.com/s2/favicons?domain=www.startv.com.tr&sz=256"
 
     // ★ Ana sayfa menüsü – Canlı Yayın en başta
     override val mainPage = mainPageOf(
@@ -377,6 +377,61 @@ class StarTv : MainAPI() {
                 } catch (_: Exception) {}
             }
 
+            // ★ YENİ Öncelik 1.5: JSON-LD embedUrl varsa embed sayfasını kazı
+            if (!found) {
+                val embedUrls = mutableListOf<String>()
+                document.select("script[type=application/ld+json]").forEach { script ->
+                    try {
+                        val json = JSONObject(script.data())
+                        if (json.optString("@type") == "VideoObject") {
+                            json.optString("embedUrl").takeIf { it.startsWith("http") }?.let { embedUrls.add(it) }
+                            json.optString("url").takeIf { it.startsWith("http") && it != url }?.let { embedUrls.add(it) }
+                        }
+                    } catch (_: Exception) {}
+                }
+                for (embedUrl in embedUrls) {
+                    if (found) break
+                    try {
+                        val embedDoc = app.get(embedUrl, headers = headers + mapOf("Referer" to data)).document
+                        // <video>/<source> elementleri
+                        embedDoc.select("video[src], video source[src], source[src]").forEach { el ->
+                            val src = el.attr("src")
+                            if (src.isNotEmpty() && isValidVideoUrl(src)) {
+                                val full = if (src.startsWith("http")) src else fixUrl(src)
+                                Log.d(name, "JSON-LD embed video: $full")
+                                callback.invoke(
+                                    newExtractorLink(
+                                        source = this.name, name = this.name, url = full,
+                                        type = if (full.contains(".m3u8") || full.contains("smil:")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                    ) { this.referer = data }
+                                )
+                                found = true
+                            }
+                        }
+                        // Script'lerde ara
+                        if (!found) {
+                            for (script in embedDoc.select("script")) {
+                                extractMediaUrl(script.data())?.let { mediaUrl ->
+                                    if (isValidVideoUrl(mediaUrl)) {
+                                        Log.d(name, "JSON-LD embed script: $mediaUrl")
+                                        callback.invoke(
+                                            newExtractorLink(
+                                                source = this.name, name = this.name, url = mediaUrl,
+                                                type = if (mediaUrl.contains(".m3u8") || mediaUrl.contains("smil:")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                            ) { this.referer = data }
+                                        )
+                                        found = true
+                                    }
+                                }
+                                if (found) break
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.d(name, "embedUrl kazıma hatası: ${e.message}")
+                    }
+                }
+            }
+
             // Öncelik 2: Regex ile m3u8/mp4 ara
             if (!found) {
                 val patterns = listOf(
@@ -523,8 +578,12 @@ class StarTv : MainAPI() {
             }
 
             if (found.isEmpty()) {
-                Log.e(name, "Canlı yayın m3u8 bulunamadı")
-                return false
+                // ★ DÜZELTME: Sayfa JS ile yüklendiği için m3u8 HTML'de yok.
+                // Doğuş/Daion'un doğrulanmış canlı yayın endpoint'lerine düş.
+                Log.d(name, "Sayfada m3u8 yok, sabit canlı URL'ler kullanılıyor")
+                found.add("https://dogus-live.daioncdn.net/startv/startv.m3u8")
+                found.add("https://dogus.daioncdn.net/startv/startv.m3u8?app=startv_web&ce=3")
+                found.add("https://dogus.daioncdn.net/startv/startv_720p.m3u8?app=startv_web&ce=3")
             }
 
             // Kalite tahmini
