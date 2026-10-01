@@ -176,7 +176,9 @@ class StarTv : MainAPI() {
         // TvType.Live için newTvSeriesLoadResponse kullanmak yanlış response tipi
         // ürettiğinden canlı yayın açılırken hata/uyumsuzluk yaratıyordu.
         if (url.contains("/canli-yayin")) {
-            return newLiveStreamLoadResponse("Star TV Canlı", url) {
+            // ★ DÜZELTME: LiveStreamLoadResponse hem dataUrl (loadLinks'e gider)
+            // hem url (sayfa adresi) ister. İkisi de aynı canlı yayın sayfası.
+            return newLiveStreamLoadResponse("Star TV Canlı", url, url) {
                 this.posterUrl = logoUrl
             }
         }
