@@ -19,7 +19,6 @@ class NowTv : MainAPI() {
 
     private val jsonMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
-    // JSON-LD yardımcı data class'ları (isim çakışmasını önlemek için "Ld" ön eki kullanıldı)
     data class JsonLdItem(
         @JsonProperty("@type") val type: String? = null,
         val name: String? = null,
@@ -32,9 +31,7 @@ class NowTv : MainAPI() {
 
     data class LdActor(val name: String? = null)
 
-    data class LdListItem(
-        val item: LdItemRef? = null
-    )
+    data class LdListItem(val item: LdItemRef? = null)
 
     data class LdItemRef(
         @JsonProperty("@id") val id: String? = null,
@@ -102,7 +99,6 @@ class NowTv : MainAPI() {
 
         val shows = jsonLdItems
             .flatMap { item ->
-                // Hem doğrudan TVSeries/Movie tipli hem de ItemList içindeki öğeleri topla
                 val direct = if (item.type == "TVSeries" || item.type == "Movie") listOf(item) else emptyList()
                 val fromList = item.itemListElement?.mapNotNull { it.item }?.map {
                     JsonLdItem(
@@ -140,9 +136,8 @@ class NowTv : MainAPI() {
         val description = seriesInfo.description
         val poster = extractImageUrl(seriesInfo.image)
 
-        val episodes = mutableListOf<com.lagradost.cloudstream3.Episode>()
+        val episodes = mutableListOf<Episode>()
 
-        // Bölümleri "BÖLÜMLER" bölümünden çek
         document.select("section.videos:contains(BÖLÜMLER) .thumb a[href*='/bolum/'], a[href*='/bolum/']").forEach { element ->
             val epUrl = element.attr("href")
             val epTitle = element.select(".program-name, strong").text().trim()
@@ -161,7 +156,7 @@ class NowTv : MainAPI() {
             }
         }
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.url }) {
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }) {
             this.plot = description
             this.posterUrl = poster
             this.tags = seriesInfo.actor?.mapNotNull { it.name }
@@ -176,7 +171,6 @@ class NowTv : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // 1) Doğrudan video source varsa
         val directVideoUrl = document.selectFirst("video source")?.attr("src")
         if (!directVideoUrl.isNullOrBlank() && directVideoUrl.contains(".m3u8")) {
             M3u8Helper.generateM3u8(
@@ -188,14 +182,11 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // 2) JSON-LD'den video_code bul
         val jsonLdItems = getJsonLd(document)
         val videoObject = jsonLdItems.find { it.type == "VideoObject" }
         val videoCode = videoObject?.name?.takeIf { it.isNotBlank() }
 
         if (videoCode != null) {
-            // Not: Bu URL yapısı sitenin CDN yapısına göre değişebilir,
-            // uzun vadede /ajax/stream API'sinin tersine mühendislik yapılması gerekir.
             val path = data.removePrefix(mainUrl).removePrefix("/").removeSuffix("/")
             val constructedUrl =
                 "https://tdywsbbzdx.erbvr.com/$path/${videoCode}.smil/playlist.m3u8"
