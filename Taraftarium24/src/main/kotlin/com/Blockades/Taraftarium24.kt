@@ -1,5 +1,5 @@
-// ! Bu araç @mebularts tarafından ♥ ile kodlanmıştır.
-package com.mebularts
+// ! Bu araç @Blockades tarafından ARAS ile kodlanmıştır.
+package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.M3u8Helper
@@ -8,8 +8,8 @@ import org.jsoup.nodes.Document
 import java.net.URI
 
 class Taraftarium24 : MainAPI() {
-    override var mainUrl              = "https://taraftarium24pro53.site"
-    override var name                 = "Taraftarium24"
+    override var mainUrl              = "https://patronsports2.cfd"
+    override var name                 = "PatronSpor"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -17,18 +17,22 @@ class Taraftarium24 : MainAPI() {
     override val hasDownloadSupport   = false
     override val supportedTypes       = setOf(TvType.Live)
 
+    // Site ana URL'i (HTML sayfası için)
+    private val siteUrl = "https://patronspor.com" // veya güncel domain
+
     /* -------------------- MainPage -------------------- */
 
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Canlı Kanallar"
+        "$mainUrl/matches.php" to "Canlı Maçlar",
+        "$mainUrl/channels.php" to "7/24 Kanallar"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val doc = app.get(request.data, referer = "$mainUrl/").document
-        val cards = parseChannels(doc).map { (id, title) ->
+        val items = fetchStreams(request.data)
+        val cards = items.map { (id, title) ->
             newMovieSearchResponse(
-                title.ifBlank { "Kanal $id" },
-                "$mainUrl/stream/$id",
+                title,
+                "stream:$id",
                 TvType.Live
             ) {}
         }
@@ -38,13 +42,14 @@ class Taraftarium24 : MainAPI() {
     /* -------------------- Search -------------------- */
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val doc = app.get(mainUrl, referer = "$mainUrl/").document
         val q = query.trim().lowercase()
-        return parseChannels(doc).filter { (_, name) ->
-            name.lowercase().contains(q)
-        }.map { (id, name) ->
-            newMovieSearchResponse(name, "$mainUrl/stream/$id", TvType.Live) {}
-        }
+        val matches = fetchStreams("$mainUrl/matches.php")
+        val channels = fetchStreams("$mainUrl/channels.php")
+        return (matches + channels)
+            .filter { (_, name) -> name.lowercase().contains(q) }
+            .map { (id, name) ->
+                newMovieSearchResponse(name, "stream:$id", TvType.Live) {}
+            }
     }
 
     override suspend fun quickSearch(query: String) = search(query)
@@ -52,10 +57,8 @@ class Taraftarium24 : MainAPI() {
     /* -------------------- Load (details) -------------------- */
 
     override suspend fun load(url: String): LoadResponse? {
-        val id = Regex("""/stream/(\d+)""").find(url)?.groupValues?.getOrNull(1) ?: return null
-        val doc = app.get(mainUrl, referer = "$mainUrl/").document
-        val title = (parseChannels(doc).firstOrNull { it.first == id }?.second) ?: "Kanal $id"
-
+        val id = url.removePrefix("stream:")
+        val title = resolveTitle(id) ?: "Kanal $id"
         return newMovieLoadResponse(title, url, TvType.Live, url) {
             this.posterUrl = null
         }
@@ -69,24 +72,19 @@ class Taraftarium24 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val id = Regex("""/stream/(\d+)""").find(data)?.groupValues?.getOrNull(1) ?: return false
+        val id = data.removePrefix("stream:")
+        if (id.isBlank()) return false
 
-        // Ana sayfadaki data-player-url şablonunu al, id'yi değiştir
-        val home = app.get(mainUrl, referer = "$mainUrl/").document
-        val template = home.selectFirst(".x-embed-container[data-player-url]")?.attr("data-player-url")
-        val embedUrl = when {
-            !template.isNullOrBlank() -> template.replace(Regex("""id=\d+"""), "id=$id")
-            else -> "https://macizlevip315.shop/wp-content/themes/ikisifirbirdokuz/match-center.php?id=$id&autoPlay=1"
-        }
-
-        // URL zincirini dolaşarak .m3u8 ara (derinlik 3)
-        val m3u8s = collectM3u8s(embedUrl, referer = mainUrl, depth = 0, maxDepth = 3).distinct()
+        // ch.html üzerinden stream URL'ini al
+        val chUrl = "$siteUrl/ch.html?id=$id"
+        val m3u8s = collectM3u8s(chUrl, referer = siteUrl, depth = 0, maxDepth = 3).distinct()
+        
         m3u8s.forEach { url ->
             runCatching {
                 M3u8Helper.generateM3u8(
                     source = name,
                     streamUrl = fixUrl(url),
-                    referer = mainUrl,
+                    referer = siteUrl,
                     name = name
                 ).forEach(callback)
             }
@@ -96,7 +94,43 @@ class Taraftarium24 : MainAPI() {
 
     /* -------------------- Helpers -------------------- */
 
-    /** Verilen URL'i indir; gövdede, <script>’lerde ve iframe’lerde .m3u8 ara. */
+    /** JSON endpoint'lerinden stream listesini çek */
+    private suspend fun fetchStreams(endpoint: String): List<Pair<String, String>> {
+        return try {
+            val response = app.get(endpoint, referer = siteUrl).text
+            val json = org.json.JSONArray(response)
+            val out = mutableListOf<Pair<String, String>>()
+            
+            for (i in 0 until json.length()) {
+                val obj = json.getJSONObject(i)
+                val url = obj.optString("URL", "")
+                val idMatch = Regex("""[?&]id=([^&]+)""").find(url)
+                val id = idMatch?.groupValues?.getOrNull(1) ?: continue
+                
+                // Başlık: HomeTeam vs AwayTeam veya Mac
+                val home = obj.optString("HomeTeam", "")
+                val away = obj.optString("AwayTeam", "")
+                val mac = obj.optString("Mac", "")
+                val title = when {
+                    home.isNotBlank() && away.isNotBlank() -> "$home vs $away"
+                    mac.isNotBlank() -> mac
+                    else -> "Kanal $id"
+                }
+                out += id to title
+            }
+            out
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** ID'den başlık bul */
+    private suspend fun resolveTitle(id: String): String? {
+        val matches = fetchStreams("$mainUrl/matches.php")
+        val channels = fetchStreams("$mainUrl/channels.php")
+        return (matches + channels).firstOrNull { it.first == id }?.second
+    }
+
     private suspend fun collectM3u8s(
         url: String,
         referer: String,
@@ -112,7 +146,6 @@ class Taraftarium24 : MainAPI() {
 
         out += findM3u8InText(body)
 
-        // <script> içerikleri
         doc.select("script").forEach { s ->
             val code: String? = if (s.hasAttr("src")) {
                 val src = normalizeHref(s.attr("src"), base = url) ?: return@forEach
@@ -123,7 +156,6 @@ class Taraftarium24 : MainAPI() {
             if (!code.isNullOrBlank()) out += findM3u8InText(code)
         }
 
-        // iframe zinciri
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src"), base = url) ?: return@forEach
             out += collectM3u8s(src, referer = url, depth = depth + 1, maxDepth = maxDepth)
@@ -149,29 +181,5 @@ class Taraftarium24 : MainAPI() {
                 ?: fixUrl(raw)
             else -> fixUrl(raw)
         }
-    }
-
-    /** Ana sayfadaki kanal listesini (id, ad) olarak döndür. */
-    private fun parseChannels(doc: Document): List<Pair<String, String>> {
-        val out = mutableListOf<Pair<String, String>>()
-
-        // Eski yapı: .channels .item a[data-channel-id]
-        doc.select(".channels .item a[data-channel-id]").forEach { a ->
-            val id = a.attr("data-channel-id").ifBlank { null } ?: return@forEach
-            val title = a.selectFirst(".name")?.text()?.trim()
-                ?: a.attr("title").ifBlank { a.text() }
-            if (title.isNotBlank()) out += id to title
-        }
-
-        // Alternatif: data-channel-id içeren başka öğeler
-        if (out.isEmpty()) {
-            doc.select("[data-channel-id]").forEach { e ->
-                val id = e.attr("data-channel-id").ifBlank { null } ?: return@forEach
-                val title = e.attr("title").ifBlank { e.text() }
-                if (title.isNotBlank()) out += id to title
-            }
-        }
-
-        return out.distinctBy { it.first }
     }
 }
