@@ -1,4 +1,3 @@
-
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır. (Star TV için uyarlanmıştır)
 
 package com.Blockades
@@ -173,12 +172,8 @@ class StarTv : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         Log.d(name, "load: $url")
 
-        // ★ DÜZELTME: Canlı yayın artık LiveStreamLoadResponse döndürüyor.
-        // TvType.Live için newTvSeriesLoadResponse kullanmak yanlış response tipi
-        // ürettiğinden canlı yayın açılırken hata/uyumsuzluk yaratıyordu.
+        // Canlı yayın
         if (url.contains("/canli-yayin")) {
-            // ★ DÜZELTME: LiveStreamLoadResponse hem dataUrl (loadLinks'e gider)
-            // hem url (sayfa adresi) ister. İkisi de aynı canlı yayın sayfası.
             return newLiveStreamLoadResponse("Star TV Canlı", url, url) {
                 this.posterUrl = logoUrl
             }
@@ -234,7 +229,6 @@ class StarTv : MainAPI() {
         }
 
         val finalTitle = foundTitle ?: return null
-        // ★ DÜZELTME: !! yerine güvenli yerel değişken kullanımı
         val finalPoster = foundPoster
         val finalDesc = foundDesc
 
@@ -310,7 +304,7 @@ class StarTv : MainAPI() {
             lower.endsWith(".avif")
         ) return false
 
-        // Sorgu parametreli görseller (?width=... gibi)
+        // Sorgu parametreli görseller
         if (Regex("""\.(jpg|jpeg|png|webp|gif|svg)(\?|$)""").containsMatchIn(lower)) return false
 
         // Snapshot / thumbnail / poster kalıpları
@@ -320,12 +314,29 @@ class StarTv : MainAPI() {
             (lower.contains("_web_") && lower.contains(".jpg"))
         ) return false
 
+        // Sayfa URL'lerini reddet (bölüm/dizi sayfaları)
+        if (lower.contains("/bolumler/") || lower.contains("/dizi/") || lower.contains("/program/")) return false
+
         // Gerçek medya işareti var mı?
         return lower.contains(".m3u8") ||
                lower.contains(".mp4") ||
                lower.contains("smil:") ||
                lower.contains("manifest") ||
-               lower.contains(".mpd")
+               lower.contains(".mpd") ||
+               lower.contains("kaltura")  // Star TV Kaltura player kullanıyor
+    }
+
+    // ★ GTM / analytics iframe'lerini atla
+    private fun isTrackingIframe(src: String): Boolean {
+        val lower = src.lowercase()
+        return lower.contains("googletagmanager") ||
+               lower.contains("google-analytics") ||
+               lower.contains("doubleclick") ||
+               lower.contains("facebook.com/tr") ||
+               lower.contains("hotjar") ||
+               lower.contains("yandex") ||
+               lower.contains("segment.io") ||
+               lower.contains("mixpanel")
     }
 
     // ★ Video linklerini çek
@@ -338,7 +349,7 @@ class StarTv : MainAPI() {
         Log.d(name, "loadLinks: $data")
         var found = false
 
-        // Canlı yayın linkleri dinamik olarak çekiliyor
+        // Canlı yayın linkleri
         if (data.contains("/canli-yayin")) {
             return loadLiveStreams(data, callback)
         }
@@ -346,39 +357,109 @@ class StarTv : MainAPI() {
         try {
             val document = app.get(data, headers = headers).document
 
-            // Öncelik 1: JSON-LD VideoObject > contentUrl
-            document.select("script[type=application/ld+json]").forEach { script ->
+            // ★ Öncelik 0: Kaltura player ID (Star TV Kaltura kullanıyor)
+            // Sayfada "kaltura", "partnerId", "entryId", "playerId" gibi değerler ara
+            val scriptContents = document.select("script:not([src])").joinToString("\n") { it.data() }
+
+            val kalturaEntryId = Regex("""["']entryId["']\s*:\s*["']([^"']+)["']""")
+                .find(scriptContents)?.groupValues?.get(1)
+            val kalturaPartnerId = Regex("""["']partnerId["']\s*:\s*["']?(\d+)["']?""")
+                .find(scriptContents)?.groupValues?.get(1)
+
+            if (kalturaEntryId != null && kalturaPartnerId != null) {
+                Log.d(name, "Kaltura bulundu: partnerId=$kalturaPartnerId, entryId=$kalturaEntryId")
+
+                // Kaltura API'den video URL'ini al
+                val kalturaApiUrl = "https://cdnapisec.kaltura.com/api_v3/service/baseEntry/action/get" +
+                    "?format=1" +
+                    "&partnerId=$kalturaPartnerId" +
+                    "&entryId=$kalturaEntryId" +
+                    "&ks=" +
+                    "&clientTag=html5:v2.0"
+
                 try {
-                    val json = JSONObject(script.data())
-                    if (json.optString("@type") == "VideoObject") {
-                        val contentUrl = json.optString("contentUrl", "")
-                        if (contentUrl.isNotEmpty() && contentUrl.startsWith("http")) {
-                            Log.d(name, "JSON-LD contentUrl: $contentUrl")
+                    val kalturaResp = app.get(kalturaApiUrl, headers = headers).text
+                    val kalturaJson = JSONObject(kalturaResp)
 
-                            if (!isValidVideoUrl(contentUrl)) {
-                                Log.d(name, "JSON-LD geçersiz video URL atlandı: $contentUrl")
-                                return@forEach
+                    // Kaltura'dan HLS URL'ini çıkar
+                    val hlsUrl = kalturaJson
+                        .optJSONArray("data")?.optJSONObject(0)
+                        ?.optString("dataUrl")?.takeIf { it.isNotEmpty() }
+
+                    if (hlsUrl != null && hlsUrl.contains(".m3u8")) {
+                        Log.d(name, "Kaltura HLS: $hlsUrl")
+                        callback.invoke(
+                            newExtractorLink(
+                                source = this.name,
+                                name = this.name,
+                                url = hlsUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = mainUrl
+                                this.quality = Qualities.Unknown.value
                             }
+                        )
+                        found = true
+                    }
 
-                            val isHls = contentUrl.contains(".m3u8")
+                    // Kaltura manifest URL'ini de dene
+                    if (!found) {
+                        val manifestUrl = kalturaJson
+                            .optJSONArray("data")?.optJSONObject(0)
+                            ?.optString("manifestUrl")?.takeIf { it.isNotEmpty() }
+                        if (manifestUrl != null && manifestUrl.contains(".m3u8")) {
+                            Log.d(name, "Kaltura manifest: $manifestUrl")
                             callback.invoke(
                                 newExtractorLink(
                                     source = this.name,
                                     name = this.name,
-                                    url = contentUrl,
-                                    type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                    url = manifestUrl,
+                                    type = ExtractorLinkType.M3U8
                                 ) {
                                     this.referer = mainUrl
-                                    this.quality = Qualities.Unknown.value
                                 }
                             )
                             found = true
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.d(name, "Kaltura API hatası: ${e.message}")
+                }
             }
 
-            // ★ YENİ Öncelik 1.5: JSON-LD embedUrl varsa embed sayfasını kazı
+            // ★ Öncelik 1: JSON-LD VideoObject > contentUrl
+            if (!found) {
+                document.select("script[type=application/ld+json]").forEach { script ->
+                    try {
+                        val json = JSONObject(script.data())
+                        if (json.optString("@type") == "VideoObject") {
+                            val contentUrl = json.optString("contentUrl", "")
+                            if (contentUrl.isNotEmpty() && contentUrl.startsWith("http")) {
+                                Log.d(name, "JSON-LD contentUrl: $contentUrl")
+                                if (!isValidVideoUrl(contentUrl)) {
+                                    Log.d(name, "JSON-LD geçersiz atlandı: $contentUrl")
+                                    return@forEach
+                                }
+                                val isHls = contentUrl.contains(".m3u8")
+                                callback.invoke(
+                                    newExtractorLink(
+                                        source = this.name,
+                                        name = this.name,
+                                        url = contentUrl,
+                                        type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                    ) {
+                                        this.referer = mainUrl
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                )
+                                found = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // ★ Öncelik 1.5: JSON-LD embedUrl
             if (!found) {
                 val embedUrls = mutableListOf<String>()
                 document.select("script[type=application/ld+json]").forEach { script ->
@@ -386,7 +467,7 @@ class StarTv : MainAPI() {
                         val json = JSONObject(script.data())
                         if (json.optString("@type") == "VideoObject") {
                             json.optString("embedUrl").takeIf { it.startsWith("http") }?.let { embedUrls.add(it) }
-                            json.optString("url").takeIf { it.startsWith("http") && it != url }?.let { embedUrls.add(it) }
+                            json.optString("url").takeIf { it.startsWith("http") && it != data }?.let { embedUrls.add(it) }
                         }
                     } catch (_: Exception) {}
                 }
@@ -394,7 +475,6 @@ class StarTv : MainAPI() {
                     if (found) break
                     try {
                         val embedDoc = app.get(embedUrl, headers = headers + mapOf("Referer" to data)).document
-                        // <video>/<source> elementleri
                         embedDoc.select("video[src], video source[src], source[src]").forEach { el ->
                             val src = el.attr("src")
                             if (src.isNotEmpty() && isValidVideoUrl(src)) {
@@ -409,7 +489,6 @@ class StarTv : MainAPI() {
                                 found = true
                             }
                         }
-                        // Script'lerde ara
                         if (!found) {
                             for (script in embedDoc.select("script")) {
                                 extractMediaUrl(script.data())?.let { mediaUrl ->
@@ -433,15 +512,17 @@ class StarTv : MainAPI() {
                 }
             }
 
-            // Öncelik 2: Regex ile m3u8/mp4 ara
+            // ★ Öncelik 2: Regex ile m3u8/mp4 ara (Kaltura ve Doğuş CDN dahil)
             if (!found) {
                 val patterns = listOf(
                     Regex("""(https?://[^"'\s<>]*mncdn\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
                     Regex("""(https?://[^"'\s<>]*akamaized\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+                    Regex("""(https?://[^"'\s<>]*daioncdn\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+                    Regex("""(https?://[^"'\s<>]*kaltura\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
                     Regex("""(https?://[^"'\s<>]+/smil:[^"'\s<>]+)"""),
                     Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
                     Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)"""),
-                    Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist)"\s*:\s*")([^"]+)""")
+                    Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist|dataUrl)"\s*:\s*")([^"]+)""")
                 )
                 for (script in document.select("script")) {
                     val content = script.data()
@@ -458,9 +539,12 @@ class StarTv : MainAPI() {
                                 .replace("\\u002E", ".")
 
                             if (!rawUrl.startsWith("http") || !isValidVideoUrl(rawUrl)) {
-                                Log.d(name, "Regex geçersiz video URL atlandı: $rawUrl")
+                                Log.d(name, "Regex geçersiz atlandı: $rawUrl")
                                 continue
                             }
+
+                            // Sayfa URL'lerini atla
+                            if (rawUrl.contains("/bolumler/") || rawUrl == data) continue
 
                             Log.d(name, "Regex: $rawUrl")
                             callback.invoke(
@@ -483,10 +567,12 @@ class StarTv : MainAPI() {
                 }
             }
 
-            // Öncelik 3: iframe embed
+            // ★ Öncelik 3: iframe embed (GTM/analytics iframe'leri hariç)
             if (!found) {
                 val iframes = document.select("iframe[src]")
-                Log.d(name, "Toplam ${iframes.size} iframe bulundu")
+                    .filterNot { el -> isTrackingIframe(el.attr("src")) }
+
+                Log.d(name, "Toplam ${iframes.size} geçerli iframe bulundu")
 
                 for (iframe in iframes) {
                     if (found) break
@@ -510,7 +596,7 @@ class StarTv : MainAPI() {
                     // 3b. Manuel iframe kazıma
                     findMediaInIframe(embedUrl, data)?.let { url ->
                         if (!isValidVideoUrl(url)) {
-                            Log.d(name, "Manuel iframe geçersiz video URL atlandı: $url")
+                            Log.d(name, "Manuel iframe geçersiz atlandı: $url")
                             return@let
                         }
 
@@ -540,14 +626,16 @@ class StarTv : MainAPI() {
         return found
     }
 
-    // ★ Canlı yayın linklerini sayfadan dinamik çıkar
+    // ★ Canlı yayın linklerini sayfadan dinamik çıkar + fallback
     private suspend fun loadLiveStreams(
         pageUrl: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val found = mutableSetOf<String>()
+
+        // Önce sayfadan çekmeyi dene (hata olsa bile devam et)
         try {
             val doc = app.get(pageUrl, headers = headers).document
-            val found = mutableSetOf<String>()
 
             // 1) Script'lerde m3u8 ara
             for (script in doc.select("script")) {
@@ -578,43 +666,46 @@ class StarTv : MainAPI() {
                 }
             }
 
-            if (found.isEmpty()) {
-                // ★ DÜZELTME: Sayfa JS ile yüklendiği için m3u8 HTML'de yok.
-                // Doğuş/Daion'un doğrulanmış canlı yayın endpoint'lerine düş.
-                Log.d(name, "Sayfada m3u8 yok, sabit canlı URL'ler kullanılıyor")
-                found.add("https://dogus-live.daioncdn.net/startv/startv.m3u8")
-                found.add("https://dogus.daioncdn.net/startv/startv.m3u8?app=startv_web&ce=3")
-                found.add("https://dogus.daioncdn.net/startv/startv_720p.m3u8?app=startv_web&ce=3")
-            }
-
-            // Kalite tahmini
-            fun guessQuality(url: String): Int = when {
-                url.contains("1080") -> Qualities.P1080.value
-                url.contains("720")  -> Qualities.P720.value
-                url.contains("480")  -> Qualities.P480.value
-                url.contains("360")  -> Qualities.P360.value
-                else -> Qualities.Unknown.value
-            }
-
-            found.forEachIndexed { i, url ->
-                Log.d(name, "Canlı m3u8 bulundu: $url")
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = "$name - Canlı ${i + 1}",
-                        url = url,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = mainUrl
-                        this.quality = guessQuality(url)
-                    }
-                )
-            }
-            return true
+            Log.d(name, "Canlı sayfadan ${found.size} m3u8 bulundu")
         } catch (e: Exception) {
-            Log.e(name, "Canlı yayın hatası: ${e.message}")
-            return false
+            Log.e(name, "Canlı sayfa çekilemedi: ${e.message}")
         }
+
+        // Her durumda fallback URL'leri dene (catch dışında)
+        if (found.isEmpty()) {
+            Log.d(name, "Fallback canlı URL'ler kullanılıyor")
+            found.add("https://dogus-live.daioncdn.net/startv/startv.m3u8")
+            found.add("https://dogus-live.daioncdn.net/startv/startv_720p.m3u8")
+            found.add("https://dogus.daioncdn.net/startv/startv.m3u8?app=startv_web&ce=3")
+            found.add("https://dogus.daioncdn.net/startv/startv_720p.m3u8?app=startv_web&ce=3")
+            found.add("https://dogus.daioncdn.net/startv/startv.m3u8?app=startv_web")
+            found.add("http://doguslive-i.akamaihd.net/hls/live/205665/starhd/stream3/streamPlaylist.m3u8")
+        }
+
+        // Kalite tahmini
+        fun guessQuality(url: String): Int = when {
+            url.contains("1080") -> Qualities.P1080.value
+            url.contains("720")  -> Qualities.P720.value
+            url.contains("480")  -> Qualities.P480.value
+            url.contains("360")  -> Qualities.P360.value
+            else -> Qualities.Unknown.value
+        }
+
+        found.forEachIndexed { i, url ->
+            Log.d(name, "Canlı m3u8: $url")
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name = "$name - Canlı ${i + 1}",
+                    url = url,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = mainUrl
+                    this.quality = guessQuality(url)
+                }
+            )
+        }
+        return found.isNotEmpty()
     }
 
     // ★ iframe içeriğini çek ve içindeki medya URL'ini ara (özyinelemeli)
@@ -663,6 +754,10 @@ class StarTv : MainAPI() {
             for (nestedIframe in iframeDoc.select("iframe[src]")) {
                 val nestedSrc = nestedIframe.attr("src")
                 if (nestedSrc.isBlank()) continue
+
+                // İzleme iframe'lerini atla
+                if (isTrackingIframe(nestedSrc)) continue
+
                 val nestedUrl = if (nestedSrc.startsWith("http")) nestedSrc else fixUrl(nestedSrc)
                 Log.d(name, "  → iç iframe bulundu: $nestedUrl")
                 findMediaInIframe(nestedUrl, embedUrl, depth + 1)?.let { return it }
@@ -687,16 +782,18 @@ class StarTv : MainAPI() {
         val patterns = listOf(
             Regex("""(https?://[^"'\s<>]*mncdn\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
             Regex("""(https?://[^"'\s<>]*akamaized\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+            Regex("""(https?://[^"'\s<>]*daioncdn\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+            Regex("""(https?://[^"'\s<>]*kaltura\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
             Regex("""(https?://[^"'\s<>]+/smil:[^"'\s<>]+)"""),
             Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
             Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)"""),
-            Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist)"\s*:\s*")([^"]+)""")
+            Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist|dataUrl)"\s*:\s*")([^"]+)""")
         )
 
         for (pattern in patterns) {
             pattern.find(decoded)?.let { match ->
                 val url = match.groupValues[1]
-                if (url.startsWith("http") && isValidVideoUrl(url)) {
+                if (url.startsWith("http") && isValidVideoUrl(url) && !url.contains("/bolumler/")) {
                     return url
                 }
             }
