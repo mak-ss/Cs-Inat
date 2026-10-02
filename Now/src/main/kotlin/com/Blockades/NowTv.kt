@@ -3,14 +3,14 @@ package com.Blockades
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
+import org.jsoup.nodes.Document
 
 @Suppress("unused")
-class NowTvProvider : MainAPI() {
+class NowTv : MainAPI() {
     override var mainUrl = "https://www.now.com.tr"
     override var name = "NOW TV"
     override val hasMainPage = true
@@ -19,25 +19,32 @@ class NowTvProvider : MainAPI() {
 
     private val jsonMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
-    // Helper data classes for parsing JSON-LD
+    // JSON-LD yardımcı data class'ları (isim çakışmasını önlemek için "Ld" ön eki kullanıldı)
     data class JsonLdItem(
-        @JsonProperty("@type") val type: String?,
-        val name: String?,
-        val url: String?,
-        val image: String?,
-        val description: String?,
-        val actor: List<Actor>?,
-        val containsSeason: List<Season>?
+        @JsonProperty("@type") val type: String? = null,
+        val name: String? = null,
+        val url: String? = null,
+        val image: Any? = null,
+        val description: String? = null,
+        val actor: List<LdActor>? = null,
+        val itemListElement: List<LdListItem>? = null
     )
 
-    data class Actor(val name: String?)
-    data class Season(val episode: Episode?)
-    data class Episode(val name: String?, val episodeNumber: String?, val url: String?)
+    data class LdActor(val name: String? = null)
+
+    data class LdListItem(
+        val item: LdItemRef? = null
+    )
+
+    data class LdItemRef(
+        @JsonProperty("@id") val id: String? = null,
+        val name: String? = null,
+        val image: Any? = null
+    )
 
     override val mainPage = mainPageOf(
         "$mainUrl/dizi-izle" to "Diziler",
-        "$mainUrl/program-izle" to "Programlar",
-        "$mainUrl/film-izle" to "Filmler"
+        "$mainUrl/program-izle" to "Programlar"
     )
 
     private fun getJsonLd(document: Document): List<JsonLdItem> {
@@ -45,18 +52,45 @@ class NowTvProvider : MainAPI() {
         val items = mutableListOf<JsonLdItem>()
         for (script in jsonLdScripts) {
             try {
-                val json = script.data()
-                // JSON-LD can be a single object or an array of objects
-                if (json.trim().startsWith("[")) {
+                val json = script.data().trim()
+                if (json.startsWith("[")) {
                     items.addAll(jsonMapper.readValue<List<JsonLdItem>>(json))
-                } else {
+                } else if (json.startsWith("{")) {
                     items.add(jsonMapper.readValue<JsonLdItem>(json))
                 }
-            } catch (e: Exception) {
-                // Ignore invalid JSON-LD blocks
+            } catch (_: Exception) {
+                // Geçersiz JSON-LD bloğunu yoksay
             }
         }
         return items
+    }
+
+    private fun extractImageUrl(image: Any?): String? {
+        return when (image) {
+            is String -> fixImageUrl(image)
+            is List<*> -> image.firstOrNull()?.let { extractImageUrl(it) }
+            else -> null
+        }
+    }
+
+    private fun fixImageUrl(image: String?): String? {
+        if (image.isNullOrBlank()) return null
+        return when {
+            image.startsWith("//") -> "https:$image"
+            image.startsWith("/") -> "$mainUrl$image"
+            else -> image
+        }
+    }
+
+    private fun mapToSearchResponse(item: JsonLdItem): SearchResponse? {
+        val title = item.name ?: return null
+        val href = item.url ?: item.itemListElement?.firstOrNull()?.item?.id ?: return null
+        val poster = extractImageUrl(item.image)
+            ?: extractImageUrl(item.itemListElement?.firstOrNull()?.item?.image)
+
+        return newTvSeriesSearchResponse(title, href) {
+            this.posterUrl = poster
+        }
     }
 
     override suspend fun getMainPage(
@@ -67,16 +101,21 @@ class NowTvProvider : MainAPI() {
         val jsonLdItems = getJsonLd(document)
 
         val shows = jsonLdItems
-            .filter { it.type == "TVSeries" || it.type == "Movie" }
-            .mapNotNull {
-                val title = it.name ?: return@mapNotNull null
-                val href = it.url ?: return@mapNotNull null
-                val poster = it.image
-
-                newTvSeriesSearchResponse(title, href) {
-                    this.posterUrl = poster
-                }
-            }.distinctBy { it.url }
+            .flatMap { item ->
+                // Hem doğrudan TVSeries/Movie tipli hem de ItemList içindeki öğeleri topla
+                val direct = if (item.type == "TVSeries" || item.type == "Movie") listOf(item) else emptyList()
+                val fromList = item.itemListElement?.mapNotNull { it.item }?.map {
+                    JsonLdItem(
+                        type = "TVSeries",
+                        name = it.name,
+                        url = it.id,
+                        image = it.image
+                    )
+                } ?: emptyList()
+                direct + fromList
+            }
+            .mapNotNull { mapToSearchResponse(it) }
+            .distinctBy { it.url }
 
         return newHomePageResponse(request.name, shows)
     }
@@ -88,15 +127,8 @@ class NowTvProvider : MainAPI() {
 
         return jsonLdItems
             .filter { it.type == "TVSeries" || it.type == "Movie" }
-            .mapNotNull {
-                val title = it.name ?: return@mapNotNull null
-                val href = it.url ?: return@mapNotNull null
-                val poster = it.image
-
-                newTvSeriesSearchResponse(title, href) {
-                    this.posterUrl = poster
-                }
-            }.distinctBy { it.url }
+            .mapNotNull { mapToSearchResponse(it) }
+            .distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -106,17 +138,20 @@ class NowTvProvider : MainAPI() {
 
         val title = seriesInfo.name ?: return null
         val description = seriesInfo.description
-        val poster = seriesInfo.image
+        val poster = extractImageUrl(seriesInfo.image)
 
-        val episodes = mutableListOf<Episode>()
+        val episodes = mutableListOf<com.lagradost.cloudstream3.Episode>()
 
-        // Episodes are not in the main JSON-LD, so we scrape them from the "BÖLÜMLER" section
-        document.select("section.videos:contains(BÖLÜMLER) .thumb, .list-item").forEach { element ->
-            val epUrl = element.select("a").attr("href")
-            val epTitle = element.select(".program-name, .list-item-meta strong").text().trim()
-            val epImage = element.select("img").attr("data-src")
+        // Bölümleri "BÖLÜMLER" bölümünden çek
+        document.select("section.videos:contains(BÖLÜMLER) .thumb a[href*='/bolum/'], a[href*='/bolum/']").forEach { element ->
+            val epUrl = element.attr("href")
+            val epTitle = element.select(".program-name, strong").text().trim()
+                .ifBlank { element.text().trim() }
+            val epImage = element.select("img").attr("data-src").ifBlank {
+                element.select("img").attr("src")
+            }
 
-            if (epUrl.isNotEmpty() && epTitle.isNotEmpty()) {
+            if (epUrl.isNotEmpty() && epTitle.isNotEmpty() && epTitle.contains("bölüm", ignoreCase = true)) {
                 episodes.add(
                     newEpisode(epUrl) {
                         this.name = epTitle
@@ -126,38 +161,10 @@ class NowTvProvider : MainAPI() {
             }
         }
 
-        // If no episodes found from the specific section, try finding all episode links
-        if (episodes.isEmpty()) {
-             document.select("a[href*='/bolum/']").forEach { element ->
-                val epUrl = element.attr("href")
-                val epTitle = element.text().trim()
-                if (epUrl.isNotEmpty() && epTitle.isNotEmpty() && epTitle.contains("Bölüm", ignoreCase = true)) {
-                    episodes.add(
-                        newEpisode(epUrl) {
-                            this.name = epTitle
-                            this.posterUrl = fixImageUrl(element.select("img").attr("data-src"))
-                        }
-                    )
-                }
-            }
-        }
-
-
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }) {
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.url }) {
             this.plot = description
-            this.posterUrl = fixImageUrl(poster)
+            this.posterUrl = poster
             this.tags = seriesInfo.actor?.mapNotNull { it.name }
-        }
-    }
-
-    private fun fixImageUrl(image: String?): String? {
-        if (image.isNullOrBlank()) return null
-        return if (image.startsWith("//")) {
-            "https:$image"
-        } else if (image.startsWith("/")) {
-            "$mainUrl$image"
-        } else {
-            image
         }
     }
 
@@ -168,16 +175,11 @@ class NowTvProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
-        val jsonLdItems = getJsonLd(document)
-        val videoObject = jsonLdItems.find { it.type == "VideoObject" }
-        // The video_code is the key to build the final m3u8 URL
-        val videoCode = videoObject?.name?.takeIf { it.isNotBlank() } ?: data.substringAfterLast("/")
 
-        // Try to find the video source directly first
+        // 1) Doğrudan video source varsa
         val directVideoUrl = document.selectFirst("video source")?.attr("src")
-
         if (!directVideoUrl.isNullOrBlank() && directVideoUrl.contains(".m3u8")) {
-             M3u8Helper.generateM3u8(
+            M3u8Helper.generateM3u8(
                 name,
                 directVideoUrl,
                 data,
@@ -185,22 +187,28 @@ class NowTvProvider : MainAPI() {
             ).forEach(callback)
             return true
         }
-        
-        // Fallback to the dynamic URL construction based on the provided m3u8 link structure
-        // This part is fragile as the CDN domain might change.
-        val cdnBaseUrl = "https://tdywsbbzdx.erbvr.com"
-        val constructedUrl = "$cdnBaseUrl/Omur-Usta/bolumler/1/${videoCode}.smil/playlist.m3u8"
-        
-        // Note: This constructed URL is a guess and might not work for all videos or in the future.
-        // A more robust solution would require reverse-engineering the /ajax/stream API call.
-        M3u8Helper.generateM3u8(
-            name,
-            constructedUrl,
-            data,
-            headers = mapOf("Referer" to mainUrl)
-        ).forEach(callback)
 
+        // 2) JSON-LD'den video_code bul
+        val jsonLdItems = getJsonLd(document)
+        val videoObject = jsonLdItems.find { it.type == "VideoObject" }
+        val videoCode = videoObject?.name?.takeIf { it.isNotBlank() }
 
-        return true
+        if (videoCode != null) {
+            // Not: Bu URL yapısı sitenin CDN yapısına göre değişebilir,
+            // uzun vadede /ajax/stream API'sinin tersine mühendislik yapılması gerekir.
+            val path = data.removePrefix(mainUrl).removePrefix("/").removeSuffix("/")
+            val constructedUrl =
+                "https://tdywsbbzdx.erbvr.com/$path/${videoCode}.smil/playlist.m3u8"
+
+            M3u8Helper.generateM3u8(
+                name,
+                constructedUrl,
+                data,
+                headers = mapOf("Referer" to mainUrl)
+            ).forEach(callback)
+            return true
+        }
+
+        return false
     }
 }
