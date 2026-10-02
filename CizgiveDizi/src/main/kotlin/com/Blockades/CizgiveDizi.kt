@@ -11,7 +11,7 @@ import java.net.URLEncoder
 
 class CizgiveDizi : MainAPI() {
 
-    override var mainUrl = "https://cizgivedizi.com"
+    override var mainUrl = "https://cizgivedizi.net"
     override var name = "CizgiveDizi"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime, TvType.Cartoon)
     override var lang = "tr"
