@@ -5,7 +5,7 @@ cloudstream {
     language    = "tr"
     description = "Star TV'nin sevilen dizileri (Tuzlu Kahve, Sevdiğim Sensin, Yalı Çapkını) ve programları (Didem Arslan, Songül ve Uğur) izleyin."
 
-    status  = 1
+    status  = 0
     tvTypes = listOf("TvSeries", "Live")
     iconUrl = "https://www.google.com/s2/favicons?domain=www.startv.com.tr&sz=%size%"
 }
