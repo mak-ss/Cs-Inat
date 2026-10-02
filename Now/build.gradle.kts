@@ -1,11 +1,11 @@
 version = 1
 
 cloudstream {
-    authors     = listOf("kerimmkirac")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "Star TV'nin sevilen dizileri (Tuzlu Kahve, Sevdiğim Sensin, Yalı Çapkını) ve programları (Didem Arslan, Songül ve Uğur) izleyin."
+    description = "En güncel haberler, en sevdiğiniz diziler, en beğendiğiniz filmler  NOW&#039;da! Hemen NOW&#039;a gelin, ayrıcalıkların tadını çıkarın!"
 
     status  = 1
     tvTypes = listOf("TvSeries", "Live")
-    iconUrl = "https://www.google.com/s2/favicons?domain=www.startv.com.tr&sz=%size%"
+    iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ3OuUV9n1uM6ij8Y-um_yJKCEWVEn-vhTzUteM-0t0&s"
 }
