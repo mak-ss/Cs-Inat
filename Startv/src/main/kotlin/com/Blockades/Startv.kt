@@ -28,9 +28,13 @@ class StarTv : MainAPI() {
     private val logoUrl = "https://www.google.com/s2/favicons?domain=www.startv.com.tr&sz=256"
 
     // ★ Canlı yayın için ÇALIŞAN URL (logcat'te doğrulandı)
-    // dogus.daioncdn.net + ?app=startv_web&ce=3 parametresi ile 403 vermiyor
     private val workingLiveUrl = "https://dogus.daioncdn.net/startv/startv_720p.m3u8?app=startv_web&ce=3"
     private val workingLiveUrlAlt = "https://dogus.daioncdn.net/startv/startv.m3u8?app=startv_web&ce=3"
+
+    // ★ DYG Digital API (video_info) — referenceId ile taze m3u8 URL'i döndürür
+    private val dygApiBase = "https://dygvideo.dygdigital.com/api/video_info"
+    private val dygSecretKey = "NtvApiSecret2014*"
+    private val dygPublisherId = "1"
 
     // ★ Ana sayfa menüsü
     override val mainPage = mainPageOf(
@@ -313,33 +317,55 @@ class StarTv : MainAPI() {
                lower.contains("mixpanel")
     }
 
-    // ★ Script'lerden video ID'sini çıkar (birden çok kalıp)
-    private fun extractVideoId(scriptsJoined: String): String? {
-        val patterns = listOf(
-            Regex("""["']videoId["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""["']contentId["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""["']mediaId["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""["']assetId["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""["']entryId["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""["']video_id["']\s*:\s*["']([^"']+)["']"""),
-            Regex("""data-video-id=["']([^"']+)["']"""),
-            Regex("""data-content-id=["']([^"']+)["']"""),
-        )
-        for (p in patterns) {
-            p.find(scriptsJoined)?.groupValues?.get(1)?.let { id ->
-                if (id.length in 4..100 && !id.contains(" ")) return id
-            }
-        }
-        return null
-    }
+    // ★★★ ANA ÇÖZÜM: DYG Digital API ile video URL'i al ★★★
+    private suspend fun fetchVideoUrl(referenceId: String, pageUrl: String): String? {
+        // DİKKAT: "StarTv_" küçük v ile!
+        val apiUrl = "$dygApiBase" +
+            "?akamai=true" +
+            "&PublisherId=$dygPublisherId" +
+            "&ReferenceId=StarTv_$referenceId" +
+            "&SecretKey=$dygSecretKey"
 
-    // ★ Doğuş VOD URL'i üret (logcat'te doğrulanmış pattern)
-    private fun buildDogusVodUrls(videoId: String): List<String> = listOf(
-        "https://dogus.daioncdn.net/startv/$videoId.m3u8?app=startv_web&ce=3",
-        "https://dogus.daioncdn.net/startv/$videoId/playlist.m3u8?app=startv_web&ce=3",
-        "https://dogus-vod.daioncdn.net/startv/$videoId.m3u8?app=startv_web&ce=3",
-        "https://dogus-vod.daioncdn.net/startv/$videoId/playlist.m3u8?app=startv_web&ce=3"
-    )
+        Log.d(name, "DYG API çağrısı: $apiUrl")
+
+        try {
+            val response = app.get(
+                apiUrl,
+                headers = headers + mapOf(
+                    "Referer" to pageUrl,
+                    "Origin" to mainUrl,
+                    "Accept" to "application/json, text/plain, */*"
+                )
+            ).text
+
+            Log.d(name, "DYG API yanıt uzunluğu: ${response.length}")
+
+            val json = JSONObject(response)
+            if (!json.optBoolean("success", false)) {
+                Log.d(name, "DYG API success=false: ${json.optString("message")}")
+                return null
+            }
+
+            // flavors.hls alanını çek
+            val hlsUrl = json
+                .optJSONObject("data")
+                ?.optJSONObject("flavors")
+                ?.optString("hls", "")
+                ?.takeIf { it.isNotEmpty() }
+
+            if (!hlsUrl.isNullOrEmpty() && hlsUrl.startsWith("http")) {
+                val cleanUrl = hlsUrl.replace("\\/", "/").replace("\\u0026", "&")
+                Log.d(name, "✅ HLS URL: $cleanUrl")
+                return cleanUrl
+            }
+
+            Log.d(name, "flavors.hls boş veya geçersiz")
+            return null
+        } catch (e: Exception) {
+            Log.e(name, "DYG API hatası: ${e.message}")
+            return null
+        }
+    }
 
     override suspend fun loadLinks(
         data: String,
@@ -356,108 +382,102 @@ class StarTv : MainAPI() {
 
         try {
             val document = app.get(data, headers = headers).document
-
-            // Tüm script içeriklerini birleştir (id-arama ve regex için)
             val scriptsJoined = document.select("script:not([src])").joinToString("\n") { it.data() }
 
-            // ★ Öncelik 1: JSON-LD VideoObject
+            // ★★★ 1) ANA YÖNTEM: referenceId ile DYG API ★★★
+            val referenceId = Regex(""""referenceId"\s*:\s*"([^"]+)"""")
+                .find(scriptsJoined)?.groupValues?.get(1)
+
+            Log.d(name, "ReferenceId: $referenceId")
+
+            if (referenceId != null) {
+                val videoUrl = fetchVideoUrl(referenceId, data)
+                if (videoUrl != null) {
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = this.name,
+                            url = videoUrl,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = mainUrl
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    found = true
+                }
+            }
+
+            // ★ 2) Yedek: JSON-LD VideoObject contentUrl ★
             if (!found) {
+                Log.d(name, "Yedek 1: JSON-LD deneniyor")
                 document.select("script[type=application/ld+json]").forEach { script ->
                     if (found) return@forEach
                     try {
                         val json = JSONObject(script.data())
-                        if (json.optString("@type") == "VideoObject") {
-                            val contentUrl = json.optString("contentUrl", "")
-                            if (contentUrl.isNotEmpty() && contentUrl.startsWith("http") && isValidVideoUrl(contentUrl)) {
-                                Log.d(name, "JSON-LD contentUrl: $contentUrl")
-                                callback.invoke(newExtractorLink(
-                                    source = this.name, name = this.name, url = contentUrl,
-                                    type = if (contentUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                ) { this.referer = mainUrl; this.quality = Qualities.Unknown.value })
-                                found = true
+                        val graph = json.optJSONArray("@graph")
+                        if (graph != null) {
+                            for (i in 0 until graph.length()) {
+                                val item = graph.getJSONObject(i)
+                                if (item.optString("@type") == "VideoObject") {
+                                    val contentUrl = item.optString("contentUrl", "")
+                                    if (contentUrl.startsWith("http") && isValidVideoUrl(contentUrl)) {
+                                        Log.d(name, "JSON-LD contentUrl: $contentUrl")
+                                        callback.invoke(newExtractorLink(
+                                            source = this.name, name = this.name, url = contentUrl,
+                                            type = if (contentUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                        ) { this.referer = mainUrl })
+                                        found = true
+                                    }
+                                }
                             }
                         }
                     } catch (_: Exception) {}
                 }
             }
 
-            // ★ Öncelik 2: Script'lerde doğrudan m3u8/mp4/daion/kaltura URL'i
+            // ★ 3) Yedek: Script'lerde doğrudan m3u8 URL ★
             if (!found) {
-                val urlPatterns = listOf(
-                    Regex("""(https?://[^"'\s<>]*daioncdn\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+                Log.d(name, "Yedek 2: Script regex deneniyor")
+                val m3u8Patterns = listOf(
                     Regex("""(https?://[^"'\s<>]*mncdn\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
-                    Regex("""(https?://[^"'\s<>]*akamaized\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
-                    Regex("""(https?://[^"'\s<>]*kaltura\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+                    Regex("""(https?://[^"'\s<>]*daioncdn\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
                     Regex("""(https?://[^"'\s<>]+/smil:[^"'\s<>]+)"""),
-                    Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
-                    Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)"""),
-                    Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist|dataUrl|manifestUrl)"\s*:\s*")([^"]+)""")
+                    Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)""")
                 )
-                for (script in document.select("script")) {
-                    if (found) break
-                    val content = script.data()
-                        .replace("\\/", "/").replace("\\u0026", "&")
-                        .replace("\\u003d", "=").replace("\\u002f", "/")
-                        .replace("\\u003a", ":").replace("\\u003F", "?")
-                        .replace("\\u002E", ".")
+                val decoded = scriptsJoined
+                    .replace("\\/", "/")
+                    .replace("\\u0026", "&")
+                    .replace("\\u003d", "=")
 
-                    for (pattern in urlPatterns) {
-                        val match = pattern.find(content) ?: continue
-                        val rawUrl = match.groupValues[1]
-                        if (!rawUrl.startsWith("http") || !isValidVideoUrl(rawUrl)) continue
-                        Log.d(name, "Script regex hit: $rawUrl")
-                        callback.invoke(newExtractorLink(
-                            source = this.name, name = this.name, url = rawUrl,
-                            type = if (rawUrl.contains(".m3u8") || rawUrl.contains("smil:")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) { this.referer = mainUrl })
-                        found = true
-                        break
-                    }
-                }
-            }
-
-            // ★ Öncelik 3: Video ID bul ve Doğuş VOD URL'i dene
-            if (!found) {
-                val videoId = extractVideoId(scriptsJoined)
-                if (videoId != null) {
-                    Log.d(name, "Video ID bulundu: $videoId, Doğuş VOD URL'leri deneniyor...")
-                    // HEAD isteği ile hangisi yaşıyor test et
-                    for (candidate in buildDogusVodUrls(videoId)) {
-                        try {
-                            // Sadece küçük bir istek yap
-                            val resp = app.get(candidate, headers = headers + mapOf(
-                                "Referer" to data,
-                                "Origin" to mainUrl
-                            ), allowRedirects = true)
-                            if (resp.isSuccessful) {
-                                Log.d(name, "Doğuş VOD hit: $candidate")
-                                callback.invoke(newExtractorLink(
-                                    source = this.name, name = this.name, url = candidate,
-                                    type = ExtractorLinkType.M3U8
-                                ) { this.referer = mainUrl })
-                                found = true
-                                break
-                            }
-                        } catch (e: Exception) {
-                            Log.d(name, "Doğuş VOD denemesi başarısız ($candidate): ${e.message}")
+                for (pattern in m3u8Patterns) {
+                    val match = pattern.find(decoded)
+                    if (match != null) {
+                        val url = match.value
+                        if (!url.contains("/bolumler/") && isValidVideoUrl(url)) {
+                            Log.d(name, "Script regex hit: $url")
+                            callback.invoke(newExtractorLink(
+                                source = this.name, name = this.name, url = url,
+                                type = ExtractorLinkType.M3U8
+                            ) { this.referer = mainUrl })
+                            found = true
+                            break
                         }
                     }
                 }
             }
 
-            // ★ Öncelik 4: iframe (GTM/analytics hariç)
+            // ★ 4) Yedek: iframe (GTM/analytics hariç) ★
             if (!found) {
+                Log.d(name, "Yedek 3: iframe deneniyor")
                 val iframes = document.select("iframe[src]")
                     .filterNot { isTrackingIframe(it.attr("src")) }
-
-                Log.d(name, "Toplam ${iframes.size} geçerli iframe bulundu")
 
                 for (iframe in iframes) {
                     if (found) break
                     val iframeSrc = iframe.attr("src")
                     if (iframeSrc.isBlank()) continue
-                    val embedUrl = if (iframeSrc.startsWith("http")) iframeSrc else fixUrl(iframeSrc)
-                    Log.d(name, "iframe: $embedUrl")
+                    val embedUrl = iframeSrc.takeIf { it.startsWith("http") } ?: fixUrl(iframeSrc)
 
                     try {
                         if (loadExtractor(embedUrl, data, subtitleCallback, callback)) {
@@ -470,13 +490,14 @@ class StarTv : MainAPI() {
                     }
 
                     findMediaInIframe(embedUrl, data)?.let { url ->
-                        if (!isValidVideoUrl(url)) return@let
-                        Log.d(name, "Manuel iframe BAŞARILI: $url")
-                        callback.invoke(newExtractorLink(
-                            source = this.name, name = this.name, url = url,
-                            type = if (url.contains(".m3u8") || url.contains("smil:")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                        ) { this.referer = data; this.quality = Qualities.Unknown.value })
-                        found = true
+                        if (isValidVideoUrl(url)) {
+                            Log.d(name, "Manuel iframe: $url")
+                            callback.invoke(newExtractorLink(
+                                source = this.name, name = this.name, url = url,
+                                type = if (url.contains(".m3u8") || url.contains("smil:")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) { this.referer = data })
+                            found = true
+                        }
                     }
                 }
             }
@@ -495,7 +516,6 @@ class StarTv : MainAPI() {
     ): Boolean {
         val found = mutableSetOf<String>()
 
-        // Önce sayfadan dene (hata olsa bile devam)
         try {
             val doc = app.get(pageUrl, headers = headers).document
             for (script in doc.select("script")) {
@@ -512,15 +532,10 @@ class StarTv : MainAPI() {
             Log.e(name, "Canlı sayfa çekilemedi: ${e.message}")
         }
 
-        // Çalışan URL önce, sonra alternatifler
         if (found.isEmpty()) {
             Log.d(name, "Fallback canlı URL'ler kullanılıyor")
-            // ★ Logcat'te ÇALIŞTIĞI DOĞRULANAN URL — BAŞTA
             found.add(workingLiveUrl)
             found.add(workingLiveUrlAlt)
-            // Yedekler
-            found.add("https://dogus.daioncdn.net/startv/startv_1080p.m3u8?app=startv_web&ce=3")
-            found.add("https://dogus-live.daioncdn.net/startv/startv.m3u8?app=startv_web&ce=3")
         }
 
         fun guessQuality(url: String): Int = when {
@@ -599,14 +614,11 @@ class StarTv : MainAPI() {
             .replace("\\u002E", ".")
 
         val patterns = listOf(
-            Regex("""(https?://[^"'\s<>]*daioncdn\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
             Regex("""(https?://[^"'\s<>]*mncdn\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
-            Regex("""(https?://[^"'\s<>]*akamaized\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
-            Regex("""(https?://[^"'\s<>]*kaltura\.com[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
+            Regex("""(https?://[^"'\s<>]*daioncdn\.net[^"'\s<>]*\.m3u8[^"'\s<>]*)"""),
             Regex("""(https?://[^"'\s<>]+/smil:[^"'\s<>]+)"""),
             Regex("""(https?://[^"'\s<>]+\.m3u8[^"'\s<>]*)"""),
-            Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)"""),
-            Regex("""(?:"(?:file|src|url|hls|hlsUrl|streamUrl|videoUrl|source|contentUrl|playlist|dataUrl|manifestUrl)"\s*:\s*")([^"]+)""")
+            Regex("""(https?://[^"'\s<>]+\.mp4)(?:[?"'\s<>]|$)""")
         )
 
         for (pattern in patterns) {
