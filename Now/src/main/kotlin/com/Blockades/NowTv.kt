@@ -11,7 +11,7 @@ import org.jsoup.nodes.Document
 
 @Suppress("unused")
 class NowTv : MainAPI() {
-    override var mainUrl = "https://www.now.com.tr"
+    override var mainUrl = "https://www.nowtv.com.tr"
     override var name = "NOW TV"
     override val hasMainPage = true
     override var lang = "tr"
