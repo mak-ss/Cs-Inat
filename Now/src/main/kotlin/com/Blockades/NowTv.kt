@@ -9,13 +9,14 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 @Suppress("unused")
 class NowTv : MainAPI() {
     override var mainUrl = "https://www.nowtv.com.tr"
-    override var name = "NowTV"
+    override var name = "Now TV"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
@@ -25,7 +26,6 @@ class NowTv : MainAPI() {
 
     /**
      * Plugin tarafından enjekte edilecek Android Context.
-     * WebView oluşturmak için gereklidir.
      */
     var appContext: Context? = null
 
@@ -49,10 +49,6 @@ class NowTv : MainAPI() {
         val image: Any? = null
     )
 
-    /**
-     * Sabit dizi listesi. "Diziler" sekmesi için kullanılır.
-     * Triple: (Başlık, İzleme URL'si, Poster URL'si)
-     */
     private val featuredSeries = listOf(
         Triple(
             "Anne Yarısı",
@@ -154,7 +150,6 @@ class NowTv : MainAPI() {
     ): HomePageResponse {
         Log.d(TAG, "getMainPage: ${request.name} - ${request.data}")
 
-        // "Diziler" sekmesi için sabit listeyi göster
         if (request.name == "Diziler") {
             val fixedList = featuredSeries.map { (title, url, poster) ->
                 newTvSeriesSearchResponse(title, url) {
@@ -165,7 +160,6 @@ class NowTv : MainAPI() {
             return newHomePageResponse(request.name, fixedList)
         }
 
-        // Diğer sekmeler için normal HTML kazıma
         val document = app.get(request.data).document
 
         val jsonLdItems = getJsonLd(document)
@@ -217,18 +211,38 @@ class NowTv : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         Log.d(TAG, "load: $url")
-        val document = app.get(url).document
 
-        // Eğer URL /izle ile bitiyorsa, bölüm listesi için ana dizi sayfasına da bak
-        val mainUrlPath = if (url.endsWith("/izle")) {
-            url.removeSuffix("/izle")
-        } else {
-            url
+        // Önce normal HTML dene
+        var document = app.get(url).document
+
+        // Bölüm linki var mı kontrol et
+        val hasEpisodes = document.select("a[href*='/bolum/']").isNotEmpty()
+        Log.d(TAG, "Initial HTML has episodes: $hasEpisodes")
+
+        // Eğer bölüm yoksa ve appContext varsa, WebView ile yükle
+        if (!hasEpisodes && appContext != null) {
+            Log.d(TAG, "No episodes in static HTML, trying WebView...")
+            val webViewHtml = loadHtmlWithWebView(url)
+            if (!webViewHtml.isNullOrBlank()) {
+                document = Jsoup.parse(webViewHtml)
+                Log.d(TAG, "WebView HTML length: ${webViewHtml.length}")
+            }
         }
+
+        // /izle sayfası için ana dizi sayfasına da bak
+        val mainUrlPath = if (url.endsWith("/izle")) url.removeSuffix("/izle") else url
 
         val mainDocument = if (mainUrlPath != url) {
             try {
-                app.get(mainUrlPath).document
+                var doc = app.get(mainUrlPath).document
+                if (doc.select("a[href*='/bolum/']").isEmpty() && appContext != null) {
+                    val wvHtml = loadHtmlWithWebView(mainUrlPath)
+                    if (!wvHtml.isNullOrBlank()) {
+                        doc = Jsoup.parse(wvHtml)
+                        Log.d(TAG, "WebView mainDocument HTML length: ${wvHtml.length}")
+                    }
+                }
+                doc
             } catch (e: Exception) {
                 Log.e(TAG, "mainDocument fetch failed: ${e.message}")
                 document
@@ -257,9 +271,9 @@ class NowTv : MainAPI() {
             }
 
         val episodes = mutableListOf<Episode>()
-
         val searchDocuments = listOf(document, mainDocument)
 
+        // Önce özel seçicilerle dene
         val episodeSelectors = listOf(
             "a[href*='/bolum/']",
             ".thumb a[href*='/bolum/']",
@@ -301,17 +315,21 @@ class NowTv : MainAPI() {
             if (episodes.isNotEmpty()) break
         }
 
-        // Fallback: tüm linkleri kontrol et
+        // Fallback: tüm <a> etiketlerini tara
         if (episodes.isEmpty()) {
-            Log.d(TAG, "No episodes found with selectors, trying direct link extraction")
+            Log.d(TAG, "No episodes with selectors, trying full <a> scan")
             searchDocuments.forEach { doc ->
                 doc.select("a").forEach { element ->
                     val href = element.attr("href")
                     if (href.contains("/bolum/")) {
                         val epTitle = element.text().trim().ifBlank { "Bölüm" }
+                        val epImage = element.selectFirst("img")?.let {
+                            it.attr("data-src").ifBlank { it.attr("src") }
+                        }
                         episodes.add(
                             newEpisode(fixImageUrl(href) ?: href) {
                                 this.name = epTitle
+                                this.posterUrl = fixImageUrl(epImage)
                             }
                         )
                     }
@@ -329,8 +347,47 @@ class NowTv : MainAPI() {
     }
 
     /**
-     * ADMPlayer.init çağrısından video_id (referenceId), video_code ve bölüm numarasını çeker.
+     * WebView ile sayfa HTML'ini al (JavaScript render için).
      */
+    private suspend fun loadHtmlWithWebView(pageUrl: String): String? {
+        val context = appContext ?: return null
+        return try {
+            val webView = android.webkit.WebView(context)
+            var capturedHtml: String? = null
+            val latch = java.util.concurrent.CountDownLatch(1)
+
+            webView.settings.javaScriptEnabled = true
+            webView.settings.domStorageEnabled = true
+            webView.settings.userAgentString =
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+            webView.webViewClient = object : android.webkit.WebViewClient() {
+                override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
+                    view?.postDelayed({
+                        view.evaluateJavascript("document.documentElement.outerHTML") { html ->
+                            capturedHtml = html
+                                ?.replace("\\u003C", "<")
+                                ?.replace("\\u003E", ">")
+                                ?.replace("\\\"", "\"")
+                                ?.removePrefix("\"")
+                                ?.removeSuffix("\"")
+                            latch.countDown()
+                        }
+                    }, 3000)
+                }
+            }
+
+            webView.post { webView.loadUrl(pageUrl) }
+            latch.await(20, java.util.concurrent.TimeUnit.SECONDS)
+            webView.stopLoading()
+            webView.destroy()
+            capturedHtml
+        } catch (e: Exception) {
+            Log.e(TAG, "WebView load error: ${e.message}")
+            null
+        }
+    }
+
     private data class PlayerData(
         val videoId: String?,
         val videoCode: String?,
@@ -342,27 +399,22 @@ class NowTv : MainAPI() {
         var videoCode: String? = null
         var episodeNumber: String? = null
 
-        // Önce URL'den bölüm numarasını çıkar: /bolum/1, /bolum/2
         val epRegex = """/bolum/(\d+)""".toRegex()
         episodeNumber = epRegex.find(pageUrl)?.groupValues?.get(1)
 
-        // Script'lerden video_code'u bul
         for (script in document.select("script")) {
             val scriptData = script.data()
 
-            // video_code (snake_case)
             if (videoCode == null) {
                 val codeRegex = """"video_code"\s*:\s*"([^"]+)"""".toRegex()
                 videoCode = codeRegex.find(scriptData)?.groupValues?.get(1)
             }
 
-            // videoCode (camelCase)
             if (videoCode == null) {
                 val codeRegex2 = """videoCode\s*:\s*['"]([^'"]+)['"]""".toRegex()
                 videoCode = codeRegex2.find(scriptData)?.groupValues?.get(1)
             }
 
-            // referenceId
             if (videoId == null) {
                 val refRegex = """referenceId\s*:\s*['"](\d+)['"]""".toRegex()
                 videoId = refRegex.find(scriptData)?.groupValues?.get(1)
@@ -395,12 +447,11 @@ class NowTv : MainAPI() {
         val document = app.get(data).document
         val html = document.html()
 
-        // YÖNTEM 0: video_code + bölüm numarası + dizi adından doğrudan erbvr CDN URL'si kur
+        // YÖNTEM 0: video_code + bölüm no + dizi adından doğrudan erbvr CDN URL'si kur
         val playerData = extractPlayerData(document, data)
         Log.d(TAG, "PlayerData: videoId=${playerData.videoId}, videoCode=${playerData.videoCode}, ep=${playerData.episodeNumber}")
 
         if (playerData.videoCode != null && playerData.episodeNumber != null) {
-            // URL yolundan dizi adını al: /Yeralti/bolum/1 -> Yeralti
             val pathSegments = data.removePrefix(mainUrl).trim('/').split("/")
             val seriesPath = pathSegments.firstOrNull() ?: ""
 
@@ -454,7 +505,7 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 3: ADMPlayer verisinden token'sız link kur (eski yöntem, yedek)
+        // YÖNTEM 3: Token'sız CDN URL (fallback)
         if (playerData.videoCode != null && playerData.videoId != null) {
             val path = data.removePrefix(mainUrl).trim('/')
             val normalizedPath = path.replace("/bolum/", "/bolumler/")
