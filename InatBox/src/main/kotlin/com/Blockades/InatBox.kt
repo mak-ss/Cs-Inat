@@ -157,10 +157,10 @@ class InatBox : MainAPI() {
         "https://diziboxen.help/CDN/001/002/dizibox/v2/ga/index.php"            to "Gain",
         "https://diziboxen.help/CDN/001/002/dizibox/v2/amz/index.php"           to "Amazon Prime",
         "https://diziboxen.help/CDN/001/002/dizibox/v2/tbi/index.php"           to "Tabii",
+        "https://diziboxen.help/CDN/001/002/dizibox/v2/film/mubi.php"           to "Mubi",
         "https://diziboxen.help/CDN/001/002/dizibox/v2/yerli-dizi/index.php"    to "Yerli Diziler",
         "https://diziboxen.help/CDN/001/002/dizibox/v2/yabanci-dizi/index.php"  to "Yabancı Diziler",
         "https://diziboxen.help/CDN/001/002/dizibox/v2/film/yerli-filmler.php"  to "Yerli Filmler",
-        "https://diziboxen.help/CDN/001/002/dizibox/v2/film/mubi.php"           to "Mubi",
         "https://4k.filmizleeeee.cfd/4k/01/public/catalog-exo.php"              to "4K Filmler"
     )
 
