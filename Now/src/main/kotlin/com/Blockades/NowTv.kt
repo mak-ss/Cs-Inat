@@ -33,13 +33,17 @@ class NowTv : MainAPI() {
     )
 
     data class LdActor(val name: String? = null)
-
     data class LdListItem(val item: LdItemRef? = null)
-
     data class LdItemRef(
         @JsonProperty("@id") val id: String? = null,
         val name: String? = null,
         val image: Any? = null
+    )
+
+    // /ajax/stream yanıtı için veri sınıfı
+    data class StreamResponse(
+        val code: Int? = null,
+        @JsonProperty("video_url") val videoUrl: String? = null
     )
 
     override val mainPage = mainPageOf(
@@ -94,7 +98,6 @@ class NowTv : MainAPI() {
         }
     }
 
-    // HTML'den arama sonucu oluşturma
     private fun mapElementToSearchResponse(element: Element): SearchResponse? {
         val linkElement = element.selectFirst("a[href*='/izle']") ?: return null
         val href = linkElement.attr("href")
@@ -117,7 +120,6 @@ class NowTv : MainAPI() {
     ): HomePageResponse {
         val document = app.get(request.data).document
 
-        // Önce JSON-LD'yi dene
         val jsonLdItems = getJsonLd(document)
         val showsFromJsonLd = jsonLdItems
             .flatMap { item ->
@@ -139,8 +141,8 @@ class NowTv : MainAPI() {
             return newHomePageResponse(request.name, showsFromJsonLd)
         }
 
-        // JSON-LD yoksa HTML'yi ayrıştır
-        val showsFromHtml = document.select(".list-item, .poster").mapNotNull { mapElementToSearchResponse(it) }
+        val showsFromHtml = document.select(".list-item, .poster")
+            .mapNotNull { mapElementToSearchResponse(it) }
             .distinctBy { it.url }
 
         return newHomePageResponse(request.name, showsFromHtml)
@@ -150,7 +152,6 @@ class NowTv : MainAPI() {
         val url = "$mainUrl/arama?q=$query"
         val document = app.get(url).document
 
-        // Arama sayfası da muhtemelen benzer bir yapıda, önce JSON-LD'yi dene
         val jsonLdItems = getJsonLd(document)
         val resultsFromJsonLd = jsonLdItems
             .filter { it.type == "TVSeries" || it.type == "Movie" }
@@ -161,8 +162,8 @@ class NowTv : MainAPI() {
             return resultsFromJsonLd
         }
 
-        // JSON-LD yoksa HTML'yi ayrıştır
-        return document.select(".list-item, .poster").mapNotNull { mapElementToSearchResponse(it) }
+        return document.select(".list-item, .poster")
+            .mapNotNull { mapElementToSearchResponse(it) }
             .distinctBy { it.url }
     }
 
@@ -170,7 +171,6 @@ class NowTv : MainAPI() {
         val document = app.get(url).document
         val jsonLdItems = getJsonLd(document)
 
-        // JSON-LD'de TVSeries veya TVEpisode ara
         val seriesInfo = jsonLdItems.find { it.type == "TVSeries" || it.type == "TVEpisode" }
         val title = seriesInfo?.name
             ?: document.selectFirst("h1, .program-name strong")?.text()?.trim()
@@ -184,7 +184,6 @@ class NowTv : MainAPI() {
 
         val episodes = mutableListOf<Episode>()
 
-        // Bölümleri bulmak için birden fazla seçici dene
         val episodeSelectors = listOf(
             "section.videos:contains(BÖLÜMLER) .thumb a[href*='/bolum/']",
             ".sport-latest-thumbs .thumb a[href*='/bolum/']",
@@ -219,13 +218,59 @@ class NowTv : MainAPI() {
                     )
                 }
             }
-            if (episodes.isNotEmpty()) break // Bölüm bulunduysa diğer seçicileri deneme
+            if (episodes.isNotEmpty()) break
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.distinctBy { it.data }) {
             this.plot = description
             this.posterUrl = poster
             this.tags = seriesInfo?.actor?.mapNotNull { it.name }
+        }
+    }
+
+    /**
+     * Sayfadaki JavaScript'ten video_id (referenceId) çeker.
+     * Örn: ADMPlayer.init({... referenceId: '136284', ...})
+     */
+    private fun extractVideoId(document: Document): String? {
+        for (script in document.select("script")) {
+            val scriptData = script.data()
+            if (scriptData.contains("ADMPlayer.init")) {
+                val regex = """referenceId\s*:\s*['"](\d+)['"]""".toRegex()
+                val match = regex.find(scriptData)
+                if (match != null) {
+                    return match.groupValues[1]
+                }
+                // Alternatif: video: {..., "id": 136284, ...}
+                val videoIdRegex = """"id"\s*:\s*(\d+)""".toRegex()
+                val videoMatch = videoIdRegex.find(scriptData)
+                if (videoMatch != null) {
+                    return videoMatch.groupValues[1]
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * /ajax/stream endpoint'ine video_id gönderip gerçek m3u8 URL'sini (token'lı) alır.
+     */
+    private suspend fun fetchStreamUrl(videoId: String): String? {
+        return try {
+            val response = app.post(
+                "$mainUrl/ajax/stream",
+                data = mapOf("video_id" to videoId),
+                headers = mapOf(
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl
+                )
+            ).text
+
+            val parsed = jsonMapper.readValue<StreamResponse>(response)
+            if (parsed.code == 200) parsed.videoUrl else null
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -237,7 +282,23 @@ class NowTv : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // 1. Doğrudan video kaynağını kontrol et (video source etiketi)
+        // 1. YÖNTEM: Sayfadaki video_id'yi bul → /ajax/stream → gerçek m3u8 linkini al
+        // Bu, token'lı (st=...&e=...&sid=...) URL'yi üretmenin tek güvenilir yoludur.
+        val videoId = extractVideoId(document)
+        if (videoId != null) {
+            val streamUrl = fetchStreamUrl(videoId)
+            if (!streamUrl.isNullOrBlank()) {
+                M3u8Helper.generateM3u8(
+                    name,
+                    streamUrl,
+                    data,
+                    headers = mapOf("Referer" to mainUrl)
+                ).forEach(callback)
+                return true
+            }
+        }
+
+        // 2. YÖNTEM: Doğrudan video source etiketi (varsa)
         val directVideoUrl = document.selectFirst("video source")?.attr("src")
         if (!directVideoUrl.isNullOrBlank() && directVideoUrl.contains(".m3u8")) {
             M3u8Helper.generateM3u8(
@@ -249,65 +310,19 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // 2. Sayfadaki JavaScript'ten video_code'u bul
-        var videoCode: String? = null
-        val scripts = document.select("script")
-        for (script in scripts) {
-            val scriptData = script.data()
-            // ADMPlayer.init çağrısındaki video nesnesini ara
-            if (scriptData.contains("ADMPlayer.init")) {
-                // video: {...} kısmını yakalamaya çalış
-                val videoRegex = """video\s*:\s*(\{.*?\})""".toRegex(RegexOption.DOT_MATCHES_ALL)
-                val match = videoRegex.find(scriptData)
-                if (match != null) {
-                    val videoJson = match.groupValues[1]
-                    try {
-                        // Jackson ile parse et
-                        val videoNode = jsonMapper.readTree(videoJson)
-                        videoCode = videoNode.get("video_code")?.asText()
-                        if (!videoCode.isNullOrBlank()) {
-                            break
-                        }
-                    } catch (_: Exception) {
-                        // JSON parse edilemezse devam et
-                    }
-                }
+        // 3. YÖNTEM: Sayfa kaynağında hazır m3u8 (token'lı) URL var mı?
+        val m3u8Regex = """(https?://[^"'\s]+\.m3u8[^"'\s]*)""".toRegex()
+        for (script in document.select("script")) {
+            val match = m3u8Regex.find(script.data())
+            if (match != null) {
+                M3u8Helper.generateM3u8(
+                    name,
+                    match.value,
+                    data,
+                    headers = mapOf("Referer" to mainUrl)
+                ).forEach(callback)
+                return true
             }
-        }
-
-        // 3. Eğer video_code bulunduysa URL'yi oluştur
-        if (!videoCode.isNullOrBlank()) {
-            // URL yapısını sayfadaki örneklerden çıkarıyoruz.
-            // Örnek: https://www.nowtv.com.tr/Gundem-Futbol/bolum/16
-            // video_code: 20092026GUNDEMFUTBOL
-            // Yeni URL: https://tdywsbbzdx.erbvr.com/Gundem-Futbol/bolum/16/20092026GUNDEMFUTBOL.smil/playlist.m3u8
-            val path = data.removePrefix(mainUrl).removePrefix("/").removeSuffix("/")
-            val constructedUrl = "https://tdywsbbzdx.erbvr.com/$path/$videoCode.smil/playlist.m3u8"
-
-            M3u8Helper.generateM3u8(
-                name,
-                constructedUrl,
-                data,
-                headers = mapOf("Referer" to mainUrl)
-            ).forEach(callback)
-            return true
-        }
-
-        // 4. Eğer yukarıdakiler çalışmazsa, sayfada m3u8 içeren başka bir kaynak var mı diye bak
-        val possibleUrls = document.select("script").mapNotNull { script ->
-            val scriptData = script.data()
-            val m3u8Regex = """(https?://[^"']+\.m3u8[^"']*)""".toRegex()
-            m3u8Regex.find(scriptData)?.value
-        }.distinct()
-
-        for (url in possibleUrls) {
-            M3u8Helper.generateM3u8(
-                name,
-                url,
-                data,
-                headers = mapOf("Referer" to mainUrl)
-            ).forEach(callback)
-            return true
         }
 
         return false
