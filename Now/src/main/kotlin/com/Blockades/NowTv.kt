@@ -1,5 +1,6 @@
 package com.Blockades
 
+import android.content.Context
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -21,6 +22,12 @@ class NowTv : MainAPI() {
 
     private val jsonMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
     private val TAG = "NowTv"
+
+    /**
+     * Plugin tarafından enjekte edilecek Android Context.
+     * WebView oluşturmak için gereklidir.
+     */
+    var appContext: Context? = null
 
     data class JsonLdItem(
         @JsonProperty("@type") val type: String? = null,
@@ -340,23 +347,27 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 4: Özel WebView拦截 (MainActivity.context kullanır)
-        Log.d(TAG, "Static methods failed, trying custom WebView interception...")
-        val webViewUrl = interceptM3u8WithWebView(data)
-        if (!webViewUrl.isNullOrBlank()) {
-            Log.d(TAG, "Custom WebView found: $webViewUrl")
-            M3u8Helper.generateM3u8(
-                name,
-                webViewUrl,
-                data,
-                headers = mapOf(
-                    "Referer" to mainUrl,
-                    "Origin" to mainUrl
-                )
-            ).forEach(callback)
-            return true
+        // YÖNTEM 4: Özel WebView拦截 (appContext üzerinden)
+        if (appContext != null) {
+            Log.d(TAG, "Static methods failed, trying custom WebView interception...")
+            val webViewUrl = interceptM3u8WithWebView(data)
+            if (!webViewUrl.isNullOrBlank()) {
+                Log.d(TAG, "Custom WebView found: $webViewUrl")
+                M3u8Helper.generateM3u8(
+                    name,
+                    webViewUrl,
+                    data,
+                    headers = mapOf(
+                        "Referer" to mainUrl,
+                        "Origin" to mainUrl
+                    )
+                ).forEach(callback)
+                return true
+            } else {
+                Log.e(TAG, "Custom WebView returned null")
+            }
         } else {
-            Log.e(TAG, "Custom WebView returned null")
+            Log.w(TAG, "appContext null, WebView interception skipped. Plugin'de appContext set edilmeli.")
         }
 
         Log.e(TAG, "No stream URL found for: $data")
@@ -365,11 +376,11 @@ class NowTv : MainAPI() {
 
     /**
      * WebView kullanarak sayfadaki m3u8 isteğini yakalar.
-     * Context, CloudStream'in MainActivity.context global değişkeninden alınır.
+     * Context, plugin tarafından appContext üzerinden enjekte edilir.
      */
     private suspend fun interceptM3u8WithWebView(pageUrl: String): String? {
-        val context = MainActivity.context ?: run {
-            Log.e(TAG, "MainActivity.context is null, WebView cannot be created")
+        val context = appContext ?: run {
+            Log.e(TAG, "appContext null, WebView oluşturulamıyor")
             return null
         }
 
