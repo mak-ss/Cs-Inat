@@ -29,8 +29,7 @@ class NowTv : MainAPI() {
         val actor: List<LdActor>? = null,
         val itemListElement: List<LdListItem>? = null,
         val episodeNumber: String? = null,
-        val partOfSeason: String? = null,
-        val videoCode: String? = null // Ekledik, ancak JSON-LD'de olmayabilir
+        val partOfSeason: String? = null
     )
 
     data class LdActor(val name: String? = null)
@@ -45,7 +44,7 @@ class NowTv : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/dizi-arsivi" to "Diziler",
-        "$mainUrl/program-arsivi" to "Programlar", // Düzeltildi
+        "$mainUrl/program-arsivi" to "Programlar",
         "$mainUrl/now-spor" to "Spor"
     )
 
@@ -99,7 +98,8 @@ class NowTv : MainAPI() {
     private fun mapElementToSearchResponse(element: Element): SearchResponse? {
         val linkElement = element.selectFirst("a[href*='/izle']") ?: return null
         val href = linkElement.attr("href")
-        val title = element.selectFirst(".program-name strong, .program-name")?.text()?.trim() ?: linkElement.text().trim()
+        val title = element.selectFirst(".program-name strong, .program-name")?.text()?.trim()
+            ?: linkElement.text().trim()
         val poster = element.selectFirst("img")?.let {
             fixImageUrl(it.attr("data-src").ifBlank { it.attr("src") })
         }
@@ -172,11 +172,15 @@ class NowTv : MainAPI() {
 
         // JSON-LD'de TVSeries veya TVEpisode ara
         val seriesInfo = jsonLdItems.find { it.type == "TVSeries" || it.type == "TVEpisode" }
-        val title = seriesInfo?.name ?: document.selectFirst("h1, .program-name strong")?.text()?.trim() ?: return null
-        val description = seriesInfo?.description ?: document.selectFirst(".program-desc, .desc p")?.text()?.trim()
-        val poster = extractImageUrl(seriesInfo?.image) ?: document.selectFirst("img[src*='/i/thumbnail/']")?.let {
-            fixImageUrl(it.attr("src"))
-        }
+        val title = seriesInfo?.name
+            ?: document.selectFirst("h1, .program-name strong")?.text()?.trim()
+            ?: return null
+        val description = seriesInfo?.description
+            ?: document.selectFirst(".program-desc, .desc p")?.text()?.trim()
+        val poster = extractImageUrl(seriesInfo?.image)
+            ?: document.selectFirst("img[src*='/i/thumbnail/']")?.let {
+                fixImageUrl(it.attr("src"))
+            }
 
         val episodes = mutableListOf<Episode>()
 
@@ -191,7 +195,8 @@ class NowTv : MainAPI() {
         for (selector in episodeSelectors) {
             document.select(selector).forEach { element ->
                 val epUrl = element.attr("href")
-                var epTitle = element.selectFirst(".program-name strong, .thumb-meta .program-name, .desc")?.text()?.trim()
+                var epTitle = element.selectFirst(".program-name strong, .thumb-meta .program-name, .desc")
+                    ?.text()?.trim()
                 if (epTitle.isNullOrBlank()) {
                     epTitle = element.selectFirst("img")?.attr("alt")?.trim()
                 }
@@ -203,7 +208,9 @@ class NowTv : MainAPI() {
                     it.attr("data-src").ifBlank { it.attr("src") }
                 }
 
-                if (epUrl.isNotBlank() && !epTitle.isNullOrBlank() && (epTitle.contains("bölüm", ignoreCase = true) || selector.contains("bolum"))) {
+                if (epUrl.isNotBlank() && !epTitle.isNullOrBlank() &&
+                    (epTitle.contains("bölüm", ignoreCase = true) || selector.contains("bolum"))
+                ) {
                     episodes.add(
                         newEpisode(epUrl) {
                             this.name = epTitle
@@ -230,7 +237,7 @@ class NowTv : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // 1. Doğrudan video kaynağını kontrol et
+        // 1. Doğrudan video kaynağını kontrol et (video source etiketi)
         val directVideoUrl = document.selectFirst("video source")?.attr("src")
         if (!directVideoUrl.isNullOrBlank() && directVideoUrl.contains(".m3u8")) {
             M3u8Helper.generateM3u8(
@@ -242,34 +249,61 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // 2. JSON-LD'den VideoObject'ı al (nowspor.txt'de var)
-        val jsonLdItems = getJsonLd(document)
-        val videoObject = jsonLdItems.find { it.type == "VideoObject" }
-        // Video code, JSON-LD'de name olarak geçiyor olabilir veya sayfadaki JS'den alınmalı
-        // nowspor.txt'de name="Gündem Futbol" ama video_code="20092026GUNDEMFUTBOL"
-        // Bu yüzden video_code'u sayfadan çekmeye çalışalım.
-
-        // Sayfadaki JavaScript'ten video_code'u bulmayı dene
-        val videoCodeFromScript = document.select("script:containsData(video_code)").firstOrNull()?.data()
-            ?.let { scriptData ->
-                val regex = """video_code["']?\s*:\s*["']([^"']+)["']""".toRegex()
-                regex.find(scriptData)?.groupValues?.get(1)
+        // 2. Sayfadaki JavaScript'ten video_code'u bul
+        var videoCode: String? = null
+        val scripts = document.select("script")
+        for (script in scripts) {
+            val scriptData = script.data()
+            // ADMPlayer.init çağrısındaki video nesnesini ara
+            if (scriptData.contains("ADMPlayer.init")) {
+                // video: {...} kısmını yakalamaya çalış
+                val videoRegex = """video\s*:\s*(\{.*?\})""".toRegex(RegexOption.DOT_MATCHES_ALL)
+                val match = videoRegex.find(scriptData)
+                if (match != null) {
+                    val videoJson = match.groupValues[1]
+                    try {
+                        // Jackson ile parse et
+                        val videoNode = jsonMapper.readTree(videoJson)
+                        videoCode = videoNode.get("video_code")?.asText()
+                        if (!videoCode.isNullOrBlank()) {
+                            break
+                        }
+                    } catch (_: Exception) {
+                        // JSON parse edilemezse devam et
+                    }
+                }
             }
+        }
 
-        val videoCode = videoCodeFromScript ?: videoObject?.name?.takeIf { it.isNotBlank() }
-
-        if (videoCode != null) {
-            // URL yapısını sayfadaki örneklerden çıkarıyoruz. Genellikle program adı ve bölüm numarası içeriyor.
-            // Şu anki URL: https://www.nowtv.com.tr/Gundem-Futbol/bolum/16
+        // 3. Eğer video_code bulunduysa URL'yi oluştur
+        if (!videoCode.isNullOrBlank()) {
+            // URL yapısını sayfadaki örneklerden çıkarıyoruz.
+            // Örnek: https://www.nowtv.com.tr/Gundem-Futbol/bolum/16
             // video_code: 20092026GUNDEMFUTBOL
             // Yeni URL: https://tdywsbbzdx.erbvr.com/Gundem-Futbol/bolum/16/20092026GUNDEMFUTBOL.smil/playlist.m3u8
             val path = data.removePrefix(mainUrl).removePrefix("/").removeSuffix("/")
-            val constructedUrl =
-                "https://tdywsbbzdx.erbvr.com/$path/$videoCode.smil/playlist.m3u8"
+            val constructedUrl = "https://tdywsbbzdx.erbvr.com/$path/$videoCode.smil/playlist.m3u8"
 
             M3u8Helper.generateM3u8(
                 name,
                 constructedUrl,
+                data,
+                headers = mapOf("Referer" to mainUrl)
+            ).forEach(callback)
+            return true
+        }
+
+        // 4. Eğer yukarıdakiler çalışmazsa, sayfada m3u8 içeren başka bir kaynak var mı diye bak
+        val possibleUrls = document.select("script").mapNotNull { script ->
+            val scriptData = script.data()
+            val m3u8Regex = """(https?://[^"']+\.m3u8[^"']*)""".toRegex()
+            m3u8Regex.find(scriptData)?.value
+        }.distinct()
+
+        for (url in possibleUrls) {
+            M3u8Helper.generateM3u8(
+                name,
+                url,
                 data,
                 headers = mapOf("Referer" to mainUrl)
             ).forEach(callback)
