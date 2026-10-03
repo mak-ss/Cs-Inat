@@ -1,5 +1,6 @@
 package com.Blockades
 
+import android.content.Context
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -21,6 +22,12 @@ class NowTv : MainAPI() {
 
     private val jsonMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
     private val TAG = "NowTv"
+
+    /**
+     * Plugin tarafından enjekte edilecek Android Context.
+     * WebView kullanımı için gereklidir.
+     */
+    var appContext: Context? = null
 
     data class JsonLdItem(
         @JsonProperty("@type") val type: String? = null,
@@ -267,7 +274,6 @@ class NowTv : MainAPI() {
 
     /**
      * Sayfa HTML'inde erbvr.com domain'ine ait token'lı m3u8 linkini bulur.
-     * Bu regex hem "playlist.m3u8?st=...&e=..." hem de "hlssubplaylist-xxx.m3u8?..." formatlarını yakalar.
      */
     private fun findErbvrM3u8(html: String): String? {
         val regex = """https?://[a-z0-9]+\.erbvr\.com/[^"'\s\\<>]*?\.m3u8[^"'\s\\<>]*""".toRegex()
@@ -361,21 +367,25 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 5: WebView ile ağ trafiğini yakala (dinamik token üretimi için en garantili yöntem)
-        Log.d(TAG, "Static methods failed, trying WebView interception...")
-        val interceptedUrl = interceptM3u8WithWebView(data)
-        if (!interceptedUrl.isNullOrBlank()) {
-            Log.d(TAG, "Intercepted m3u8 via WebView: $interceptedUrl")
-            M3u8Helper.generateM3u8(
-                name,
-                interceptedUrl,
-                data,
-                headers = mapOf(
-                    "Referer" to mainUrl,
-                    "Origin" to mainUrl
-                )
-            ).forEach(callback)
-            return true
+        // YÖNTEM 5: WebView ile ağ trafiğini yakala (Context yoksa atlanır)
+        if (appContext != null) {
+            Log.d(TAG, "Static methods failed, trying WebView interception...")
+            val interceptedUrl = interceptM3u8WithWebView(data)
+            if (!interceptedUrl.isNullOrBlank()) {
+                Log.d(TAG, "Intercepted m3u8 via WebView: $interceptedUrl")
+                M3u8Helper.generateM3u8(
+                    name,
+                    interceptedUrl,
+                    data,
+                    headers = mapOf(
+                        "Referer" to mainUrl,
+                        "Origin" to mainUrl
+                    )
+                ).forEach(callback)
+                return true
+            }
+        } else {
+            Log.w(TAG, "appContext null, WebView interception skipped. Plugin'de appContext set edilmeli.")
         }
 
         Log.e(TAG, "No stream URL found for: $data")
@@ -384,11 +394,16 @@ class NowTv : MainAPI() {
 
     /**
      * WebView kullanarak sayfadaki m3u8 isteğini yakalar.
-     * Bu yöntem, token'ın JavaScript tarafından dinamik olarak üretildiği durumlarda gereklidir.
+     * Context enjekte edilmemişse null döner.
      */
     private suspend fun interceptM3u8WithWebView(pageUrl: String): String? {
+        val ctx = appContext ?: run {
+            Log.e(TAG, "Context mevcut değil, WebView başlatılamıyor")
+            return null
+        }
+
         return try {
-            val webView = android.webkit.WebView(com.lagradost.cloudstream3.app.context)
+            val webView = android.webkit.WebView(ctx)
             var capturedUrl: String? = null
             val latch = java.util.concurrent.CountDownLatch(1)
 
@@ -404,7 +419,7 @@ class NowTv : MainAPI() {
                 ): android.webkit.WebResourceResponse? {
                     val url = request?.url?.toString() ?: return null
                     if (url.contains(".m3u8") && capturedUrl == null) {
-                        Log.d(TAG, "WebView intercepted: $url")
+                        Log.d(TAG, "WebView yakaladı: $url")
                         capturedUrl = url
                         latch.countDown()
                     }
@@ -412,13 +427,10 @@ class NowTv : MainAPI() {
                 }
             }
 
-            com.lagradost.cloudstream3.app.context.let { ctx ->
-                (ctx as? android.app.Activity)?.runOnUiThread {
-                    webView.loadUrl(pageUrl)
-                } ?: run {
-                    // Activity değilse doğrudan yükle
-                    webView.post { webView.loadUrl(pageUrl) }
-                }
+            if (ctx is android.app.Activity) {
+                ctx.runOnUiThread { webView.loadUrl(pageUrl) }
+            } else {
+                webView.post { webView.loadUrl(pageUrl) }
             }
 
             // Maksimum 15 saniye bekle
