@@ -2,6 +2,8 @@ package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.network.WebViewResolver
+import com.lagradost.cloudstream3.network.requestCreator
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -14,7 +16,7 @@ import org.jsoup.nodes.Element
 @Suppress("unused")
 class NowTv : MainAPI() {
     override var mainUrl = "https://www.nowtv.com.tr"
-    override var name = "NOW TV"
+    override var name = "Now TV"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
