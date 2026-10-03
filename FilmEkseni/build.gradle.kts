@@ -14,5 +14,5 @@ cloudstream {
     **/
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("Movie", "TvSeries")
-    iconUrl = "https://www.google.com/s2/favicons?domain=https://www.filmekseni.vip&sz=%size%"
+    iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT4qXkHyRVv3yot4iTXvTPBM8p0jLg69ko1Z8Z8UBmStg&s"
 }
