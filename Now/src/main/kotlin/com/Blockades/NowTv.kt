@@ -14,7 +14,7 @@ import org.jsoup.nodes.Element
 @Suppress("unused")
 class NowTv : MainAPI() {
     override var mainUrl = "https://www.nowtv.com.tr"
-    override var name = "NOW TV"
+    override var name = "NowTV"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
@@ -40,13 +40,6 @@ class NowTv : MainAPI() {
         @JsonProperty("@id") val id: String? = null,
         val name: String? = null,
         val image: Any? = null
-    )
-
-    data class StreamResponse(
-        val code: Int? = null,
-        val message: String? = null,
-        @JsonProperty("video_url") val videoUrl: String? = null,
-        val url: String? = null
     )
 
     override val mainPage = mainPageOf(
@@ -232,10 +225,7 @@ class NowTv : MainAPI() {
     }
 
     /**
-     * Sayfadaki ADMPlayer.init çağrısından video_id (referenceId) ve video_code değerlerini çeker.
-     * Örnek:
-     *   referenceId: '136284'
-     *   video: {"id":136284, "video_code":"20092026GUNDEMFUTBOL", ...}
+     * ADMPlayer.init çağrısından video_id (referenceId) ve video_code değerlerini çeker.
      */
     private data class PlayerData(val videoId: String?, val videoCode: String?)
 
@@ -247,19 +237,16 @@ class NowTv : MainAPI() {
             val scriptData = script.data()
             if (!scriptData.contains("ADMPlayer.init")) continue
 
-            // referenceId: '136284'
             if (videoId == null) {
                 val refRegex = """referenceId\s*:\s*['"](\d+)['"]""".toRegex()
                 videoId = refRegex.find(scriptData)?.groupValues?.get(1)
             }
 
-            // video_code: "20092026GUNDEMFUTBOL"
             if (videoCode == null) {
                 val codeRegex = """"video_code"\s*:\s*"([^"]+)"""".toRegex()
                 videoCode = codeRegex.find(scriptData)?.groupValues?.get(1)
             }
 
-            // video: { "id": 136284, ... } (alternatif video_id)
             if (videoId == null) {
                 val idRegex = """"id"\s*:\s*(\d+)""".toRegex()
                 videoId = idRegex.find(scriptData)?.groupValues?.get(1)
@@ -279,38 +266,20 @@ class NowTv : MainAPI() {
     }
 
     /**
-     * /ajax/stream endpoint'ine video_id gönderip gerçek m3u8 URL'sini (token'lı) alır.
+     * Sayfa HTML'inde erbvr.com domain'ine ait token'lı m3u8 linkini bulur.
+     * Bu regex hem "playlist.m3u8?st=...&e=..." hem de "hlssubplaylist-xxx.m3u8?..." formatlarını yakalar.
      */
-    private suspend fun fetchStreamUrl(
-        videoId: String,
-        pageUrl: String,
-        csrfToken: String?
-    ): String? {
-        return try {
-            val headers = mutableMapOf(
-                "X-Requested-With" to "XMLHttpRequest",
-                "Referer" to pageUrl,
-                "Origin" to mainUrl,
-                "Accept" to "application/json, text/plain, */*"
-            )
-            if (!csrfToken.isNullOrBlank()) {
-                headers["X-CSRF-TOKEN"] = csrfToken
-            }
+    private fun findErbvrM3u8(html: String): String? {
+        val regex = """https?://[a-z0-9]+\.erbvr\.com/[^"'\s\\<>]*?\.m3u8[^"'\s\\<>]*""".toRegex()
+        return regex.find(html)?.value?.replace("\\/", "/")
+    }
 
-            val response = app.post(
-                "$mainUrl/ajax/stream",
-                data = mapOf("video_id" to videoId),
-                headers = headers
-            ).text
-
-            Log.d(TAG, "Stream response: $response")
-
-            val parsed = jsonMapper.readValue<StreamResponse>(response)
-            parsed.videoUrl ?: parsed.url
-        } catch (e: Exception) {
-            Log.e(TAG, "fetchStreamUrl error: ${e.message}")
-            null
-        }
+    /**
+     * Sayfa HTML'inde herhangi bir m3u8 linkini bulur (fallback).
+     */
+    private fun findAnyM3u8(html: String): String? {
+        val regex = """https?://[^"'\s\\<>]+?\.m3u8[^"'\s\\<>]*""".toRegex()
+        return regex.find(html)?.value?.replace("\\/", "/")
     }
 
     override suspend fun loadLinks(
@@ -322,49 +291,64 @@ class NowTv : MainAPI() {
         Log.d(TAG, "loadLinks called with: $data")
 
         val document = app.get(data).document
-        val playerData = extractPlayerData(document)
-        val csrfToken = extractCsrfToken(document)
+        val html = document.html()
 
-        Log.d(TAG, "videoId=${playerData.videoId}, videoCode=${playerData.videoCode}, csrf=$csrfToken")
-
-        // YÖNTEM 1: /ajax/stream üzerinden gerçek token'lı m3u8 URL'sini al
-        if (playerData.videoId != null) {
-            val streamUrl = fetchStreamUrl(playerData.videoId, data, csrfToken)
-            if (!streamUrl.isNullOrBlank()) {
-                Log.d(TAG, "Stream URL from API: $streamUrl")
-                M3u8Helper.generateM3u8(
-                    name,
-                    streamUrl,
-                    data,
-                    headers = mapOf("Referer" to mainUrl)
-                ).forEach(callback)
-                return true
-            }
+        // YÖNTEM 1: Sayfa kaynağında erbvr.com token'lı m3u8 linkini ara
+        val erbvrUrl = findErbvrM3u8(html)
+        if (!erbvrUrl.isNullOrBlank()) {
+            Log.d(TAG, "Found erbvr m3u8 in page source: $erbvrUrl")
+            M3u8Helper.generateM3u8(
+                name,
+                erbvrUrl,
+                data,
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl,
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+            ).forEach(callback)
+            return true
         }
 
-        // YÖNTEM 2: video_code + sayfa yolundan CDN URL'si oluştur
-        // Örnek:
-        //   Sayfa: https://www.nowtv.com.tr/Anne-Yarisi/bolum/1
-        //   video_code: PDTANNEYARISI1HDYENIRTUK7YASVEUZERISIDDETOLUMSUZDAVRANISLAR
-        //   Sonuç: https://tdywsbbzdx.erbvr.com/Anne-Yarisi/bolumler/1/PDT....smil/playlist.m3u8
+        // YÖNTEM 2: Sayfa kaynağında herhangi bir m3u8 linki ara
+        val anyM3u8 = findAnyM3u8(html)
+        if (!anyM3u8.isNullOrBlank()) {
+            Log.d(TAG, "Found generic m3u8 in page source: $anyM3u8")
+            M3u8Helper.generateM3u8(
+                name,
+                anyM3u8,
+                data,
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl
+                )
+            ).forEach(callback)
+            return true
+        }
+
+        // YÖNTEM 3: ADMPlayer verisinden token'sız link kur (403 verebilir ama denemeye değer)
+        val playerData = extractPlayerData(document)
+        Log.d(TAG, "PlayerData: videoId=${playerData.videoId}, videoCode=${playerData.videoCode}")
+
         if (playerData.videoCode != null) {
             val path = data.removePrefix(mainUrl).trim('/')
-            // /bolum/1 -> /bolumler/1 dönüşümü
             val normalizedPath = path.replace("/bolum/", "/bolumler/")
             val cdnUrl = "https://tdywsbbzdx.erbvr.com/$normalizedPath/${playerData.videoCode}.smil/playlist.m3u8"
-
-            Log.d(TAG, "Constructed CDN URL: $cdnUrl")
+            Log.d(TAG, "Trying token-less CDN URL (may 403): $cdnUrl")
 
             M3u8Helper.generateM3u8(
                 name,
                 cdnUrl,
                 data,
-                headers = mapOf("Referer" to mainUrl)
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl
+                )
             ).forEach(callback)
             return true
         }
 
-        // YÖNTEM 3: Doğrudan <video><source> etiketi
+        // YÖNTEM 4: Doğrudan <video><source> etiketi
         val directVideoUrl = document.selectFirst("video source")?.attr("src")
         if (!directVideoUrl.isNullOrBlank() && directVideoUrl.contains(".m3u8")) {
             Log.d(TAG, "Direct source: $directVideoUrl")
@@ -377,23 +361,76 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 4: Sayfa kaynağında hazır token'lı m3u8 URL var mı?
-        val m3u8Regex = """(https?://[^"'\s\\]+\.m3u8[^"'\s\\]*)""".toRegex()
-        for (script in document.select("script")) {
-            val match = m3u8Regex.find(script.data())
-            if (match != null) {
-                Log.d(TAG, "Found m3u8 in script: ${match.value}")
-                M3u8Helper.generateM3u8(
-                    name,
-                    match.value,
-                    data,
-                    headers = mapOf("Referer" to mainUrl)
-                ).forEach(callback)
-                return true
-            }
+        // YÖNTEM 5: WebView ile ağ trafiğini yakala (dinamik token üretimi için en garantili yöntem)
+        Log.d(TAG, "Static methods failed, trying WebView interception...")
+        val interceptedUrl = interceptM3u8WithWebView(data)
+        if (!interceptedUrl.isNullOrBlank()) {
+            Log.d(TAG, "Intercepted m3u8 via WebView: $interceptedUrl")
+            M3u8Helper.generateM3u8(
+                name,
+                interceptedUrl,
+                data,
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl
+                )
+            ).forEach(callback)
+            return true
         }
 
         Log.e(TAG, "No stream URL found for: $data")
         return false
+    }
+
+    /**
+     * WebView kullanarak sayfadaki m3u8 isteğini yakalar.
+     * Bu yöntem, token'ın JavaScript tarafından dinamik olarak üretildiği durumlarda gereklidir.
+     */
+    private suspend fun interceptM3u8WithWebView(pageUrl: String): String? {
+        return try {
+            val webView = android.webkit.WebView(com.lagradost.cloudstream3.app.context)
+            var capturedUrl: String? = null
+            val latch = java.util.concurrent.CountDownLatch(1)
+
+            webView.settings.javaScriptEnabled = true
+            webView.settings.domStorageEnabled = true
+            webView.settings.userAgentString =
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+            webView.webViewClient = object : android.webkit.WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: android.webkit.WebView?,
+                    request: android.webkit.WebResourceRequest?
+                ): android.webkit.WebResourceResponse? {
+                    val url = request?.url?.toString() ?: return null
+                    if (url.contains(".m3u8") && capturedUrl == null) {
+                        Log.d(TAG, "WebView intercepted: $url")
+                        capturedUrl = url
+                        latch.countDown()
+                    }
+                    return null
+                }
+            }
+
+            com.lagradost.cloudstream3.app.context.let { ctx ->
+                (ctx as? android.app.Activity)?.runOnUiThread {
+                    webView.loadUrl(pageUrl)
+                } ?: run {
+                    // Activity değilse doğrudan yükle
+                    webView.post { webView.loadUrl(pageUrl) }
+                }
+            }
+
+            // Maksimum 15 saniye bekle
+            latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
+
+            webView.stopLoading()
+            webView.destroy()
+
+            capturedUrl
+        } catch (e: Exception) {
+            Log.e(TAG, "WebView interception error: ${e.message}")
+            null
+        }
     }
 }
