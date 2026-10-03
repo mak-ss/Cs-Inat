@@ -15,7 +15,7 @@ import org.jsoup.nodes.Element
 @Suppress("unused")
 class NowTv : MainAPI() {
     override var mainUrl = "https://www.nowtv.com.tr"
-    override var name = "NOW TV"
+    override var name = "NowTV"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
@@ -328,35 +328,50 @@ class NowTv : MainAPI() {
         }
     }
 
-    private data class PlayerData(val videoId: String?, val videoCode: String?)
+    /**
+     * ADMPlayer.init çağrısından video_id (referenceId), video_code ve bölüm numarasını çeker.
+     */
+    private data class PlayerData(
+        val videoId: String?,
+        val videoCode: String?,
+        val episodeNumber: String?
+    )
 
-    private fun extractPlayerData(document: Document): PlayerData {
+    private fun extractPlayerData(document: Document, pageUrl: String): PlayerData {
         var videoId: String? = null
         var videoCode: String? = null
+        var episodeNumber: String? = null
 
+        // Önce URL'den bölüm numarasını çıkar: /bolum/1, /bolum/2
+        val epRegex = """/bolum/(\d+)""".toRegex()
+        episodeNumber = epRegex.find(pageUrl)?.groupValues?.get(1)
+
+        // Script'lerden video_code'u bul
         for (script in document.select("script")) {
             val scriptData = script.data()
-            if (!scriptData.contains("ADMPlayer.init")) continue
 
-            if (videoId == null) {
-                val refRegex = """referenceId\s*:\s*['"](\d+)['"]""".toRegex()
-                videoId = refRegex.find(scriptData)?.groupValues?.get(1)
-            }
-
+            // video_code (snake_case)
             if (videoCode == null) {
                 val codeRegex = """"video_code"\s*:\s*"([^"]+)"""".toRegex()
                 videoCode = codeRegex.find(scriptData)?.groupValues?.get(1)
             }
 
-            if (videoId == null) {
-                val idRegex = """"id"\s*:\s*(\d+)""".toRegex()
-                videoId = idRegex.find(scriptData)?.groupValues?.get(1)
+            // videoCode (camelCase)
+            if (videoCode == null) {
+                val codeRegex2 = """videoCode\s*:\s*['"]([^'"]+)['"]""".toRegex()
+                videoCode = codeRegex2.find(scriptData)?.groupValues?.get(1)
             }
 
-            if (videoId != null && videoCode != null) break
+            // referenceId
+            if (videoId == null) {
+                val refRegex = """referenceId\s*:\s*['"](\d+)['"]""".toRegex()
+                videoId = refRegex.find(scriptData)?.groupValues?.get(1)
+            }
+
+            if (videoCode != null && videoId != null) break
         }
 
-        return PlayerData(videoId, videoCode)
+        return PlayerData(videoId, videoCode, episodeNumber)
     }
 
     private fun findErbvrM3u8(html: String): String? {
@@ -379,6 +394,33 @@ class NowTv : MainAPI() {
 
         val document = app.get(data).document
         val html = document.html()
+
+        // YÖNTEM 0: video_code + bölüm numarası + dizi adından doğrudan erbvr CDN URL'si kur
+        val playerData = extractPlayerData(document, data)
+        Log.d(TAG, "PlayerData: videoId=${playerData.videoId}, videoCode=${playerData.videoCode}, ep=${playerData.episodeNumber}")
+
+        if (playerData.videoCode != null && playerData.episodeNumber != null) {
+            // URL yolundan dizi adını al: /Yeralti/bolum/1 -> Yeralti
+            val pathSegments = data.removePrefix(mainUrl).trim('/').split("/")
+            val seriesPath = pathSegments.firstOrNull() ?: ""
+
+            if (seriesPath.isNotBlank()) {
+                val cdnUrl = "https://tdywsbbzdx.erbvr.com/$seriesPath/bolumler/${playerData.episodeNumber}/${playerData.videoCode}.smil/playlist.m3u8"
+                Log.d(TAG, "YÖNTEM 0 - Constructed CDN URL: $cdnUrl")
+
+                M3u8Helper.generateM3u8(
+                    name,
+                    cdnUrl,
+                    data,
+                    headers = mapOf(
+                        "Referer" to mainUrl,
+                        "Origin" to mainUrl,
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
+                ).forEach(callback)
+                return true
+            }
+        }
 
         // YÖNTEM 1: Sayfa kaynağında erbvr.com token'lı m3u8 linkini ara
         val erbvrUrl = findErbvrM3u8(html)
@@ -412,15 +454,12 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 3: ADMPlayer verisinden token'sız link kur
-        val playerData = extractPlayerData(document)
-        Log.d(TAG, "PlayerData: videoId=${playerData.videoId}, videoCode=${playerData.videoCode}")
-
-        if (playerData.videoCode != null) {
+        // YÖNTEM 3: ADMPlayer verisinden token'sız link kur (eski yöntem, yedek)
+        if (playerData.videoCode != null && playerData.videoId != null) {
             val path = data.removePrefix(mainUrl).trim('/')
             val normalizedPath = path.replace("/bolum/", "/bolumler/")
             val cdnUrl = "https://tdywsbbzdx.erbvr.com/$normalizedPath/${playerData.videoCode}.smil/playlist.m3u8"
-            Log.d(TAG, "Trying token-less CDN URL (may 403): $cdnUrl")
+            Log.d(TAG, "YÖNTEM 3 - Constructed CDN URL (fallback): $cdnUrl")
 
             M3u8Helper.generateM3u8(
                 name,
