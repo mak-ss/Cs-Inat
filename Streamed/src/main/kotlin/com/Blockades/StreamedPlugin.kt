@@ -2,9 +2,9 @@
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
-import com.kraptor.EmbedSporty
-import com.kraptor.EmbedStreams
-import com.kraptor.Streamed
+import com.Blockades.EmbedSporty
+import com.Blockades.EmbedStreams
+import com.Blockades.Streamed
 
 @CloudstreamPlugin
 class StreamedPlugin: Plugin() {
