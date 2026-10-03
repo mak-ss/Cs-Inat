@@ -1,6 +1,5 @@
 package com.Blockades
 
-import android.content.Context
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -15,19 +14,13 @@ import org.jsoup.nodes.Element
 @Suppress("unused")
 class NowTv : MainAPI() {
     override var mainUrl = "https://www.nowtv.com.tr"
-    override var name = "NowTV"
+    override var name = "NOW TV"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
 
     private val jsonMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
     private val TAG = "NowTv"
-
-    /**
-     * Plugin tarafından enjekte edilecek Android Context.
-     * WebView kullanımı için gereklidir.
-     */
-    var appContext: Context? = null
 
     data class JsonLdItem(
         @JsonProperty("@type") val type: String? = null,
@@ -51,8 +44,7 @@ class NowTv : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/dizi-arsivi" to "Diziler",
-        "$mainUrl/program-arsivi" to "Programlar",
-        "$mainUrl/now-spor" to "Spor"
+        "$mainUrl/program-arsivi" to "Programlar"
     )
 
     private fun getJsonLd(document: Document): List<JsonLdItem> {
@@ -121,6 +113,7 @@ class NowTv : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        Log.d(TAG, "getMainPage: ${request.name} - ${request.data}")
         val document = app.get(request.data).document
 
         val jsonLdItems = getJsonLd(document)
@@ -171,6 +164,7 @@ class NowTv : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        Log.d(TAG, "load: $url")
         val document = app.get(url).document
         val jsonLdItems = getJsonLd(document)
 
@@ -266,13 +260,6 @@ class NowTv : MainAPI() {
     }
 
     /**
-     * CSRF token'ı sayfadan alır.
-     */
-    private fun extractCsrfToken(document: Document): String? {
-        return document.selectFirst("meta[name=csrf-token]")?.attr("content")
-    }
-
-    /**
      * Sayfa HTML'inde erbvr.com domain'ine ait token'lı m3u8 linkini bulur.
      */
     private fun findErbvrM3u8(html: String): String? {
@@ -309,8 +296,7 @@ class NowTv : MainAPI() {
                 data,
                 headers = mapOf(
                     "Referer" to mainUrl,
-                    "Origin" to mainUrl,
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    "Origin" to mainUrl
                 )
             ).forEach(callback)
             return true
@@ -354,28 +340,21 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 4: Doğrudan <video><source> etiketi
-        val directVideoUrl = document.selectFirst("video source")?.attr("src")
-        if (!directVideoUrl.isNullOrBlank() && directVideoUrl.contains(".m3u8")) {
-            Log.d(TAG, "Direct source: $directVideoUrl")
-            M3u8Helper.generateM3u8(
-                name,
-                directVideoUrl,
-                data,
-                headers = mapOf("Referer" to mainUrl)
-            ).forEach(callback)
-            return true
-        }
+        // YÖNTEM 4: WebViewResolver ile dinamik m3u8 yakala
+        Log.d(TAG, "Static methods failed, trying WebViewResolver...")
+        try {
+            val foundVideo = WebViewResolver(
+                Regex("""\.m3u8""")
+            ).resolveUsingWebView(
+                requestCreator("GET", data, referer = mainUrl)
+            ).first
 
-        // YÖNTEM 5: WebView ile ağ trafiğini yakala (Context yoksa atlanır)
-        if (appContext != null) {
-            Log.d(TAG, "Static methods failed, trying WebView interception...")
-            val interceptedUrl = interceptM3u8WithWebView(data)
-            if (!interceptedUrl.isNullOrBlank()) {
-                Log.d(TAG, "Intercepted m3u8 via WebView: $interceptedUrl")
+            if (foundVideo != null) {
+                val streamUrl = foundVideo.url.toString()
+                Log.d(TAG, "WebViewResolver found: $streamUrl")
                 M3u8Helper.generateM3u8(
                     name,
-                    interceptedUrl,
+                    streamUrl,
                     data,
                     headers = mapOf(
                         "Referer" to mainUrl,
@@ -383,66 +362,14 @@ class NowTv : MainAPI() {
                     )
                 ).forEach(callback)
                 return true
+            } else {
+                Log.e(TAG, "WebViewResolver returned null")
             }
-        } else {
-            Log.w(TAG, "appContext null, WebView interception skipped. Plugin'de appContext set edilmeli.")
+        } catch (e: Exception) {
+            Log.e(TAG, "WebViewResolver error: ${e.message}")
         }
 
         Log.e(TAG, "No stream URL found for: $data")
         return false
-    }
-
-    /**
-     * WebView kullanarak sayfadaki m3u8 isteğini yakalar.
-     * Context enjekte edilmemişse null döner.
-     */
-    private suspend fun interceptM3u8WithWebView(pageUrl: String): String? {
-        val ctx = appContext ?: run {
-            Log.e(TAG, "Context mevcut değil, WebView başlatılamıyor")
-            return null
-        }
-
-        return try {
-            val webView = android.webkit.WebView(ctx)
-            var capturedUrl: String? = null
-            val latch = java.util.concurrent.CountDownLatch(1)
-
-            webView.settings.javaScriptEnabled = true
-            webView.settings.domStorageEnabled = true
-            webView.settings.userAgentString =
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-            webView.webViewClient = object : android.webkit.WebViewClient() {
-                override fun shouldInterceptRequest(
-                    view: android.webkit.WebView?,
-                    request: android.webkit.WebResourceRequest?
-                ): android.webkit.WebResourceResponse? {
-                    val url = request?.url?.toString() ?: return null
-                    if (url.contains(".m3u8") && capturedUrl == null) {
-                        Log.d(TAG, "WebView yakaladı: $url")
-                        capturedUrl = url
-                        latch.countDown()
-                    }
-                    return null
-                }
-            }
-
-            if (ctx is android.app.Activity) {
-                ctx.runOnUiThread { webView.loadUrl(pageUrl) }
-            } else {
-                webView.post { webView.loadUrl(pageUrl) }
-            }
-
-            // Maksimum 15 saniye bekle
-            latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
-
-            webView.stopLoading()
-            webView.destroy()
-
-            capturedUrl
-        } catch (e: Exception) {
-            Log.e(TAG, "WebView interception error: ${e.message}")
-            null
-        }
     }
 }
