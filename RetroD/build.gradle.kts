@@ -16,5 +16,5 @@ cloudstream {
     **/
     status  = 1
     tvTypes = listOf("Movie", "TvSeries")
-    iconUrl = "https://static.kanald.com.tr/images/retro-d-page-logo.svg"
+    iconUrl = "https://i1.sndcdn.com/avatars-000662168717-4uz14u-t1080x1080.jpg"
 }
