@@ -16,5 +16,5 @@ cloudstream {
     **/
     status  = 1 // will be 3 if unspecified
     tvTypes = listOf("AsianDrama")
-    iconUrl = "https://www.google.com/s2/favicons?domain=https://dizikorea.vip&sz=%size%"
+    iconUrl = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQe9XtnuaqCr0OCszI6jobXYusX45xclhR9YrLMZCiVBkHTW5jVBPimy84&s=10"
 }
