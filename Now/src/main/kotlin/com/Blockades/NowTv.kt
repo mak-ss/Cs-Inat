@@ -40,8 +40,9 @@ class NowTv : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "$mainUrl/dizi-izle" to "Diziler",
-        "$mainUrl/program-izle" to "Programlar"
+        "$mainUrl/dizi-arsivi" to "Diziler",
+        "$mainUrl/programs-izle" to "Programlar",
+        "$mainUrl/now-spor" to "Spor"
     )
 
     private fun getJsonLd(document: Document): List<JsonLdItem> {
