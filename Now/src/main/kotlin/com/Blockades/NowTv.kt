@@ -2,8 +2,6 @@ package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.network.WebViewResolver
-import com.lagradost.cloudstream3.network.requestCreator
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.fasterxml.jackson.annotation.JsonProperty
@@ -16,7 +14,7 @@ import org.jsoup.nodes.Element
 @Suppress("unused")
 class NowTv : MainAPI() {
     override var mainUrl = "https://www.nowtv.com.tr"
-    override var name = "Now TV"
+    override var name = "NOW TV"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Live)
@@ -342,36 +340,77 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 4: WebViewResolver ile dinamik m3u8 yakala
-        Log.d(TAG, "Static methods failed, trying WebViewResolver...")
-        try {
-            val foundVideo = WebViewResolver(
-                Regex("""\.m3u8""")
-            ).resolveUsingWebView(
-                requestCreator("GET", data, referer = mainUrl)
-            ).first
-
-            if (foundVideo != null) {
-                val streamUrl = foundVideo.url.toString()
-                Log.d(TAG, "WebViewResolver found: $streamUrl")
-                M3u8Helper.generateM3u8(
-                    name,
-                    streamUrl,
-                    data,
-                    headers = mapOf(
-                        "Referer" to mainUrl,
-                        "Origin" to mainUrl
-                    )
-                ).forEach(callback)
-                return true
-            } else {
-                Log.e(TAG, "WebViewResolver returned null")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "WebViewResolver error: ${e.message}")
+        // YÖNTEM 4: Özel WebView拦截 (MainActivity.context kullanır)
+        Log.d(TAG, "Static methods failed, trying custom WebView interception...")
+        val webViewUrl = interceptM3u8WithWebView(data)
+        if (!webViewUrl.isNullOrBlank()) {
+            Log.d(TAG, "Custom WebView found: $webViewUrl")
+            M3u8Helper.generateM3u8(
+                name,
+                webViewUrl,
+                data,
+                headers = mapOf(
+                    "Referer" to mainUrl,
+                    "Origin" to mainUrl
+                )
+            ).forEach(callback)
+            return true
+        } else {
+            Log.e(TAG, "Custom WebView returned null")
         }
 
         Log.e(TAG, "No stream URL found for: $data")
         return false
+    }
+
+    /**
+     * WebView kullanarak sayfadaki m3u8 isteğini yakalar.
+     * Context, CloudStream'in MainActivity.context global değişkeninden alınır.
+     */
+    private suspend fun interceptM3u8WithWebView(pageUrl: String): String? {
+        val context = MainActivity.context ?: run {
+            Log.e(TAG, "MainActivity.context is null, WebView cannot be created")
+            return null
+        }
+
+        return try {
+            val webView = android.webkit.WebView(context)
+            var capturedUrl: String? = null
+            val latch = java.util.concurrent.CountDownLatch(1)
+
+            webView.settings.javaScriptEnabled = true
+            webView.settings.domStorageEnabled = true
+            webView.settings.userAgentString =
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+            webView.webViewClient = object : android.webkit.WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: android.webkit.WebView?,
+                    request: android.webkit.WebResourceRequest?
+                ): android.webkit.WebResourceResponse? {
+                    val url = request?.url?.toString() ?: return null
+                    if (url.contains(".m3u8") && capturedUrl == null) {
+                        Log.d(TAG, "WebView intercepted: $url")
+                        capturedUrl = url
+                        latch.countDown()
+                    }
+                    return null
+                }
+            }
+
+            // WebView yüklemeyi ana thread'e post et
+            webView.post { webView.loadUrl(pageUrl) }
+
+            // En fazla 15 saniye bekle
+            latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
+
+            webView.stopLoading()
+            webView.destroy()
+
+            capturedUrl
+        } catch (e: Exception) {
+            Log.e(TAG, "WebView interception error: ${e.message}")
+            null
+        }
     }
 }
