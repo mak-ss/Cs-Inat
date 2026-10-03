@@ -25,7 +25,6 @@ class NowTv : MainAPI() {
 
     /**
      * Plugin tarafından enjekte edilecek Android Context.
-     * WebView oluşturmak için gereklidir.
      */
     var appContext: Context? = null
 
@@ -47,6 +46,17 @@ class NowTv : MainAPI() {
         @JsonProperty("@id") val id: String? = null,
         val name: String? = null,
         val image: Any? = null
+    )
+
+    /**
+     * Sabit dizi listesi. "Diziler" sekmesi için kullanılır.
+     */
+    private val featuredSeries = listOf(
+        Triple("Anne Yarısı", "https://www.nowtv.com.tr/Anne-Yarisi/izle", "https://www.nowtv.com.tr/Anne-Yarisi/izle"),
+        Triple("Sevdam Karadeniz", "https://www.nowtv.com.tr/Sevdam-Karadeniz/izle", "https://www.nowtv.com.tr/Sevdam-Karadeniz/izle"),
+        Triple("Ömür Usta", "https://www.nowtv.com.tr/Omur-Usta/izle", "https://www.nowtv.com.tr/Omur-Usta/izle"),
+        Triple("Yeraltı", "https://www.nowtv.com.tr/Yeralti/izle", "https://www.nowtv.com.tr/Yeralti/izle"),
+        Triple("Halef: Köklerin Çağrısı", "https://www.nowtv.com.tr/Halef-Koklerin-Cagrisi/izle", "https://www.nowtv.com.tr/Halef-Koklerin-Cagrisi/izle")
     )
 
     override val mainPage = mainPageOf(
@@ -121,6 +131,19 @@ class NowTv : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         Log.d(TAG, "getMainPage: ${request.name} - ${request.data}")
+
+        // "Diziler" sekmesi için sabit listeyi göster
+        if (request.name == "Diziler") {
+            val fixedList = featuredSeries.map { (title, url, _) ->
+                newTvSeriesSearchResponse(title, url) {
+                    this.posterUrl = null
+                }
+            }
+            Log.d(TAG, "Returning ${fixedList.size} featured series")
+            return newHomePageResponse(request.name, fixedList)
+        }
+
+        // Diğer sekmeler için normal HTML kazıma
         val document = app.get(request.data).document
 
         val jsonLdItems = getJsonLd(document)
@@ -232,9 +255,6 @@ class NowTv : MainAPI() {
         }
     }
 
-    /**
-     * ADMPlayer.init çağrısından video_id (referenceId) ve video_code değerlerini çeker.
-     */
     private data class PlayerData(val videoId: String?, val videoCode: String?)
 
     private fun extractPlayerData(document: Document): PlayerData {
@@ -266,17 +286,11 @@ class NowTv : MainAPI() {
         return PlayerData(videoId, videoCode)
     }
 
-    /**
-     * Sayfa HTML'inde erbvr.com domain'ine ait token'lı m3u8 linkini bulur.
-     */
     private fun findErbvrM3u8(html: String): String? {
         val regex = """https?://[a-z0-9]+\.erbvr\.com/[^"'\s\\<>]*?\.m3u8[^"'\s\\<>]*""".toRegex()
         return regex.find(html)?.value?.replace("\\/", "/")
     }
 
-    /**
-     * Sayfa HTML'inde herhangi bir m3u8 linkini bulur (fallback).
-     */
     private fun findAnyM3u8(html: String): String? {
         val regex = """https?://[^"'\s\\<>]+?\.m3u8[^"'\s\\<>]*""".toRegex()
         return regex.find(html)?.value?.replace("\\/", "/")
@@ -325,7 +339,7 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 3: ADMPlayer verisinden token'sız link kur (403 verebilir ama denemeye değer)
+        // YÖNTEM 3: ADMPlayer verisinden token'sız link kur
         val playerData = extractPlayerData(document)
         Log.d(TAG, "PlayerData: videoId=${playerData.videoId}, videoCode=${playerData.videoCode}")
 
@@ -347,7 +361,7 @@ class NowTv : MainAPI() {
             return true
         }
 
-        // YÖNTEM 4: Özel WebView拦截 (appContext üzerinden)
+        // YÖNTEM 4: Özel WebView拦截
         if (appContext != null) {
             Log.d(TAG, "Static methods failed, trying custom WebView interception...")
             val webViewUrl = interceptM3u8WithWebView(data)
@@ -367,17 +381,13 @@ class NowTv : MainAPI() {
                 Log.e(TAG, "Custom WebView returned null")
             }
         } else {
-            Log.w(TAG, "appContext null, WebView interception skipped. Plugin'de appContext set edilmeli.")
+            Log.w(TAG, "appContext null, WebView interception skipped.")
         }
 
         Log.e(TAG, "No stream URL found for: $data")
         return false
     }
 
-    /**
-     * WebView kullanarak sayfadaki m3u8 isteğini yakalar.
-     * Context, plugin tarafından appContext üzerinden enjekte edilir.
-     */
     private suspend fun interceptM3u8WithWebView(pageUrl: String): String? {
         val context = appContext ?: run {
             Log.e(TAG, "appContext null, WebView oluşturulamıyor")
@@ -409,12 +419,8 @@ class NowTv : MainAPI() {
                 }
             }
 
-            // WebView yüklemeyi ana thread'e post et
             webView.post { webView.loadUrl(pageUrl) }
-
-            // En fazla 15 saniye bekle
             latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
-
             webView.stopLoading()
             webView.destroy()
 
