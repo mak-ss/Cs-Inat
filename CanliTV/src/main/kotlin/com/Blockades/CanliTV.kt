@@ -1,5 +1,5 @@
 // CanliTV.kt
-// CloudStream CanliTV uyarlaması - canli.txt tabanlı (gömülü kanal listesi)
+// CloudStream CanliTV uyarlaması - Blockades&Aras Uyarlaması 
 
 package com.Blockades
 
@@ -27,6 +27,12 @@ class CanliTV : MainAPI() {
             group = "Ulusal"
         ),
         Channel(
+            name = "TRT 2",
+            logo = "https://upload.wikimedia.org/wikipedia/commons/1/19/TRT_2_logo.svg",
+            url = "https://tv-trt2.medya.trt.com.tr/master.m3u8",
+            group = "Ulusal"
+        ),
+        Channel(
             name = "NOW TV",
             logo = "https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/NOW_TV_%28Turkey%29_wordmark-red.svg/3840px-NOW_TV_%28Turkey%29_wordmark-red.svg.png",
             url = "https://nowtv.daioncdn.net/nowtv/nowtv.m3u8?ce=3&app=65fa8997-2b2f-4529-85ea-84318628a608&st=Krot3qnno8o9qPdYvwBDlQ&e=1791119413",
@@ -39,9 +45,21 @@ class CanliTV : MainAPI() {
             group = "Ulusal"
         ),
         Channel(
+            name = "Eurostar",
+            logo = "https://www.eurostartv.com.tr/img/logo.png",
+            url = "https://dogusdyg-eurostar.lg.mncdn.com/dogusdyg_eurostar/live.m3u8?st=UYwdUtsvdMAkpL7tlPBhmw&e=1791240105",
+            group = "Ulusal"
+        ),
+        Channel(
             name = "ATV",
             logo = "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/45/Atv_logo_2010.svg/960px-Atv_logo_2010.svg.png",
             url = "https://trkvz.daioncdn.net/atv/atv_1080p.m3u8?e=1791150702&st=NUUshDkb_SakOuz6cPkyvg&sid=8t0je0jhd420&app=d1ce2d40-5256-4550-b02e-e73c185a314e&ce=3",
+            group = "Ulusal"
+        ),
+        Channel(
+            name = "ATV Avrupa",
+            logo = "https://i.tmgrup.com.tr/aav/site/v1/i/atv-avrupa-logo.png",
+            url = "https://trkvz-live.ercdn.net/atvavrupa/atvavrupa.m3u8?st=0yFsDpzJ-zPWSlKkPNqpVA&e=1791198825",
             group = "Ulusal"
         ),
         Channel(
@@ -54,6 +72,36 @@ class CanliTV : MainAPI() {
             name = "Show TV",
             logo = "https://thumb.wikimedia.org/wikipedia/commons/thumb/c/cb/Show_TV_logo.svg/250px-Show_TV_logo.svg.png",
             url = "https://ciner.daioncdn.net/showtv/showtv.m3u8?ce=3&app=4bc856ef-4c68-4a94-bc87-37dfaaa66558&st=RBzhSuGauna0OGld-DJUVA&e=1664766175&tv=1",
+            group = "Ulusal"
+        ),
+        Channel(
+            name = "Show Türk",
+            logo = "https://files.sikayetvar.com/lg/cmp/18/180633.png?1619205105",
+            url = "https://ciner-live.ercdn.net/showturk/playlist.m3u8?e=1791160973&st=IQNUsrHxmujXpHqb2F51Rg&tv=1",
+            group = "Ulusal"
+        ),
+        Channel(
+            name = "TV8",
+            logo = "https://img.tv8.com.tr/s/template/v2/img/tv8-logo.png",
+            url = "https://tv8.daioncdn.net/tv8/tv8_1080p.m3u8?&sid=8t2jdq6uo23x&app=7ddc255a-ef47-4e81-ab14-c0e5f2949788&ce=3",
+            group = "Ulusal"
+        ),
+        Channel(
+            name = "A2",
+            logo = "https://iatv.tmgrup.com.tr/site/v2/a2tv/i/a2tv-logo.png",
+            url = "https://trkvz.daioncdn.net/a2tv/a2tv_1080p.m3u8?e=1791199241&st=rPy4uSq1WbkP0tJWrSl3TA&sid=8t2jkdeg0j6p&app=59363a60-be96-4f73-9eff-355d0ff2c758&ce=3",
+            group = "Ulusal"
+        ),
+        Channel(
+            name = "Teve2",
+            logo = "https://thumb.wikimedia.org/wikipedia/tr/thumb/a/ae/Tv2_logo_%282026%29.png/120px-Tv2_logo_%282026%29.png",
+            url = "https://demiroren.daioncdn.net/teve2/teve2_720p.m3u8?&sid=8t2jp66pnxby&app=6aab838a-437e-4a1b-bbd0-e30f79cdbbbd&ce=3",
+            group = "Ulusal"
+        ),
+        Channel(
+            name = "TV4",
+            logo = "https://www.turkmedya.com.tr/assets/img/source/png/tv4.png?v=1115",
+            url = "https://turkmedya-live.ercdn.net/tv4/tv4_720p.m3u8",
             group = "Ulusal"
         )
     )
