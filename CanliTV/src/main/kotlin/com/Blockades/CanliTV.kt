@@ -1,5 +1,5 @@
 // CanliTV.kt
-// CloudStream CanliTV uyarlaması - Blockades&Aras Uyarlaması 
+// CloudStream CanliTV uyarlaması - canli.txt tabanlı (gömülü kanal listesi)
 
 package com.Blockades
 
@@ -20,6 +20,7 @@ class CanliTV : MainAPI() {
 
     // canli.txt içeriğinden gömülü kanal listesi
     private val channelList = listOf(
+        // ---------- Ulusal ----------
         Channel(
             name = "TRT 1",
             logo = "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/6c/TRT_1_logo_%282012-2021%29.png/1280px-TRT_1_logo_%282012-2021%29.png",
@@ -103,6 +104,32 @@ class CanliTV : MainAPI() {
             logo = "https://www.turkmedya.com.tr/assets/img/source/png/tv4.png?v=1115",
             url = "https://turkmedya-live.ercdn.net/tv4/tv4_720p.m3u8",
             group = "Ulusal"
+        ),
+
+        // ---------- Haber ----------
+        Channel(
+            name = "TRT Haber",
+            logo = "https://upload.wikimedia.org/wikipedia/commons/f/fe/TRT_Haber_kurumsal_logo_%282013-2020%29.png",
+            url = "https://tv-trthaber.medya.trt.com.tr/master.m3u8",
+            group = "Haber"
+        ),
+        Channel(
+            name = "Habertürk",
+            logo = "https://upload.wikimedia.org/wikipedia/commons/7/78/Haberturk_logo.png",
+            url = "https://ciner.daioncdn.net/haberturktv/haberturktv_1080p.m3u8?sid=8t2k9vjtt1kg&app=c98ab0b0-50cc-495b-bb37-778e91f5ff5b&ce=3",
+            group = "Haber"
+        ),
+        Channel(
+            name = "CNN Türk",
+            logo = "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/59/CNN_T%C3%BCrk_logo.svg/1280px-CNN_T%C3%BCrk_logo.svg.png",
+            url = "https://live.duhnet.tv//S2/HLS_LIVE/cnnturknp/playlist.m3u8?&live=true&app=com.cnnturk&st=AjNiFFFIgsepnn3cUEvytg&e=1791165450",
+            group = "Haber"
+        ),
+        Channel(
+            name = "NTV",
+            logo = "https://upload.wikimedia.org/wikipedia/commons/b/b5/NTV_logo.png",
+            url = "https://dogus.daioncdn.net/ntv/ntv_1080p.m3u8?token=e8c0dec16bf84c8cc187224d13811c0e705fd2c58b25d7ee&sid=8t2knf3gjqr9&app=c68bddbe-3dbf-49f7-892a-93de5ae37f1f&ce=3",
+            group = "Haber"
         )
     )
 
