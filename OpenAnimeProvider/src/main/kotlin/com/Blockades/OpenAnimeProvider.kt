@@ -718,4 +718,13 @@ class OpenAnimeProvider : MainAPI() {
 
     private fun getQuality(res: Int): Int {
         return when (res) {
-            2160 ->
+            2160 -> Qualities.P2160.value
+            1440 -> Qualities.P1440.value
+            1080 -> Qualities.P1080.value
+            720  -> Qualities.P720.value
+            480  -> Qualities.P480.value
+            360  -> Qualities.P360.value
+            else -> Qualities.Unknown.value
+        }
+    }
+}
