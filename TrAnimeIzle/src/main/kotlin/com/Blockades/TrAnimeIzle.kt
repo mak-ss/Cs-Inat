@@ -84,7 +84,6 @@ class TrAnimeIzle : MainAPI() {
         var doc = res.document
         var html = doc.html()
 
-        // Sitede Bot Kontrolü (IconCaptcha) challenge'ı tetiklendi mi kontrol et
         if (res.url.contains("CaptchaChallenge", ignoreCase = true) ||
             doc.selectFirst("div.captcha-holder") != null ||
             html.contains("iconCaptcha", ignoreCase = true) ||
@@ -92,7 +91,6 @@ class TrAnimeIzle : MainAPI() {
         ) {
             val challengeUrl = res.url
             try {
-                // 1. POST /api/Captcha/ (cID: 1, rT: 1, tM: "dark") -> 5 adet ikon hash'i ve .AitrWeb.Session döner
                 val initRes = app.post(
                     "$mainUrl/api/Captcha/",
                     data = mapOf("cID" to "1", "rT" to "1", "tM" to "dark"),
@@ -110,7 +108,6 @@ class TrAnimeIzle : MainAPI() {
                 val hashes = (0 until jsonArray.length()).map { jsonArray.getString(it) }
 
                 if (hashes.size == 5) {
-                    // 2. Beş ikonun baytlarını indirip MD5 özetlerini çıkar
                     val iconList = hashes.map { h ->
                         val iconRes = app.get(
                             "$mainUrl/api/Captcha/?cid=1&hash=$h",
@@ -122,14 +119,12 @@ class TrAnimeIzle : MainAPI() {
                         h to iconRes.body.bytes().md5Hex()
                     }
 
-                    // 3. 4 ikon aynıdır, sadece 1 tanesi farklıdır (farklı olanı bul)
                     val counts = iconList.groupBy { it.second }
                     val uniqueEntry = counts.values.firstOrNull { it.size == 1 }?.firstOrNull()
                         ?: iconList.first()
 
                     val oddHash = uniqueEntry.first
 
-                    // 4. Doğrulamayı sunucuya gönder (rT: 2, pC: oddHash)
                     val verifyRes = app.post(
                         "$mainUrl/api/Captcha/",
                         data = mapOf("cID" to "1", "pC" to oddHash, "rT" to "2"),
@@ -143,7 +138,6 @@ class TrAnimeIzle : MainAPI() {
                     )
                     updateCookiesFromResponse(verifyRes)
 
-                    // 5. Hedef sayfayı oturum çerezleriyle yeniden yükle
                     res = app.get(
                         url,
                         headers = getRequestHeaders(mapOf("Referer" to challengeUrl)),
@@ -200,7 +194,6 @@ class TrAnimeIzle : MainAPI() {
         var targetUrl = url
         var doc = safeGetDoc(targetUrl)
 
-        // Eğer kullanıcı ana sayfadaki bir bölüm linkine tıklamışsa, sayfadaki ana anime linkini bulup yükle
         if (!targetUrl.contains("/anime/")) {
             val parentAnimeHref = doc.selectFirst("ol.breadcrumb li a[href*='/anime/'], a[href*='/anime/']")?.attr("href")
             if (!parentAnimeHref.isNullOrBlank()) {
@@ -234,7 +227,6 @@ class TrAnimeIzle : MainAPI() {
 
         val tags = doc.select("a[href*='/tur/'], a[href*='/kategori/'], div.genres a").map { it.text().trim() }
 
-        // Bölümleri Topla
         val episodes = mutableListOf<Episode>()
         val seenEps = mutableSetOf<String>()
 
@@ -263,7 +255,6 @@ class TrAnimeIzle : MainAPI() {
             })
         }
 
-        // Eğer bölüm listesi bulunamadıysa ama sayfa bir bölüm sayfasıysa, en azından bu bölümü ekle (Asla Çok Yakında olmasın)
         if (episodes.isEmpty() && (targetUrl.contains("bolum", ignoreCase = true) || url.contains("bolum", ignoreCase = true))) {
             val fallbackUrl = if (targetUrl.contains("bolum")) targetUrl else url
             val epNum = Regex("""(\d+)[.-]bolum""", RegexOption.IGNORE_CASE).find(fallbackUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 1
@@ -275,7 +266,6 @@ class TrAnimeIzle : MainAPI() {
             })
         }
 
-        // AniList Karakterler, Seslendirmenler, Puan ve Banner
         val searchCandidate = cleanTitle.ifBlank { "Anime" }
         val (actors, banner, aniListScore) = fetchAniListMetadata(searchCandidate)
 
@@ -313,9 +303,9 @@ class TrAnimeIzle : MainAPI() {
         val initMatch = Regex("""animeWatch\.initialize\s*\(\s*(\d+)\s*,\s*(\d+)""").find(html)
 
         if (initMatch != null) {
-            val animeId = initMatch.groupValues[1].toIntOrNull()
             val episodeId = initMatch.groupValues[2].toIntOrNull()
-            val defaultFansubId = Regex("""animeWatch\.initialize\s*\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)""").find(html)?.groupValues?.get(1)?.toIntOrNull()
+            val defaultFansubId = Regex("""animeWatch\.initialize\s*\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)""")
+                .find(html)?.groupValues?.get(1)?.toIntOrNull()
 
             if (episodeId != null) {
                 // Sayfadaki tüm fansub alternatiflerini topla
@@ -332,7 +322,7 @@ class TrAnimeIzle : MainAPI() {
                             put("FansubId", fid)
                         }.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
 
-                        val sourcesHtml = app.post(
+                        val sourcesRes = app.post(
                             "$mainUrl/api/fansubSources",
                             requestBody = payload,
                             headers = getRequestHeaders(mapOf(
@@ -343,9 +333,10 @@ class TrAnimeIzle : MainAPI() {
                             )),
                             cookies = sessionCookies,
                             timeout = 8
-                        ).text
+                        )
+                        updateCookiesFromResponse(sourcesRes)
 
-                        val sourcesDoc = Jsoup.parse(sourcesHtml)
+                        val sourcesDoc = Jsoup.parse(sourcesRes.text)
                         val sourceBtns = sourcesDoc.select("li.sourceBtn[data-id], .sourceBtn[data-id]")
 
                         for (btn in sourceBtns) {
@@ -354,7 +345,7 @@ class TrAnimeIzle : MainAPI() {
                             if (sourceId.isBlank()) continue
 
                             try {
-                                val playerResp = app.post(
+                                val playerRes = app.post(
                                     "$mainUrl/api/sourcePlayer/$sourceId",
                                     requestBody = "".toRequestBody(),
                                     headers = getRequestHeaders(mapOf(
@@ -364,9 +355,10 @@ class TrAnimeIzle : MainAPI() {
                                     )),
                                     cookies = sessionCookies,
                                     timeout = 8
-                                ).text
+                                )
+                                updateCookiesFromResponse(playerRes)
 
-                                val sourceJson = JSONObject(playerResp)
+                                val sourceJson = JSONObject(playerRes.text)
                                 val iframeHtml = sourceJson.optString("source")
                                 if (iframeHtml.isBlank()) continue
 
