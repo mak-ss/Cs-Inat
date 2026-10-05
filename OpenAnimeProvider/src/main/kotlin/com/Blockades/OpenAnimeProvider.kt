@@ -718,4 +718,4 @@ class OpenAnimeProvider : MainAPI() {
 
     private fun getQuality(res: Int): Int {
         return when (res) {
-            216
+            2160 ->
