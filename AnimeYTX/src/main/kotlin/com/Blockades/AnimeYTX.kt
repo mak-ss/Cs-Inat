@@ -354,7 +354,7 @@ class AnimeYTX : MainAPI() {
         }
 
         // ------------------------------------------------------------
-        // SprintCDN / owphbf24 HLS linklerini doğrudan yakala
+        // Dogrudan HLS linklerini yakala: SprintCDN, owphbf24, RpmVid, YTPlay
         // ------------------------------------------------------------
         val sprintHlsRegex = Regex(
             """https?://[^"'\s<>\\]+?sprintcdn[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
@@ -364,21 +364,31 @@ class AnimeYTX : MainAPI() {
             """https?://[^"'\s<>\\]+?owphbf24\.com[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
             RegexOption.IGNORE_CASE
         )
+        val rpmvidHlsRegex = Regex(
+            """https?://[^"'\s<>\\]+?(?:rpmvid|ytplay)[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
+            RegexOption.IGNORE_CASE
+        )
 
         val directHls = mutableSetOf<String>()
         sprintHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
         owphbfHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
-        // iframe'lerden de topla
+        rpmvidHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
+
         iframeUrls.filter {
-            it.contains("sprintcdn", true) || it.contains("owphbf24.com", true)
+            it.contains("sprintcdn", true) ||
+            it.contains("owphbf24.com", true) ||
+            it.contains("rpmvid", true) ||
+            it.contains("ytplay", true)
         }.forEach { directHls.add(it) }
 
         directHls.forEach { hlsUrl ->
-            Log.d("Ayzen", "SprintCDN HLS bulundu: $hlsUrl")
+            val isRpm = hlsUrl.contains("rpmvid", true) || hlsUrl.contains("ytplay", true)
+            val label = if (isRpm) "RpmVid" else "SprintCDN"
+            Log.d("Ayzen", "$label HLS bulundu: $hlsUrl")
             callback(
                 newExtractorLink(
-                    source = "SprintCDN",
-                    name = "SprintCDN",
+                    source = label,
+                    name = label,
                     url = hlsUrl,
                     type = ExtractorLinkType.M3U8
                 ) {
@@ -399,8 +409,12 @@ class AnimeYTX : MainAPI() {
         iframeUrls.forEach { iframeUrl ->
             Log.d("Ayzen", "Cerceve adresi: $iframeUrl")
 
-            // SprintCDN linklerini zaten yukarıda hallettik, atla
-            if (iframeUrl.contains("sprintcdn", true) || iframeUrl.contains("owphbf24.com", true)) {
+            // SprintCDN ve RpmVid linkleri yukarida halledildi
+            if (iframeUrl.contains("sprintcdn", true) ||
+                iframeUrl.contains("owphbf24.com", true) ||
+                iframeUrl.contains("rpmvid", true) ||
+                iframeUrl.contains("ytplay", true)
+            ) {
                 return@forEach
             }
 
