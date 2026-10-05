@@ -1,4 +1,3 @@
-
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
 package com.Blockades
@@ -13,9 +12,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import android.util.Base64
 import org.json.JSONObject
-
 import org.json.JSONArray
-
 
 import com.lagradost.cloudstream3.app
 import java.text.SimpleDateFormat
@@ -31,7 +28,6 @@ class AnimeYTX : MainAPI() {
     override var lang = "es"
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Anime)
-    //Movie, AnimeMovie, TvSeries, Cartoon, Anime, OVA, Torrent, Documentary, AsianDrama, Live, NSFW, Others, Music, AudioBook, CustomMedia, Audio, Podcast,
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Últimos episodios",
@@ -119,17 +115,6 @@ class AnimeYTX : MainAPI() {
         }
     }
 
-    // override suspend fun search(query: String, page: Int): SearchResponseList? {
-    //     val url = if (page <= 1) "$mainUrl/?s=$query" else "$mainUrl/page/$page/?s=$query"
-    //     val document = app.get(url).document
-
-    //     val items = document.select("article.bs").mapNotNull {
-    //         it.toSearchResult()
-    //     }
-
-    //     return newSearchResponseList(items)
-    // }
-
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
@@ -137,7 +122,6 @@ class AnimeYTX : MainAPI() {
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Cookie" to "cf_clearance=z4kt4KEpD_kbNAhFvY.RNwZrgFvXtG_2g8R1ILswa.8-1788606738-1.2.1.1-ZZP84dahkkQXQCKL5wXJZSJdT2Pb5TG8p76zs_8RWt0tSuHNxOabyA8kXy_InYDItqvOGTVTHb530VFcPI877AG6y7M6xjkiBjnncY65TK_8FM5um0eCsZcAA8GwiPuBnJmf1DT_ePpyzffdSiteYyi___8EGZIO3xagLUXmnH9n_eWkzQBGtAu0OZU7uh1GqwhGT6s6_57_w5QDQA_nODuGfg8SwIvFsiifhvfyLm0XP1ETKRyf_N2lXZRXWt5IFjCp_S7VXPlYjbbqKYyqEqRYsGv.rdgysriYXhqPZCeEtHK11TMXo1xktIqEHZPn1aQtTGnsND4cnJyH31zCroQdc0H9OaJ5T4MGVh5eRp4",
             "Upgrade-Insecure-Requests" to "1",
             "Sec-Fetch-Dest" to "document",
             "Sec-Fetch-Mode" to "navigate",
@@ -205,11 +189,7 @@ class AnimeYTX : MainAPI() {
                 ?.text().orEmpty()
         val status = when {
             statusText.contains("Finalizado", true) -> ShowStatus.Completed
-            statusText.contains("En emisión", true) || statusText.contains(
-                "En curso",
-                true
-            ) -> ShowStatus.Ongoing
-
+            statusText.contains("En emisión", true) || statusText.contains("En curso", true) -> ShowStatus.Ongoing
             else -> null
         }
         Log.d("Ayzen", "Status: $status (Raw: $statusText)")
@@ -327,7 +307,6 @@ class AnimeYTX : MainAPI() {
         }
     }
 
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -335,22 +314,21 @@ class AnimeYTX : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var linkFound = false
-        val headers   = mapOf(
-            "User-Agent"                to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
-            "Accept"                    to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language"           to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Cookie"                    to "cf_clearance=z4kt4KEpD_kbNAhFvY.RNwZrgFvXtG_2g8R1ILswa.8-1788606738-1.2.1.1-ZZP84dahkkQXQCKL5wXJZSJdT2Pb5TG8p76zs_8RWt0tSuHNxOabyA8kXy_InYDItqvOGTVTHb530VFcPI877AG6y7M6xjkiBjnncY65TK_8FM5um0eCsZcAA8GwiPuBnJmf1DT_ePpyzffdSiteYyi___8EGZIO3xagLUXmnH9n_eWkzQBGtAu0OZU7uh1GqwhGT6s6_57_w5QDQA_nODuGfg8SwIvFsiifhvfyLm0XP1ETKRyf_N2lXZRXWt5IFjCp_S7VXPlYjbbqKYyqEqRYsGv.rdgysriYXhqPZCeEtHK11TMXo1xktIqEHZPn1aQtTGnsND4cnJyH31zCroQdc0H9OaJ5T4MGVh5eRp4",
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
             "Upgrade-Insecure-Requests" to "1",
-            "Sec-Fetch-Dest"            to "document",
-            "Sec-Fetch-Mode"            to "navigate",
-            "Sec-Fetch-Site"            to "none",
-            "Sec-Fetch-User"            to "?1"
+            "Sec-Fetch-Dest" to "document",
+            "Sec-Fetch-Mode" to "navigate",
+            "Sec-Fetch-Site" to "none",
+            "Sec-Fetch-User" to "?1"
         )
 
         Log.d("Ayzen", "Bolum adresi: $data")
         val response = app.get(data, headers = headers)
         val document = response.document
-        val rawHtml  = response.text
+        val rawHtml = response.text
 
         val iframeUrls = mutableSetOf<String>()
 
@@ -375,68 +353,118 @@ class AnimeYTX : MainAPI() {
             iframeUrls.add(match.value.replace("&amp;", "&"))
         }
 
+        // ------------------------------------------------------------
+        // SprintCDN / owphbf24 HLS linklerini doğrudan yakala
+        // ------------------------------------------------------------
+        val sprintHlsRegex = Regex(
+            """https?://[^"'\s<>\\]+?sprintcdn[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
+            RegexOption.IGNORE_CASE
+        )
+        val owphbfHlsRegex = Regex(
+            """https?://[^"'\s<>\\]+?owphbf24\.com[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
+            RegexOption.IGNORE_CASE
+        )
+
+        val directHls = mutableSetOf<String>()
+        sprintHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
+        owphbfHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
+        // iframe'lerden de topla
+        iframeUrls.filter {
+            it.contains("sprintcdn", true) || it.contains("owphbf24.com", true)
+        }.forEach { directHls.add(it) }
+
+        directHls.forEach { hlsUrl ->
+            Log.d("Ayzen", "SprintCDN HLS bulundu: $hlsUrl")
+            callback(
+                newExtractorLink(
+                    source = "SprintCDN",
+                    name = "SprintCDN",
+                    url = hlsUrl,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = data
+                    this.quality = Qualities.Unknown.value
+                    this.headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
+                        "Referer" to data,
+                        "Origin" to mainUrl
+                    )
+                }
+            )
+            linkFound = true
+        }
+
         Log.d("Ayzen", "Bulunan cerceve sayisi: ${iframeUrls.size}")
 
         iframeUrls.forEach { iframeUrl ->
             Log.d("Ayzen", "Cerceve adresi: $iframeUrl")
+
+            // SprintCDN linklerini zaten yukarıda hallettik, atla
+            if (iframeUrl.contains("sprintcdn", true) || iframeUrl.contains("owphbf24.com", true)) {
+                return@forEach
+            }
+
             if (iframeUrl.contains("mytsumi.com")) {
-                val containerId = Regex("""[?&]value=([^&]+)""").find(iframeUrl)?.groupValues?.get(1) ?: return@forEach
-                val targetUrl   = "https://mytsumi.com/multiplayer/contenedor.php?id=$containerId"
-                val pageText    = app.get(targetUrl, referer = iframeUrl).text
+                val containerId = Regex("""[?&]value=([^&]+)""").find(iframeUrl)?.groupValues?.get(1)
+                    ?: return@forEach
+                val targetUrl = "https://mytsumi.com/multiplayer/contenedor.php?id=$containerId"
+                val pageText = app.get(targetUrl, referer = iframeUrl).text
 
-                Regex("""const\s+videoTabs\s*=\s*(\[.*?\]);""").find(pageText)?.groupValues?.get(1)?.let { json ->
-                    try {
-                        val jsonArray = JSONArray(json)
-                        for (i in 0 until jsonArray.length()) {
-                            val tab     = jsonArray.getJSONObject(i)
-                            val rawUrl  = tab.getString("url").replace("\\/", "")
-                            val isMp4   = tab.optBoolean("is_mp4", false)
-                            val tabName = tab.optString("tab_name", "Mytsumi")
+                Regex("""const\s+videoTabs\s*=\s*(\[.*?\]);""").find(pageText)?.groupValues?.get(1)
+                    ?.let { json ->
+                        try {
+                            val jsonArray = JSONArray(json)
+                            for (i in 0 until jsonArray.length()) {
+                                val tab = jsonArray.getJSONObject(i)
+                                val rawUrl = tab.getString("url").replace("\\/", "")
+                                val isMp4 = tab.optBoolean("is_mp4", false)
+                                val tabName = tab.optString("tab_name", "Mytsumi")
 
-                            if (rawUrl.isNotBlank() && rawUrl != "about:blank") {
-                                Log.d("Ayzen", "Oynatici adresi: $rawUrl")
-                                if (isMp4) {
-                                    callback(
-                                        newExtractorLink(
-                                            source = tabName,
-                                            name   = tabName,
-                                            url    = rawUrl,
-                                            type   = ExtractorLinkType.VIDEO
+                                if (rawUrl.isNotBlank() && rawUrl != "about:blank") {
+                                    Log.d("Ayzen", "Oynatici adresi: $rawUrl")
+                                    if (isMp4) {
+                                        callback(
+                                            newExtractorLink(
+                                                source = tabName,
+                                                name = tabName,
+                                                url = rawUrl,
+                                                type = ExtractorLinkType.VIDEO
+                                            )
                                         )
-                                    )
-                                    linkFound = true
-                                } else {
-                                    loadExtractor(rawUrl, targetUrl, subtitleCallback) { link ->
+                                        linkFound = true
+                                    } else {
+                                        loadExtractor(rawUrl, targetUrl, subtitleCallback) { link ->
+                                            linkFound = true
+                                            callback(link)
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.d("Ayzen", "Sekme hatasi: ${e.message}")
+                        }
+                    }
+
+                Regex("""const\s+downloadsByQuality\s*=\s*(\{.*?\});""").find(pageText)
+                    ?.groupValues?.get(1)?.let { json ->
+                        try {
+                            val dlJson = JSONObject(json)
+                            dlJson.keys().forEach { quality ->
+                                val items = dlJson.getJSONArray(quality)
+                                for (i in 0 until items.length()) {
+                                    val item = items.getJSONObject(i)
+                                    val dlUrl = item.getString("download_url").replace("\\/", "")
+                                    Log.d("Ayzen", "Indirme adresi: $dlUrl")
+                                    loadExtractor(dlUrl, targetUrl, subtitleCallback) { link ->
                                         linkFound = true
                                         callback(link)
                                     }
                                 }
                             }
+                        } catch (e: Exception) {
+                            Log.d("Ayzen", "Indirme hatasi: ${e.message}")
                         }
-                    } catch (e: Exception) {
-                        Log.d("Ayzen", "Sekme hatasi: ${e.message}")
                     }
-                }
-
-                Regex("""const\s+downloadsByQuality\s*=\s*(\{.*?\});""").find(pageText)?.groupValues?.get(1)?.let { json ->
-                    try {
-                        val dlJson = JSONObject(json)
-                        dlJson.keys().forEach { quality ->
-                            val items = dlJson.getJSONArray(quality)
-                            for (i in 0 until items.length()) {
-                                val item  = items.getJSONObject(i)
-                                val dlUrl = item.getString("download_url").replace("\\/", "")
-                                Log.d("Ayzen", "Indirme adresi: $dlUrl")
-                                loadExtractor(dlUrl, targetUrl, subtitleCallback) { link ->
-                                    linkFound = true
-                                    callback(link)
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.d("Ayzen", "Indirme hatasi: ${e.message}")
-                    }
-                }
             } else {
                 loadExtractor(iframeUrl, data, subtitleCallback) { link ->
                     linkFound = true
