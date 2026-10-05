@@ -26,7 +26,7 @@ import android.util.Base64
  * - Tüm alternatif kaynaklar: Vidmoly, Sibnet, Ok.ru, Voe, MixDrop, Mp4Upload vb.
  * - AniList GraphQL Karakterler, Seslendirmenler, Banner ve Puan desteği
  */
-class TrAnimeIzleProvider : MainAPI() {
+class TrAnimeIzle : MainAPI() {
 
     override var mainUrl = "https://www.tranimeizle.io"
     override var name = "TrAnimeİzle"
