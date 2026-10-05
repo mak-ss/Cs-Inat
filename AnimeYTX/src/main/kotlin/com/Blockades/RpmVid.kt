@@ -11,11 +11,8 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 /**
  * RpmVid / YTPlay HLS Extractor
  *
- * Ornek link:
- *   https://ytplay.rpmvid.com/hlsmod/.../index-f1-v1-a1.m3u8?v=...
- *
- * Bu servis token imzasi kullanmaz; sadece cache-busting query'si vardir.
- * Master playlist gelirse varyantlari ayirir, degilse tek link dondurur.
+ * Ornek:
+ *   https://ytplay.rpmvid.com/hlsmod/p16-ad-site-sign-sg.tiktokcdn.com/.../index-f1-v1-a1.m3u8?v=...
  */
 class RpmVid : ExtractorApi() {
     override val name = "RpmVid"
@@ -43,7 +40,6 @@ class RpmVid : ExtractorApi() {
         }
         val body = response.text
 
-        // Master playlist mi?
         val isMaster = body.trimStart().startsWith("#EXTM3U") &&
                 body.contains("#EXT-X-STREAM-INF")
 
@@ -63,7 +59,6 @@ class RpmVid : ExtractorApi() {
             return
         }
 
-        // Varyantlari ayir
         val baseUrl = url.substringBeforeLast("/") + "/"
         val lines = body.lines()
         var pendingName: String? = null
