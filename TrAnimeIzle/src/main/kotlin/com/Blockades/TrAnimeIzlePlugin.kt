@@ -7,6 +7,6 @@ import com.lagradost.cloudstream3.plugins.Plugin
 @CloudstreamPlugin
 class TrAnimeIzlePlugin : Plugin() {
     override fun load(context: Context) {
-        registerMainAPI(TrAnimeIzleProvider())
+        registerMainAPI(TrAnimeIzle())
     }
 }
