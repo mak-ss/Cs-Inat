@@ -9,14 +9,19 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
 /**
- * SprintCDN / owphbf24.com HLS Extractor
+ * SprintCDN HLS Extractor
+ *
+ * Desteklenen domainler (hepsi ayni aile):
+ *   - owphbf24.com
+ *   - r66nv9ed.com
+ *   - sprintcdn.*   (genel)
  *
  * Ornek:
- *   https://edge1-frankfurt-sprintcdn.owphbf24.com/hls2/08/12166/4r9s807sm6w6_x/index-v1-a1.m3u8?t=...&s=...&e=...
+ *   https://edge2-waw-sprintcdn.r66nv9ed.com/hls2/06/12113/f4cd8xf6duet_x/index-v1-a1.m3u8?t=...&s=...&e=...
  */
 class SprintCDN : ExtractorApi() {
     override val name = "SprintCDN"
-    override val mainUrl = "https://owphbf24.com"
+    override val mainUrl = "https://sprintcdn.com"
     override val requiresReferer = true
 
     override suspend fun getUrl(
@@ -44,6 +49,7 @@ class SprintCDN : ExtractorApi() {
                 body.contains("#EXT-X-STREAM-INF")
 
         if (!isMaster) {
+            // Master degil: tek link olarak ver (yine de calisir)
             callback(
                 newExtractorLink(
                     source = name,
