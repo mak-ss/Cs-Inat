@@ -2,6 +2,7 @@
 
 package com.Blockades
 
+
 import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import org.jsoup.nodes.Element
@@ -12,7 +13,9 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import android.util.Base64
 import org.json.JSONObject
+
 import org.json.JSONArray
+
 
 import com.lagradost.cloudstream3.app
 import java.text.SimpleDateFormat
@@ -28,6 +31,7 @@ class AnimeYTX : MainAPI() {
     override var lang = "es"
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Anime)
+    //Movie, AnimeMovie, TvSeries, Cartoon, Anime, OVA, Torrent, Documentary, AsianDrama, Live, NSFW, Others, Music, AudioBook, CustomMedia, Audio, Podcast,
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Últimos episodios",
@@ -115,6 +119,17 @@ class AnimeYTX : MainAPI() {
         }
     }
 
+    // override suspend fun search(query: String, page: Int): SearchResponseList? {
+    //     val url = if (page <= 1) "$mainUrl/?s=$query" else "$mainUrl/page/$page/?s=$query"
+    //     val document = app.get(url).document
+
+    //     val items = document.select("article.bs").mapNotNull {
+    //         it.toSearchResult()
+    //     }
+
+    //     return newSearchResponseList(items)
+    // }
+
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
@@ -122,6 +137,7 @@ class AnimeYTX : MainAPI() {
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cookie" to "cf_clearance=z4kt4KEpD_kbNAhFvY.RNwZrgFvXtG_2g8R1ILswa.8-1788606738-1.2.1.1-ZZP84dahkkQXQCKL5wXJZSJdT2Pb5TG8p76zs_8RWt0tSuHNxOabyA8kXy_InYDItqvOGTVTHb530VFcPI877AG6y7M6xjkiBjnncY65TK_8FM5um0eCsZcAA8GwiPuBnJmf1DT_ePpyzffdSiteYyi___8EGZIO3xagLUXmnH9n_eWkzQBGtAu0OZU7uh1GqwhGT6s6_57_w5QDQA_nODuGfg8SwIvFsiifhvfyLm0XP1ETKRyf_N2lXZRXWt5IFjCp_S7VXPlYjbbqKYyqEqRYsGv.rdgysriYXhqPZCeEtHK11TMXo1xktIqEHZPn1aQtTGnsND4cnJyH31zCroQdc0H9OaJ5T4MGVh5eRp4",
             "Upgrade-Insecure-Requests" to "1",
             "Sec-Fetch-Dest" to "document",
             "Sec-Fetch-Mode" to "navigate",
@@ -189,7 +205,11 @@ class AnimeYTX : MainAPI() {
                 ?.text().orEmpty()
         val status = when {
             statusText.contains("Finalizado", true) -> ShowStatus.Completed
-            statusText.contains("En emisión", true) || statusText.contains("En curso", true) -> ShowStatus.Ongoing
+            statusText.contains("En emisión", true) || statusText.contains(
+                "En curso",
+                true
+            ) -> ShowStatus.Ongoing
+
             else -> null
         }
         Log.d("Ayzen", "Status: $status (Raw: $statusText)")
@@ -307,302 +327,100 @@ class AnimeYTX : MainAPI() {
         }
     }
 
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        var linkFound = false
+        data class MytsumiLink(val url: String, val label: String, val isDirect: Boolean)
 
+        var linkFound = false
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Upgrade-Insecure-Requests" to "1",
-            "Sec-Fetch-Dest" to "document",
-            "Sec-Fetch-Mode" to "navigate",
-            "Sec-Fetch-Site" to "none",
-            "Sec-Fetch-User" to "?1"
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         )
+        val imageRegex = Regex("""\.(jpg|png|webp|gif|jpeg)(\?|$)""", RegexOption.IGNORE_CASE)
 
-        Log.d("Ayzen", "===== LOADLINKS BASLADI =====")
+        fun String.isValidFrame() = isNotBlank() && this != "about:blank" && !imageRegex.containsMatchIn(this)
+        fun String.isDirectFile() = endsWith(".mp4") || endsWith(".m3u8")
+
         Log.d("Ayzen", "Bolum adresi: $data")
-
-        val response = try {
-            app.get(data, headers = headers)
-        } catch (e: Exception) {
-            Log.d("Ayzen", "SAYFA HATA: ${e.message}")
-            return false
-        }
+        val response = app.get(data, headers = headers)
         val document = response.document
         val rawHtml = response.text
 
-        Log.d("Ayzen", "HTML UZUNLUK: ${rawHtml.length}")
-
-        // ---------- 1) IFRAME TOPLAMA ----------
         val iframeUrls = mutableSetOf<String>()
 
         document.select("iframe").forEach { el ->
             val src = el.attr("data-src").ifEmpty { el.attr("src") }
-            if (src.isNotBlank() && src != "about:blank") {
-                iframeUrls.add(src.replace("&amp;", "&"))
-            }
+            if (src.isValidFrame()) iframeUrls.add(src.replace("&amp;", "&"))
         }
 
+        val srcRegex = Regex("""(?:data-src|src)=["']([^"']+)["']""")
         document.select("template, noscript").forEach { el ->
-            val inner = el.html()
-            Regex("""(?:data-src|src)=["']([^"']+)["']""").findAll(inner).forEach { m ->
-                val src = m.groupValues[1]
-                if (src.isNotBlank() && src != "about:blank") {
-                    iframeUrls.add(src.replace("&amp;", "&"))
-                }
+            srcRegex.findAll(el.html()).forEach { match ->
+                val src = match.groupValues[1]
+                if (src.isValidFrame()) iframeUrls.add(src.replace("&amp;", "&"))
             }
         }
 
-        // HTML icindeki tum http linklerini de embed/player olanlari topla
-        Regex("""(?:data-src|src|href)=["'](https?://[^"']+)["']""").findAll(rawHtml).forEach { m ->
-            val u = m.groupValues[1]
-            if (u.contains("embed", true) || u.contains("player", true) ||
-                u.contains("mytsumi", true) || u.contains("rpmvid", true) ||
-                u.contains("sprintcdn", true) || u.contains(".m3u8", true)
-            ) {
-                iframeUrls.add(u.replace("&amp;", "&"))
-            }
+        Regex("""https?://mytsumi\.com/[^"'\s<>]+""").findAll(rawHtml).forEach { match ->
+            iframeUrls.add(match.value.replace("&amp;", "&"))
         }
 
-        Regex("""https://mytsumi\.com/multiplayer/[^"'\s<>]+""").findAll(rawHtml).forEach { m ->
-            iframeUrls.add(m.value.replace("&amp;", "&"))
-        }
+        Log.d("Ayzen", "Bulunan iframe sayisi: ${iframeUrls.size}")
 
-        Log.d("Ayzen", "==== IFRAME SAYISI: ${iframeUrls.size} ====")
-        iframeUrls.forEach { Log.d("Ayzen", "IFRAME: $it") }
+        iframeUrls.toList().amap { iframeUrl ->
+            Log.d("Ayzen", "iframe adresi: $iframeUrl")
 
-        // ---------- 2) DOGRUDAN HLS LINKLERI ----------
-        val directHls = mutableSetOf<String>()
-
-        // EN GENIS: HTML icindeki tum m3u8 linkleri (domain bagimsiz)
-        Regex("""https?://[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
-            .findAll(rawHtml)
-            .forEach { directHls.add(it.value.replace("&amp;", "&")) }
-
-        // sprintcdn ailesi (owphbf24, r66nv9ed, vb.) - m3u8 olmasa bile yakala
-        Regex("""https?://[^"'\s<>\\]*sprintcdn[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
-            .findAll(rawHtml)
-            .forEach { m ->
-                val u = m.value.replace("&amp;", "&")
-                if (u.contains(".m3u8", true)) directHls.add(u)
-            }
-
-        // rpmvid / ytplay ailesi
-        Regex("""https?://[^"'\s<>\\]*?(?:rpmvid|ytplay)[^"'\s<>\\]*\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
-            .findAll(rawHtml)
-            .forEach { directHls.add(it.value.replace("&amp;", "&")) }
-
-        // iframe'lerdeki m3u8'ler
-        iframeUrls.filter { it.contains(".m3u8", true) }.forEach { directHls.add(it) }
-
-        Log.d("Ayzen", "==== DIRECT HLS SAYISI: ${directHls.size} ====")
-        directHls.forEach { Log.d("Ayzen", "DIRECT: $it") }
-
-        directHls.forEach { hlsUrl ->
-            val isRpm = hlsUrl.contains("rpmvid", true) || hlsUrl.contains("ytplay", true)
-            val isSprint = hlsUrl.contains("sprintcdn", true)
-            val label = when {
-                isRpm -> "RpmVid"
-                isSprint -> "SprintCDN"
-                else -> "HLS"
-            }
-            Log.d("Ayzen", "$label HLS -> $hlsUrl")
-            callback(
-                newExtractorLink(
-                    source = label,
-                    name = label,
-                    url = hlsUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = data
-                    this.quality = Qualities.Unknown.value
-                    this.headers = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
-                        "Referer" to data,
-                        "Origin" to mainUrl
-                    )
-                }
-            )
-            linkFound = true
-        }
-
-        // ---------- 3) IFRAME'LERI ISLE ----------
-        iframeUrls.forEach { iframeUrl ->
-            if (iframeUrl.contains(".m3u8", true)) return@forEach
-
-            Log.d("Ayzen", ">> IFRAME ISLENIYOR: $iframeUrl")
-
-            if (iframeUrl.contains("mytsumi.com")) {
-                val containerId = Regex("""[?&]value=([^&]+)""").find(iframeUrl)?.groupValues?.get(1)
-                val targetUrl = if (containerId != null)
-                    "https://mytsumi.com/multiplayer/contenedor.php?id=$containerId"
-                else iframeUrl
-
-                Log.d("Ayzen", "MYTSUMI TARGET: $targetUrl")
-
-                val pageText = try {
-                    app.get(targetUrl, referer = iframeUrl).text
-                } catch (e: Exception) {
-                    Log.d("Ayzen", "MYTSUMI HATA: ${e.message}")
-                    ""
-                }
-
-                Log.d("Ayzen", "MYTSUMI PAGE UZUNLUK: ${pageText.length}")
-
-                // videoTabs
-                Regex("""(?:const|var|let)\s+videoTabs\s*=\s*(\[.*?\]);""", RegexOption.DOT_MATCHES_ALL)
-                    .find(pageText)?.groupValues?.get(1)?.let { json ->
-                        Log.d("Ayzen", "videoTabs BULUNDU")
-                        try {
-                            val arr = JSONArray(json)
-                            for (i in 0 until arr.length()) {
-                                val tab = arr.getJSONObject(i)
-                                val rawUrl = tab.optString("url", "").replace("\\/", "")
-                                val isMp4 = tab.optBoolean("is_mp4", false)
-                                val tabName = tab.optString("tab_name", "Mytsumi")
-                                if (rawUrl.isBlank() || rawUrl == "about:blank") continue
-
-                                Log.d("Ayzen", "TAB[$i] $tabName -> $rawUrl")
-                                when {
-                                    rawUrl.contains(".m3u8", true) -> {
-                                        callback(
-                                            newExtractorLink(
-                                                source = tabName,
-                                                name = tabName,
-                                                url = rawUrl,
-                                                type = ExtractorLinkType.M3U8
-                                            ) {
-                                                this.referer = targetUrl
-                                                this.quality = Qualities.Unknown.value
-                                                this.headers = headers
-                                            }
-                                        )
-                                        linkFound = true
-                                    }
-                                    isMp4 || rawUrl.contains(".mp4", true) -> {
-                                        callback(
-                                            newExtractorLink(
-                                                source = tabName,
-                                                name = tabName,
-                                                url = rawUrl,
-                                                type = ExtractorLinkType.VIDEO
-                                            ) {
-                                                this.referer = targetUrl
-                                                this.headers = headers
-                                            }
-                                        )
-                                        linkFound = true
-                                    }
-                                    else -> {
-                                        loadExtractor(rawUrl, targetUrl, subtitleCallback) { link ->
-                                            linkFound = true
-                                            callback(link)
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.d("Ayzen", "videoTabs PARSE HATA: ${e.message}")
-                        }
-                    }
-
-                // downloadsByQuality
-                Regex("""(?:const|var|let)\s+downloadsByQuality\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
-                    .find(pageText)?.groupValues?.get(1)?.let { json ->
-                        Log.d("Ayzen", "downloadsByQuality BULUNDU")
-                        try {
-                            val dlJson = JSONObject(json)
-                            dlJson.keys().forEach { quality ->
-                                val items = dlJson.getJSONArray(quality)
-                                for (i in 0 until items.length()) {
-                                    val item = items.getJSONObject(i)
-                                    val dlUrl = item.optString("download_url", "").replace("\\/", "")
-                                    if (dlUrl.isBlank()) continue
-                                    Log.d("Ayzen", "DL[$quality] -> $dlUrl")
-                                    loadExtractor(dlUrl, targetUrl, subtitleCallback) { link ->
-                                        linkFound = true
-                                        callback(link)
-                                    }
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.d("Ayzen", "downloads PARSE HATA: ${e.message}")
-                        }
-                    }
-
-                // pageText icindeki tum m3u8 linkleri (ek guvenlik)
-                Regex("""https?://[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
-                    .findAll(pageText)
-                    .forEach { m ->
-                        val u = m.value.replace("&amp;", "&")
-                        if (directHls.contains(u)) return@forEach
-                        Log.d("Ayzen", "MYTSUMI PAGE m3u8 -> $u")
-                        callback(
-                            newExtractorLink(
-                                source = "Mytsumi",
-                                name = "Mytsumi",
-                                url = u,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = targetUrl
-                                this.quality = Qualities.Unknown.value
-                                this.headers = headers
-                            }
-                        )
-                        linkFound = true
-                    }
-            } else {
+            if (!iframeUrl.contains("mytsumi.com")) {
                 loadExtractor(iframeUrl, data, subtitleCallback) { link ->
                     linkFound = true
                     callback(link)
                 }
+                return@amap
             }
-        }
 
-        // ---------- 4) SON CARE: SCRIPT DOSYALARINDA ARA ----------
-        if (!linkFound) {
-            Log.d("Ayzen", ">>> Hic link bulunamadi, script dosyalari taranıyor...")
-            val scriptUrls = document.select("script[src]").mapNotNull {
-                fixUrlNull(it.attr("src"))
-            }.filter { it.contains(".js", true) }.take(10)
+            val openUrl = when {
+                iframeUrl.contains("open=1") -> iframeUrl
+                iframeUrl.contains("?") -> "$iframeUrl&open=1"
+                else -> "$iframeUrl?open=1"
+            }
+            val openDoc = app.get(openUrl, referer = iframeUrl).document
 
-            Log.d("Ayzen", "SCRIPT SAYISI: ${scriptUrls.size}")
+            val extractedLinks = mutableListOf<MytsumiLink>()
 
-            scriptUrls.forEach { jsUrl ->
-                try {
-                    val js = app.get(jsUrl, referer = data).text
-                    Regex("""https?://[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
-                        .findAll(js).forEach { m ->
-                            val u = m.value.replace("&amp;", "&")
-                            Log.d("Ayzen", "JS icinde m3u8 -> $u")
-                            callback(
-                                newExtractorLink(
-                                    source = "JS",
-                                    name = "JS",
-                                    url = u,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = data
-                                    this.quality = Qualities.Unknown.value
-                                    this.headers = headers
-                                }
-                            )
-                            linkFound = true
-                        }
-                } catch (e: Exception) {
-                    Log.d("Ayzen", "JS HATA: ${e.message}")
+            openDoc.select("button[data-player-url]").forEach { btn ->
+                val playerUrl = btn.attr("data-player-url").trim().replace("\\/", "/")
+                if (playerUrl.isBlank() || playerUrl == "about:blank") return@forEach
+                val label = btn.attr("data-player-label").ifEmpty { "Mytsumi" }
+                val isDirect = btn.attr("data-player-kind") == "video" || playerUrl.isDirectFile()
+                extractedLinks.add(MytsumiLink(playerUrl, label, isDirect))
+            }
+
+            openDoc.select("a.mytsumi-download-button[href]").forEach { a ->
+                val dlUrl = a.attr("href").trim().replace("\\/", "/")
+                if (dlUrl.isBlank() || dlUrl == "about:blank") return@forEach
+                val label = a.attr("title").ifEmpty { "Mytsumi Download" }
+                extractedLinks.add(MytsumiLink(dlUrl, label, dlUrl.isDirectFile()))
+            }
+
+            extractedLinks.distinctBy { it.url }.amap { item ->
+                if (item.isDirect) {
+                    val type = if (item.url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    callback(newExtractorLink(item.label, item.label, item.url, type))
+                    linkFound = true
+                } else {
+                    loadExtractor(item.url, openUrl, subtitleCallback) { link ->
+                        linkFound = true
+                        callback(link)
+                    }
                 }
             }
         }
 
-        Log.d("Ayzen", "===== LOADLINKS BITTI linkFound=$linkFound =====")
         return linkFound
     }
 }
