@@ -314,6 +314,7 @@ class AnimeYTX : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var linkFound = false
+
         val headers = mapOf(
             "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0",
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -325,11 +326,21 @@ class AnimeYTX : MainAPI() {
             "Sec-Fetch-User" to "?1"
         )
 
+        Log.d("Ayzen", "===== LOADLINKS BASLADI =====")
         Log.d("Ayzen", "Bolum adresi: $data")
-        val response = app.get(data, headers = headers)
+
+        val response = try {
+            app.get(data, headers = headers)
+        } catch (e: Exception) {
+            Log.d("Ayzen", "SAYFA HATA: ${e.message}")
+            return false
+        }
         val document = response.document
         val rawHtml = response.text
 
+        Log.d("Ayzen", "HTML UZUNLUK: ${rawHtml.length}")
+
+        // ---------- 1) IFRAME TOPLAMA ----------
         val iframeUrls = mutableSetOf<String>()
 
         document.select("iframe").forEach { el ->
@@ -341,50 +352,68 @@ class AnimeYTX : MainAPI() {
 
         document.select("template, noscript").forEach { el ->
             val inner = el.html()
-            Regex("""(?:data-src|src)=["']([^"']+)["']""").findAll(inner).forEach { match ->
-                val src = match.groupValues[1]
+            Regex("""(?:data-src|src)=["']([^"']+)["']""").findAll(inner).forEach { m ->
+                val src = m.groupValues[1]
                 if (src.isNotBlank() && src != "about:blank") {
                     iframeUrls.add(src.replace("&amp;", "&"))
                 }
             }
         }
 
-        Regex("""https://mytsumi\.com/multiplayer/[^"'\s<>]+""").findAll(rawHtml).forEach { match ->
-            iframeUrls.add(match.value.replace("&amp;", "&"))
+        // HTML icindeki tum http linklerini de embed/player olanlari topla
+        Regex("""(?:data-src|src|href)=["'](https?://[^"']+)["']""").findAll(rawHtml).forEach { m ->
+            val u = m.groupValues[1]
+            if (u.contains("embed", true) || u.contains("player", true) ||
+                u.contains("mytsumi", true) || u.contains("rpmvid", true) ||
+                u.contains("sprintcdn", true) || u.contains(".m3u8", true)
+            ) {
+                iframeUrls.add(u.replace("&amp;", "&"))
+            }
         }
 
-        // ------------------------------------------------------------
-        // Dogrudan HLS linklerini yakala: SprintCDN, owphbf24, RpmVid, YTPlay
-        // ------------------------------------------------------------
-        val sprintHlsRegex = Regex(
-            """https?://[^"'\s<>\\]+?sprintcdn[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
-            RegexOption.IGNORE_CASE
-        )
-        val owphbfHlsRegex = Regex(
-            """https?://[^"'\s<>\\]+?owphbf24\.com[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
-            RegexOption.IGNORE_CASE
-        )
-        val rpmvidHlsRegex = Regex(
-            """https?://[^"'\s<>\\]+?(?:rpmvid|ytplay)[^"'\s<>\\]+?\.m3u8[^"'\s<>\\]*""",
-            RegexOption.IGNORE_CASE
-        )
+        Regex("""https://mytsumi\.com/multiplayer/[^"'\s<>]+""").findAll(rawHtml).forEach { m ->
+            iframeUrls.add(m.value.replace("&amp;", "&"))
+        }
 
+        Log.d("Ayzen", "==== IFRAME SAYISI: ${iframeUrls.size} ====")
+        iframeUrls.forEach { Log.d("Ayzen", "IFRAME: $it") }
+
+        // ---------- 2) DOGRUDAN HLS LINKLERI ----------
         val directHls = mutableSetOf<String>()
-        sprintHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
-        owphbfHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
-        rpmvidHlsRegex.findAll(rawHtml).forEach { directHls.add(it.value.replace("&amp;", "&")) }
 
-        iframeUrls.filter {
-            it.contains("sprintcdn", true) ||
-            it.contains("owphbf24.com", true) ||
-            it.contains("rpmvid", true) ||
-            it.contains("ytplay", true)
-        }.forEach { directHls.add(it) }
+        // EN GENIS: HTML icindeki tum m3u8 linkleri (domain bagimsiz)
+        Regex("""https?://[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
+            .findAll(rawHtml)
+            .forEach { directHls.add(it.value.replace("&amp;", "&")) }
+
+        // sprintcdn ailesi (owphbf24, r66nv9ed, vb.) - m3u8 olmasa bile yakala
+        Regex("""https?://[^"'\s<>\\]*sprintcdn[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
+            .findAll(rawHtml)
+            .forEach { m ->
+                val u = m.value.replace("&amp;", "&")
+                if (u.contains(".m3u8", true)) directHls.add(u)
+            }
+
+        // rpmvid / ytplay ailesi
+        Regex("""https?://[^"'\s<>\\]*?(?:rpmvid|ytplay)[^"'\s<>\\]*\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
+            .findAll(rawHtml)
+            .forEach { directHls.add(it.value.replace("&amp;", "&")) }
+
+        // iframe'lerdeki m3u8'ler
+        iframeUrls.filter { it.contains(".m3u8", true) }.forEach { directHls.add(it) }
+
+        Log.d("Ayzen", "==== DIRECT HLS SAYISI: ${directHls.size} ====")
+        directHls.forEach { Log.d("Ayzen", "DIRECT: $it") }
 
         directHls.forEach { hlsUrl ->
             val isRpm = hlsUrl.contains("rpmvid", true) || hlsUrl.contains("ytplay", true)
-            val label = if (isRpm) "RpmVid" else "SprintCDN"
-            Log.d("Ayzen", "$label HLS bulundu: $hlsUrl")
+            val isSprint = hlsUrl.contains("sprintcdn", true)
+            val label = when {
+                isRpm -> "RpmVid"
+                isSprint -> "SprintCDN"
+                else -> "HLS"
+            }
+            Log.d("Ayzen", "$label HLS -> $hlsUrl")
             callback(
                 newExtractorLink(
                     source = label,
@@ -404,49 +433,74 @@ class AnimeYTX : MainAPI() {
             linkFound = true
         }
 
-        Log.d("Ayzen", "Bulunan cerceve sayisi: ${iframeUrls.size}")
-
+        // ---------- 3) IFRAME'LERI ISLE ----------
         iframeUrls.forEach { iframeUrl ->
-            Log.d("Ayzen", "Cerceve adresi: $iframeUrl")
+            if (iframeUrl.contains(".m3u8", true)) return@forEach
 
-            // SprintCDN ve RpmVid linkleri yukarida halledildi
-            if (iframeUrl.contains("sprintcdn", true) ||
-                iframeUrl.contains("owphbf24.com", true) ||
-                iframeUrl.contains("rpmvid", true) ||
-                iframeUrl.contains("ytplay", true)
-            ) {
-                return@forEach
-            }
+            Log.d("Ayzen", ">> IFRAME ISLENIYOR: $iframeUrl")
 
             if (iframeUrl.contains("mytsumi.com")) {
                 val containerId = Regex("""[?&]value=([^&]+)""").find(iframeUrl)?.groupValues?.get(1)
-                    ?: return@forEach
-                val targetUrl = "https://mytsumi.com/multiplayer/contenedor.php?id=$containerId"
-                val pageText = app.get(targetUrl, referer = iframeUrl).text
+                val targetUrl = if (containerId != null)
+                    "https://mytsumi.com/multiplayer/contenedor.php?id=$containerId"
+                else iframeUrl
 
-                Regex("""const\s+videoTabs\s*=\s*(\[.*?\]);""").find(pageText)?.groupValues?.get(1)
-                    ?.let { json ->
+                Log.d("Ayzen", "MYTSUMI TARGET: $targetUrl")
+
+                val pageText = try {
+                    app.get(targetUrl, referer = iframeUrl).text
+                } catch (e: Exception) {
+                    Log.d("Ayzen", "MYTSUMI HATA: ${e.message}")
+                    ""
+                }
+
+                Log.d("Ayzen", "MYTSUMI PAGE UZUNLUK: ${pageText.length}")
+
+                // videoTabs
+                Regex("""(?:const|var|let)\s+videoTabs\s*=\s*(\[.*?\]);""", RegexOption.DOT_MATCHES_ALL)
+                    .find(pageText)?.groupValues?.get(1)?.let { json ->
+                        Log.d("Ayzen", "videoTabs BULUNDU")
                         try {
-                            val jsonArray = JSONArray(json)
-                            for (i in 0 until jsonArray.length()) {
-                                val tab = jsonArray.getJSONObject(i)
-                                val rawUrl = tab.getString("url").replace("\\/", "")
+                            val arr = JSONArray(json)
+                            for (i in 0 until arr.length()) {
+                                val tab = arr.getJSONObject(i)
+                                val rawUrl = tab.optString("url", "").replace("\\/", "")
                                 val isMp4 = tab.optBoolean("is_mp4", false)
                                 val tabName = tab.optString("tab_name", "Mytsumi")
+                                if (rawUrl.isBlank() || rawUrl == "about:blank") continue
 
-                                if (rawUrl.isNotBlank() && rawUrl != "about:blank") {
-                                    Log.d("Ayzen", "Oynatici adresi: $rawUrl")
-                                    if (isMp4) {
+                                Log.d("Ayzen", "TAB[$i] $tabName -> $rawUrl")
+                                when {
+                                    rawUrl.contains(".m3u8", true) -> {
+                                        callback(
+                                            newExtractorLink(
+                                                source = tabName,
+                                                name = tabName,
+                                                url = rawUrl,
+                                                type = ExtractorLinkType.M3U8
+                                            ) {
+                                                this.referer = targetUrl
+                                                this.quality = Qualities.Unknown.value
+                                                this.headers = headers
+                                            }
+                                        )
+                                        linkFound = true
+                                    }
+                                    isMp4 || rawUrl.contains(".mp4", true) -> {
                                         callback(
                                             newExtractorLink(
                                                 source = tabName,
                                                 name = tabName,
                                                 url = rawUrl,
                                                 type = ExtractorLinkType.VIDEO
-                                            )
+                                            ) {
+                                                this.referer = targetUrl
+                                                this.headers = headers
+                                            }
                                         )
                                         linkFound = true
-                                    } else {
+                                    }
+                                    else -> {
                                         loadExtractor(rawUrl, targetUrl, subtitleCallback) { link ->
                                             linkFound = true
                                             callback(link)
@@ -455,20 +509,23 @@ class AnimeYTX : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.d("Ayzen", "Sekme hatasi: ${e.message}")
+                            Log.d("Ayzen", "videoTabs PARSE HATA: ${e.message}")
                         }
                     }
 
-                Regex("""const\s+downloadsByQuality\s*=\s*(\{.*?\});""").find(pageText)
-                    ?.groupValues?.get(1)?.let { json ->
+                // downloadsByQuality
+                Regex("""(?:const|var|let)\s+downloadsByQuality\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
+                    .find(pageText)?.groupValues?.get(1)?.let { json ->
+                        Log.d("Ayzen", "downloadsByQuality BULUNDU")
                         try {
                             val dlJson = JSONObject(json)
                             dlJson.keys().forEach { quality ->
                                 val items = dlJson.getJSONArray(quality)
                                 for (i in 0 until items.length()) {
                                     val item = items.getJSONObject(i)
-                                    val dlUrl = item.getString("download_url").replace("\\/", "")
-                                    Log.d("Ayzen", "Indirme adresi: $dlUrl")
+                                    val dlUrl = item.optString("download_url", "").replace("\\/", "")
+                                    if (dlUrl.isBlank()) continue
+                                    Log.d("Ayzen", "DL[$quality] -> $dlUrl")
                                     loadExtractor(dlUrl, targetUrl, subtitleCallback) { link ->
                                         linkFound = true
                                         callback(link)
@@ -476,8 +533,30 @@ class AnimeYTX : MainAPI() {
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.d("Ayzen", "Indirme hatasi: ${e.message}")
+                            Log.d("Ayzen", "downloads PARSE HATA: ${e.message}")
                         }
+                    }
+
+                // pageText icindeki tum m3u8 linkleri (ek guvenlik)
+                Regex("""https?://[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
+                    .findAll(pageText)
+                    .forEach { m ->
+                        val u = m.value.replace("&amp;", "&")
+                        if (directHls.contains(u)) return@forEach
+                        Log.d("Ayzen", "MYTSUMI PAGE m3u8 -> $u")
+                        callback(
+                            newExtractorLink(
+                                source = "Mytsumi",
+                                name = "Mytsumi",
+                                url = u,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = targetUrl
+                                this.quality = Qualities.Unknown.value
+                                this.headers = headers
+                            }
+                        )
+                        linkFound = true
                     }
             } else {
                 loadExtractor(iframeUrl, data, subtitleCallback) { link ->
@@ -487,6 +566,43 @@ class AnimeYTX : MainAPI() {
             }
         }
 
+        // ---------- 4) SON CARE: SCRIPT DOSYALARINDA ARA ----------
+        if (!linkFound) {
+            Log.d("Ayzen", ">>> Hic link bulunamadi, script dosyalari taranıyor...")
+            val scriptUrls = document.select("script[src]").mapNotNull {
+                fixUrlNull(it.attr("src"))
+            }.filter { it.contains(".js", true) }.take(10)
+
+            Log.d("Ayzen", "SCRIPT SAYISI: ${scriptUrls.size}")
+
+            scriptUrls.forEach { jsUrl ->
+                try {
+                    val js = app.get(jsUrl, referer = data).text
+                    Regex("""https?://[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*""", RegexOption.IGNORE_CASE)
+                        .findAll(js).forEach { m ->
+                            val u = m.value.replace("&amp;", "&")
+                            Log.d("Ayzen", "JS icinde m3u8 -> $u")
+                            callback(
+                                newExtractorLink(
+                                    source = "JS",
+                                    name = "JS",
+                                    url = u,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = data
+                                    this.quality = Qualities.Unknown.value
+                                    this.headers = headers
+                                }
+                            )
+                            linkFound = true
+                        }
+                } catch (e: Exception) {
+                    Log.d("Ayzen", "JS HATA: ${e.message}")
+                }
+            }
+        }
+
+        Log.d("Ayzen", "===== LOADLINKS BITTI linkFound=$linkFound =====")
         return linkFound
     }
 }
