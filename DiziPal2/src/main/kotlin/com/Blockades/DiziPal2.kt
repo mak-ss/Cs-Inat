@@ -7,7 +7,7 @@ import com.Blockades.DizipalPlayer2
 import org.jsoup.nodes.Element
 
 class DiziPal2 : MainAPI() {
-    override var mainUrl              = "https://dizipal2135.com"
+    override var mainUrl              = "https://dizipal2136.com"
     override var name                 = "DiziPal2"
     override val hasMainPage          = true
     override var lang                 = "tr"
