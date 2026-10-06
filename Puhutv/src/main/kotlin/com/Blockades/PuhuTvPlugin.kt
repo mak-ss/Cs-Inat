@@ -1,12 +1,12 @@
 package com.Blockades
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
 class PuhuTvPlugin : Plugin() {
-
-    override fun load(context: android.content.Context) {
-        registerMainAPI(PuhuTvProvider())
+    override fun load(context: Context) {
+        registerMainAPI(PuhuTVProvider())
     }
 }
