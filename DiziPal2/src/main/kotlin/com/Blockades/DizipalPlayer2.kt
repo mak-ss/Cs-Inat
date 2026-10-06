@@ -13,7 +13,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DizipalPlayer2 : ExtractorApi() {
     override var name = "DizipalPlayer2"
-    override var mainUrl = "https://dizipal2134.com"
+    override var mainUrl = "https://dizipal2136.com"
     override val requiresReferer = true
 
     override suspend fun getUrl(
