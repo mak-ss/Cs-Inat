@@ -85,7 +85,6 @@ class PuhuTvProvider : MainAPI() {
         }
     }
 
-    // Poster çekme fonksiyonu, farklı img etiketlerini daha iyi işler
     private fun posterOf(element: Element): String? {
         val img = if (element.tagName() == "img") element else element.selectFirst("img") ?: return null
         val attributes = listOf("data-src", "data-original", "data-lazy-src", "data-image", "src")
@@ -104,19 +103,17 @@ class PuhuTvProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Ana sayfa için Next.js verisini kullanmak daha sağlıklı.
-        // Ancak bir kategoriye tıklandığında gidilen /list/... sayfaları klasik HTML döndürdüğü için
-        // mevcut HTML parse etme yöntemi bu sayfalar için daha uygun.
-        
-        // mainPageRequest.data'sı doğrudan bir /list/ URL'i olduğu için onu kullanıyoruz.
         val url = "$mainUrl/${request.data}"
-        val document = app.get(url, headers = PuhuTvExtractor.headers).document
-        
+        val document = try {
+            app.get(url, headers = PuhuTvExtractor.headers).document
+        } catch (_: Exception) {
+            return newHomePageResponse(emptyList())
+        }
+
         val homeItems = mutableListOf<HomePageList>()
-        
-        // Poster tipi içerikler için kart yapısını seçiyoruz
+
         val cards = document.select("div.swiper-slide > div[id] > div > a, div.swiper-slide > div[id] > a")
-        
+
         val items = cards.mapNotNull { card ->
             val href = card.attr("href").trim()
             if (href.isEmpty()) return@mapNotNull null
@@ -125,7 +122,7 @@ class PuhuTvProvider : MainAPI() {
                 ?: card.selectFirst("img")?.attr("alt")?.trim()
 
             if (title.isNullOrEmpty()) return@mapNotNull null
-            
+
             val poster = posterOf(card)
 
             newTvSeriesSearchResponse(title, cleanUrl(href), TvType.TvSeries) {
@@ -143,7 +140,11 @@ class PuhuTvProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
         val searchUrl = "$mainUrl/arama?q=$encodedQuery"
-        val document = app.get(searchUrl, headers = PuhuTvExtractor.headers).document
+        val document = try {
+            app.get(searchUrl, headers = PuhuTvExtractor.headers).document
+        } catch (_: Exception) {
+            return emptyList()
+        }
         val results = mutableListOf<SearchResponse>()
         val seen = HashSet<String>()
 
@@ -151,7 +152,7 @@ class PuhuTvProvider : MainAPI() {
             val anchor = if (element.tagName() == "a") element else element.selectFirst("a")
             val href = anchor?.attr("href")?.trim()
             if (href.isNullOrEmpty()) return@forEach
-            
+
             val fullUrl = cleanUrl(href)
             if (!seen.add(fullUrl)) return@forEach
 
@@ -165,17 +166,25 @@ class PuhuTvProvider : MainAPI() {
         return results
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = PuhuTvExtractor.headers).document
-        val nextDataJson = document.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw ErrorLoadingException("Sayfa verisi (__NEXT_DATA__) bulunamadı.")
+    override suspend fun load(url: String): LoadResponse? {
+        val document = try {
+            app.get(url, headers = PuhuTvExtractor.headers).document
+        } catch (_: Exception) {
+            return null
+        }
 
-        val pageData = parseJson<PuhuTvPageData>(nextDataJson)
+        val nextDataJson = document.selectFirst("script#__NEXT_DATA__")?.data() ?: return null
+
+        val pageData = try {
+            parseJson<PuhuTvPageData>(nextDataJson)
+        } catch (_: Exception) {
+            return null
+        }
 
         // Detay sayfası mı yoksa izleme sayfası mı olduğunu anlıyoruz
         val seriesData = pageData.props.pageProps.details?.data ?: pageData.props.pageProps.watchDetails?.data
-            ?: throw ErrorLoadingException("Dizi/film detayları alınamadı.")
-        
+            ?: return null
+
         val title = seriesData.name ?: document.selectFirst("title")?.text()?.substringBefore(" |") ?: "Bilinmeyen Başlık"
         val poster = seriesData.image
         val plot = seriesData.meta?.description ?: seriesData.meta?.short_description
@@ -193,15 +202,15 @@ class PuhuTvProvider : MainAPI() {
                     this.name = episode.name
                     this.season = seasonNumber
                     this.episode = episodeNumber
-                    this.posterUrl = poster // Varsayılan olarak dizi posterini kullan
+                    this.posterUrl = poster
                     this.description = episode.meta?.short_description
                 })
             }
         }
-        
+
         // Eğer hiç bölüm bulunamazsa ve bu bir filmse, film olarak döndür
         if (episodes.isEmpty() && seriesData.meta?.description != null) {
-             return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.plot = plot
             }
@@ -224,7 +233,6 @@ class PuhuTvProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Bu kısım aynı kalıyor, extractor'ı çağırıyor.
         PuhuTvExtractor().getUrl(
             url = data,
             referer = mainUrl,
