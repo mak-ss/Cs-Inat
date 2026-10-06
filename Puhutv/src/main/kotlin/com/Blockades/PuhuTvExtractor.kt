@@ -31,21 +31,37 @@ class PuhuTvExtractor : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         // 1. Adım: Bölüm sayfasından __NEXT_DATA__'yı çekip video_id'yi al.
-        val document = app.get(url, headers = headers).document
-        val nextDataJson = document.selectFirst("script#__NEXT_DATA__")?.data()
-            ?: throw ErrorLoadingException("Bölüm sayfası verisi (__NEXT_DATA__) bulunamadı.")
+        val document = try {
+            app.get(url, headers = headers).document
+        } catch (_: Exception) {
+            return
+        }
 
-        val pageData = parseJson<ExtractorPageData>(nextDataJson)
-        val videoId = pageData.props.pageProps.movieAssets?.data?.video_id
-            ?: throw ErrorLoadingException("Video ID bulunamadı.")
+        val nextDataJson = document.selectFirst("script#__NEXT_DATA__")?.data() ?: return
+
+        val pageData = try {
+            parseJson<ExtractorPageData>(nextDataJson)
+        } catch (_: Exception) {
+            return
+        }
+
+        val videoId = pageData.props.pageProps.movieAssets?.data?.video_id ?: return
 
         // 2. Adım: video_id ile video API'sini çağır.
         val videosApiUrl = "$mainUrl/api/assets/$videoId/videos"
-        val videosResponse = app.get(videosApiUrl, headers = headers).text
+        val videosResponse = try {
+            app.get(videosApiUrl, headers = headers).text
+        } catch (_: Exception) {
+            return
+        }
 
-        val jsonResponse = JSONObject(videosResponse)
-        val videos = jsonResponse.optJSONObject("data")?.optJSONArray("videos")
-            ?: throw ErrorLoadingException("Video listesi API'den alınamadı.")
+        val jsonResponse = try {
+            JSONObject(videosResponse)
+        } catch (_: Exception) {
+            return
+        }
+
+        val videos = jsonResponse.optJSONObject("data")?.optJSONArray("videos") ?: return
 
         if (videos.length() == 0) return
 
@@ -58,7 +74,7 @@ class PuhuTvExtractor : ExtractorApi() {
 
             val quality = video.optInt("quality", 0)
             val qualityValue = if (quality > 0) quality else Qualities.Unknown.value
-            
+
             // PuhuTV genellikle HLS (m3u8) kullanır.
             val isHls = mediaUrl.contains(".m3u8", ignoreCase = true)
 
