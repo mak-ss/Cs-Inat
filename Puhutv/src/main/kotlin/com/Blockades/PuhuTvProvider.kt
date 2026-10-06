@@ -217,7 +217,10 @@ class PuhuTVProvider : MainAPI() {
         }
 
         val poster: String? = if (image == null) null else {
-            val src: String = image.attr("src").ifBlank { image.attr("data-src") }
+            val src: String = image.attr("src")
+                .ifBlank { image.attr("data-src") }
+                .ifBlank { image.attr("data-lazy-src") }
+                .ifBlank { image.attr("data-original") }
             fixUrl(src)
         }
 
@@ -269,4 +272,26 @@ private fun JSONObject.image(): String? {
     }
 
     return null
+}
+
+private fun String.slug(): String = lowercase(Locale.ROOT)
+    .replace('ı', 'i')
+    .replace('İ', 'i')
+    .replace('ğ', 'g')
+    .replace('Ğ', 'g')
+    .replace('ü', 'u')
+    .replace('Ü', 'u')
+    .replace('ş', 's')
+    .replace('Ş', 's')
+    .replace('ö', 'o')
+    .replace('Ö', 'o')
+    .replace('ç', 'c')
+    .replace('Ç', 'c')
+    .replace(Regex("[^a-z0-9]+"), "-")
+    .trim('-')
+
+private fun String.titleTr(): String = split('-').joinToString(" ") { word ->
+    word.replaceFirstChar { c ->
+        if (c.isLowerCase()) c.titlecase(Locale("tr")) else c.toString()
+    }
 }
