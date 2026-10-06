@@ -70,6 +70,10 @@ class PuhuTVProvider : MainAPI() {
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
 
+        // ⬇️ __NEXT_DATA__ içinden slug → poster haritası çıkar ⬇️
+        val nextDataPosters: Map<String, String> = extractNextDataPosters(document)
+        println("PuhuTV __NEXT_DATA__ poster haritası boyutu: ${nextDataPosters.size}")
+
         val elements = document.select(
             "a[href*=-detay], a[href*=-izle], " +
             "a[href^=list/], a[href*=/list/]"
@@ -78,7 +82,7 @@ class PuhuTVProvider : MainAPI() {
         println("PuhuTV getMainPage bulunan element sayısı: ${elements.size}")
 
         val results: List<SearchResponse> = elements
-            .mapNotNull { element -> element.toResponse() }
+            .mapNotNull { element -> element.toResponse(nextDataPosters) }
             .distinctBy { it.url }
             .take(40)
 
@@ -86,6 +90,48 @@ class PuhuTVProvider : MainAPI() {
 
         val hasNext = results.isNotEmpty() && document.selectFirst("a[href*='sayfa=${page + 1}']") != null
         return newHomePageResponse(request.name, results, hasNext = hasNext)
+    }
+
+    // ============ __NEXT_DATA__ JSON'UNDAN POSTER HARİTASI ÇIKAR ============
+    private fun extractNextDataPosters(document: org.jsoup.nodes.Document): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+        try {
+            val script = document.selectFirst("script#__NEXT_DATA__") ?: return map
+            val jsonText = script.data().ifBlank { script.html() }
+            if (jsonText.isBlank()) return map
+
+            val root = JSONObject(jsonText)
+
+            // pageProps.data.data.container_items[] üzerinde gez
+            val containerItems = root
+                .optJSONObject("props")
+                ?.optJSONObject("pageProps")
+                ?.optJSONObject("data")
+                ?.optJSONObject("data")
+                ?.optJSONArray("container_items")
+                ?: return map
+
+            for (i in 0 until containerItems.length()) {
+                val container = containerItems.optJSONObject(i) ?: continue
+                val items = container.optJSONArray("items") ?: continue
+                for (j in 0 until items.length()) {
+                    val item = items.optJSONObject(j) ?: continue
+                    val meta = item.optJSONObject("meta")
+                    val slug = meta?.optString("slug").orEmpty()
+                    if (slug.isBlank()) continue
+
+                    // Öncelik: image (yatay/ana görsel) > image_vertical_mobile
+                    val image = item.optString("image")
+                        .ifBlank { item.optString("image_vertical_mobile") }
+                    if (image.isNotBlank() && (image.startsWith("http") || image.startsWith("//"))) {
+                        map[slug] = if (image.startsWith("//")) "https:$image" else image
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println("PuhuTV __NEXT_DATA__ parse hatası: ${e.message}")
+        }
+        return map
     }
 
     // ============ İÇERİK YÜKLE ============
@@ -122,7 +168,6 @@ class PuhuTVProvider : MainAPI() {
                     val episodeJson: JSONObject = seasonEpisodes.optJSONObject(episodeIndex) ?: continue
                     val episodePath: String = episodeJson.optString("slugPath")
                     if (episodePath.isBlank()) continue
-                    // Bölüm bazlı poster (varsa) — yoksa dizi posterine düşer
                     val episodePoster: String? =
                         episodeJson.optJSONObject("content")?.image()
                             ?: episodeJson.image()
@@ -196,7 +241,7 @@ class PuhuTVProvider : MainAPI() {
     }
 
     // ============ HTML ELEMENT → SearchResponse ============
-    private fun Element.toResponse(): SearchResponse? {
+    private fun Element.toResponse(nextDataPosters: Map<String, String>): SearchResponse? {
         val rawHref: String = attr("href")
         val href: String = fixUrl(rawHref) ?: return null
 
@@ -220,11 +265,16 @@ class PuhuTVProvider : MainAPI() {
             slug.removeSuffix("-detay").removeSuffix("-izle").titleTr()
         }
 
-        // ⬇️ GELİŞTİRİLMİŞ POSTER ÇIKARMA ⬇️
-        val poster: String? = findPoster()
+        // ⬇️ 1) __NEXT_DATA__ haritasından dene (en temiz kaynak)
+        val slugKey = slug.removeSuffix("-detay").removeSuffix("-izle") + "-detay"
+        val fromNextData = nextDataPosters[slugKey]
 
-        // Debug log — loglarda poster=... göreceksin
-        println("PuhuTV toResponse: title=$title, poster=$poster, href=$href")
+        // ⬇️ 2) Bulunamazsa HTML'den çıkar
+        val fromHtml = if (fromNextData == null) findPoster() else null
+
+        val poster: String? = fromNextData ?: fromHtml
+
+        println("PuhuTV toResponse: title=$title, poster=$poster, src=${if (fromNextData != null) "NEXT_DATA" else "HTML"}")
 
         return when {
             isDetail -> newTvSeriesSearchResponse(title, href) { posterUrl = poster }
@@ -234,47 +284,64 @@ class PuhuTVProvider : MainAPI() {
         }
     }
 
-    // ============ YENİ: Element içinden poster bulma ============
+    // ============ HTML'DEN POSTER ÇIKARMA ============
     private fun Element.findPoster(): String? {
-        // 1) Kendi içindeki img
+        // ⬇️ ÖNCELİK 1: <noscript><img src="..."></noscript> içindeki gerçek URL
+        // PuhuTV gerçek posteri noscript içine koyuyor, dıştaki img placeholder GIF.
+        selectFirst("noscript")?.let { ns ->
+            val nsHtml = ns.html()
+            // noscript içeriği text olarak gelir, regex ile src'yi çek
+            val m = Regex("""<img[^>]+src=["']([^"']+)["']""").find(nsHtml)
+            if (m != null) {
+                val url = m.groupValues[1]
+                if (url.isNotBlank() && !url.startsWith("data:")) {
+                    fixUrl(url)?.let { return it }
+                }
+            }
+        }
+
+        // ⬇️ ÖNCELİK 2: Doğrudan img'nin src'si (data: ise atla)
         selectFirst("img")?.let { img ->
             extractImgSrc(img)?.let { return it }
         }
 
-        // 2) Ebeveyn içindeki img
+        // ⬇️ ÖNCELİK 3: Ebeveyn ve atalarda noscript/img ara
         parent()?.let { p ->
+            p.selectFirst("noscript")?.let { ns ->
+                val m = Regex("""<img[^>]+src=["']([^"']+)["']""").find(ns.html())
+                if (m != null) {
+                    val url = m.groupValues[1]
+                    if (url.isNotBlank() && !url.startsWith("data:")) {
+                        fixUrl(url)?.let { return it }
+                    }
+                }
+            }
             p.selectFirst("img")?.let { img ->
                 extractImgSrc(img)?.let { return it }
             }
-            // 2b) Ebeveyn içindeki picture > source
-            p.selectFirst("picture source")?.let { source ->
-                extractSrcset(source)?.let { return it }
-            }
         }
 
-        // 3) Büyük ebeveyn (kart yapısı) içinde ara
-        parent()?.parent()?.let { gp ->
-            gp.selectFirst("img")?.let { img ->
-                extractImgSrc(img)?.let { return it }
-            }
-            gp.selectFirst("picture source")?.let { source ->
-                extractSrcset(source)?.let { return it }
-            }
-            // style="background-image:url(...)"
-            gp.selectFirst("[style*=background-image]")?.let { el ->
-                extractBgImage(el.attr("style"))?.let { return it }
-            }
-        }
-
-        // 4) Son çare: bu elemente en yakın ata düğümde ara
+        // ⬇️ ÖNCELİK 4: Geniş atalarda ara
         var ancestor: Element? = parent()
         var depth = 0
-        while (ancestor != null && depth < 4) {
+        while (ancestor != null && depth < 5) {
+            ancestor.selectFirst("noscript")?.let { ns ->
+                val m = Regex("""<img[^>]+src=["']([^"']+)["']""").find(ns.html())
+                if (m != null) {
+                    val url = m.groupValues[1]
+                    if (url.isNotBlank() && !url.startsWith("data:")) {
+                        fixUrl(url)?.let { return it }
+                    }
+                }
+            }
             ancestor.selectFirst("img")?.let { img ->
                 extractImgSrc(img)?.let { return it }
             }
             ancestor.selectFirst("picture source")?.let { source ->
                 extractSrcset(source)?.let { return it }
+            }
+            ancestor.selectFirst("[style*=background-image]")?.let { el ->
+                extractBgImage(el.attr("style"))?.let { return it }
             }
             ancestor = ancestor.parent()
             depth++
@@ -283,7 +350,6 @@ class PuhuTVProvider : MainAPI() {
         return null
     }
 
-    // ============ img elementinden URL çıkarma ============
     private fun extractImgSrc(image: Element): String? {
         val raw = image.attr("src")
             .ifBlank { image.attr("data-src") }
@@ -292,26 +358,24 @@ class PuhuTVProvider : MainAPI() {
             .ifBlank { image.attr("data-srcset") }
             .ifBlank { image.attr("srcset") }
         if (raw.isBlank()) return null
+        // data: URI ise atla (placeholder)
+        if (raw.startsWith("data:")) return null
         return fixUrl(normalizeSrcset(raw))
     }
 
-    // ============ picture > source srcset çıkarma ============
     private fun extractSrcset(source: Element): String? {
         val raw = source.attr("srcset")
             .ifBlank { source.attr("data-srcset") }
         if (raw.isBlank()) return null
+        if (raw.startsWith("data:")) return null
         return fixUrl(normalizeSrcset(raw))
     }
 
-    // ============ "url1 1x, url2 2x" formatını tek URL'ye indir ============
     private fun normalizeSrcset(raw: String): String {
-        // Virgülle ayrılmış adayları al, ilkini seç
         val first = raw.split(",").firstOrNull()?.trim().orEmpty()
-        // "url 800w" gibi sonundaki boyut bilgisini at
         return first.split(" ").firstOrNull()?.trim().orEmpty()
     }
 
-    // ============ style="background-image:url(...)" çıkarma ============
     private fun extractBgImage(style: String): String? {
         if (style.isBlank()) return null
         val match = Regex("""url\(['"]?([^'")]+)['"]?\)""").find(style) ?: return null
@@ -322,10 +386,9 @@ class PuhuTVProvider : MainAPI() {
 // ============ YARDIMCI FONKSİYONLAR ============
 
 private fun JSONObject.image(): String? {
-    // 1) Doğrudan string alanlar
     for (key in listOf(
         "poster", "image", "cover", "thumbnail", "posterUrl", "imageUrl",
-        "wide", "large", "small", "medium", "backdrop"
+        "image_vertical_mobile", "wide", "large", "small", "medium", "backdrop"
     )) {
         val v = optString(key)
         if (v.isNotBlank() && (v.startsWith("http") || v.startsWith("//"))) {
@@ -333,7 +396,6 @@ private fun JSONObject.image(): String? {
         }
     }
 
-    // 2) images objesi
     val images = optJSONObject("images")
     if (images != null) {
         for (key in listOf("poster", "cover", "thumbnail", "wide", "large", "medium", "small")) {
@@ -342,7 +404,6 @@ private fun JSONObject.image(): String? {
                 return if (v.startsWith("//")) "https:$v" else v
             }
         }
-        // Fallback: herhangi bir değer
         val keys = images.keys()
         while (keys.hasNext()) {
             val v = images.optString(keys.next())
@@ -352,7 +413,6 @@ private fun JSONObject.image(): String? {
         }
     }
 
-    // 3) İç içe content objesi varsa ona da bak
     val content = optJSONObject("content")
     if (content != null) {
         val nested = content.image()
