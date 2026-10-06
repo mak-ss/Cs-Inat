@@ -25,21 +25,6 @@ class TurkAnimeProvider : MainAPI() {
     override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
 
-    private var isInitialized = false
-    private suspend fun ensureInit() {
-        if (isInitialized) return
-        isInitialized = true
-        try {
-            val config = app.get(
-                "https://gitlab.com/ulgenzade/ulgencs3/-/raw/master/domains.json",
-                timeout = 5
-            ).text
-            val json = JSONObject(config)
-            json.optString("aniarsiv").takeIf { it.isNotBlank() }?.let { mainUrl = it }
-                ?: json.optString("turkanime").takeIf { it.isNotBlank() }?.let { mainUrl = it }
-        } catch (_: Exception) { }
-    }
-
     private val commonHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
         "Referer" to "$mainUrl/",
@@ -57,7 +42,6 @@ class TurkAnimeProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        ensureInit()
         val list = mutableListOf<SearchResponse>()
 
         try {
@@ -133,7 +117,6 @@ class TurkAnimeProvider : MainAPI() {
     // -------------------------------------------------------------------------
 
     override suspend fun search(query: String): List<SearchResponse> {
-        ensureInit()
         val q = URLEncoder.encode(query.trim(), "UTF-8")
         val endpoint = "$mainUrl/api/animes?q=$q&limit=25"
         val list = mutableListOf<SearchResponse>()
@@ -167,7 +150,6 @@ class TurkAnimeProvider : MainAPI() {
     // -------------------------------------------------------------------------
 
     override suspend fun load(url: String): LoadResponse? {
-        ensureInit()
         val slug = extractSlug(url)
         val endpoint = "$mainUrl/api/anime/$slug"
 
@@ -241,7 +223,6 @@ class TurkAnimeProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        ensureInit()
         val epSlug = extractSlug(data)
         val endpoint = "$mainUrl/api/bolum/$epSlug"
         var linksFound = false
