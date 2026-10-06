@@ -18,7 +18,9 @@ class PuhuTVProvider : MainAPI() {
     override val mainPage = mainPageOf(
         "/" to "Ana Sayfa",
         "/dizi" to "Diziler",
-        "/yerli-diziler" to "Yerli Diziler",
+        "/yasam" to "Yasam",
+        "/uzak-dogu-ruzgari" to "Uzak Dogu Belgeselleri",
+        "/cocuk" to "Cocuk",
         "/puhutv-orijinal" to "PuhuTV Orijinal"
     )
 
