@@ -18,9 +18,13 @@ class PuhuTvProvider : MainAPI() {
     )
 
     override val mainPage = mainPageOf(
-        "$mainUrl/puhutv-orijinal" to "PuhuTV Orijinal",
-        "$mainUrl/yerli-diziler" to "Yerli Diziler",
-        "$mainUrl/uzak-dogu-ruzgari" to "Uzak Doğu Rüzgarı"
+        "list/anasayfa-one-cikanlar" to "Öne Çıkanlar",
+        "list/en-yeni-dizi-bolumleri" to "Yeni Bölümler",
+        "list/orijinal" to "puhutv Orijinal",
+        "list/anasayfa-uzak-dogu-ruzgari" to "Uzak Doğu Rüzgarı",
+        "list/komedi-dizileri" to "Romantik & Komik",
+        "list/belgesel-yapimlar" to "Belgesel",
+        "list/anasayfa-kultur-sahnesi" to "Kültür Sahnesi",
     )
 
     private fun cleanUrl(url: String): String {
