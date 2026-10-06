@@ -18,13 +18,10 @@ class PuhuTVProvider : MainAPI() {
     override val mainPage = mainPageOf(
         "/" to "Ana Sayfa",
         "/dizi" to "Diziler",
-        "/yasam" to "Yasam",
-        "/uzak-dogu-ruzgari" to "Uzak Dogu Belgeselleri",
-        "/cocuk" to "Cocuk",
+        "/yerli-diziler" to "Yerli Diziler",
         "/puhutv-orijinal" to "PuhuTV Orijinal"
     )
 
-    // ============ YARDIMCI: Göreceli URL'yi mutlak yap ============
     private fun fixUrl(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
         return when {
@@ -72,7 +69,6 @@ class PuhuTVProvider : MainAPI() {
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
 
-        // ⬇️ __NEXT_DATA__ içinden slug → poster haritası çıkar ⬇️
         val nextDataPosters: Map<String, String> = extractNextDataPosters(document)
         println("PuhuTV __NEXT_DATA__ poster haritası boyutu: ${nextDataPosters.size}")
 
@@ -94,7 +90,6 @@ class PuhuTVProvider : MainAPI() {
         return newHomePageResponse(request.name, results, hasNext = hasNext)
     }
 
-    // ============ __NEXT_DATA__ JSON'UNDAN POSTER HARİTASI ÇIKAR ============
     private fun extractNextDataPosters(document: org.jsoup.nodes.Document): Map<String, String> {
         val map = mutableMapOf<String, String>()
         try {
@@ -103,8 +98,6 @@ class PuhuTVProvider : MainAPI() {
             if (jsonText.isBlank()) return map
 
             val root = JSONObject(jsonText)
-
-            // pageProps.data.data.container_items[] üzerinde gez
             val containerItems = root
                 .optJSONObject("props")
                 ?.optJSONObject("pageProps")
@@ -122,7 +115,6 @@ class PuhuTVProvider : MainAPI() {
                     val slug = meta?.optString("slug").orEmpty()
                     if (slug.isBlank()) continue
 
-                    // Öncelik: image (yatay/ana görsel) > image_vertical_mobile
                     val image = item.optString("image")
                         .ifBlank { item.optString("image_vertical_mobile") }
                     if (image.isNotBlank() && (image.startsWith("http") || image.startsWith("//"))) {
@@ -139,63 +131,160 @@ class PuhuTVProvider : MainAPI() {
     // ============ İÇERİK YÜKLE ============
     override suspend fun load(url: String): LoadResponse? {
         val requestedPath: String = url.substringAfter(mainUrl).substringBefore("?").trim('/')
+        if (requestedPath.isBlank()) return null
+
+        // ⬇️ URL'yi analiz et: detay mı, izle mi, bölüm mü?
         val isDetail: Boolean = requestedPath.endsWith("-detay")
-        val slug: String = requestedPath.removeSuffix("-detay").removeSuffix("-izle")
-        if (slug.isBlank()) return null
+        val isWatch: Boolean = requestedPath.endsWith("-izle") || requestedPath.contains("-bolum-izle")
+
+        // Slug'ı temizle
+        val cleanSlug = requestedPath
+            .removeSuffix("-detay")
+            .removeSuffix("-izle")
+
+        if (cleanSlug.isBlank()) return null
+
+        // ⬇️ ÖNEMLİ: Bölüm linki mi? ("-1-bolum-izle", "-pilot-bolum-izle", "-1-sezon-1-bolum-izle")
+        val isEpisodeLink = isWatch && (
+            cleanSlug.contains(Regex("""-\d+-bolum$""")) ||
+            cleanSlug.endsWith("-pilot-bolum") ||
+            cleanSlug.contains(Regex("""-\d+-sezon-\d+-bolum$""")) ||
+            cleanSlug.contains("-bolum")
+        )
+
+        // ⬇️ Bölüm linki ise → bu bir film/bölüm izleme sayfası, doğrudan film LoadResponse dön
+        if (isEpisodeLink && isWatch) {
+            val data: JSONObject = try {
+                JSONObject(app.get("$mainUrl/api/slug/$cleanSlug-izle").text).getJSONObject("data")
+            } catch (_: Exception) {
+                return null
+            }
+            val title: String = data.optString("name").ifBlank { cleanSlug.titleTr() }
+            val content: JSONObject? = data.optJSONObject("content")
+            val poster: String? = content?.image() ?: data.image()
+
+            // Ana dizinin bilgisini almaya çalış (bölümden diziye git)
+            val parentSeriesSlug: String? = data.optJSONObject("title")
+                ?.optJSONObject("meta")
+                ?.optString("slug")
+                ?.takeIf { it.isNotBlank() }
+
+            val parentPoster: String? = data.optJSONObject("title")
+                ?.optString("image")
+                ?.takeIf { it.isNotBlank() }
+                ?: data.optJSONObject("title")
+                    ?.optString("image_vertical_mobile")
+                    ?.takeIf { it.isNotBlank() }
+
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                posterUrl = parentPoster ?: poster
+                plot = data.optString("description").takeIf { it.isNotBlank() }
+            }
+        }
+
+        // ⬇️ Detay sayfası işlemleri
         val suffix: String = if (isDetail) "-detay" else "-izle"
+        val slug: String = cleanSlug
+
         val data: JSONObject = try {
             JSONObject(app.get("$mainUrl/api/slug/$slug$suffix").text).getJSONObject("data")
         } catch (_: Exception) {
             return null
         }
+
         val title: String = data.optString("name").ifBlank { slug.titleTr() }
         val content: JSONObject? = data.optJSONObject("content")
         val poster: String? = content?.image() ?: data.image()
         val seasons = data.optJSONArray("seasons")
+        val assets = data.optJSONArray("assets")
 
+        // ⬇️ DİZİ Mİ? (seasons varsa ve içi doluysa)
         if (isDetail && seasons != null && seasons.length() > 0) {
             val episodes = mutableListOf<Episode>()
+
             for (seasonIndex in 0 until seasons.length()) {
                 val seasonJson: JSONObject = seasons.optJSONObject(seasonIndex) ?: continue
                 val seasonId: String = seasonJson.optString("id")
                 if (seasonId.isBlank()) continue
-                val seasonData: JSONObject = try {
-                    JSONObject(app.get("https://galadriel.puhutv.com/seasons/$seasonId?page=1&per=40").text)
-                } catch (_: Exception) {
-                    continue
-                }
+
                 val seasonNumber: Int = seasonJson.optInt("number", seasonIndex + 1)
-                val seasonEpisodes = seasonData.optJSONArray("episodes") ?: continue
-                for (episodeIndex in 0 until seasonEpisodes.length()) {
-                    val episodeJson: JSONObject = seasonEpisodes.optJSONObject(episodeIndex) ?: continue
-                    val episodePath: String = episodeJson.optString("slugPath")
-                    if (episodePath.isBlank()) continue
-                    val episodePoster: String? =
-                        episodeJson.optJSONObject("content")?.image()
-                            ?: episodeJson.image()
-                            ?: poster
-                    episodes.add(newEpisode("$mainUrl/" + episodePath.trimStart('/')) {
-                        name = episodeJson.optString("name").ifBlank { episodeJson.optString("eventLabel") }
-                        season = seasonNumber
-                        episode = episodeJson.optInt("number", episodeIndex + 1)
-                        posterUrl = episodePoster
-                    })
+
+                // Sezon bölümlerini API'den çek (pagination)
+                var page = 1
+                val perPage = 40
+                var hasMore = true
+
+                while (hasMore) {
+                    val seasonData: JSONObject = try {
+                        JSONObject(app.get("https://galadriel.puhutv.com/seasons/$seasonId?page=$page&per=$perPage").text)
+                    } catch (_: Exception) {
+                        break
+                    }
+
+                    val seasonEpisodes = seasonData.optJSONArray("episodes") ?: break
+                    if (seasonEpisodes.length() == 0) break
+
+                    for (episodeIndex in 0 until seasonEpisodes.length()) {
+                        val episodeJson: JSONObject = seasonEpisodes.optJSONObject(episodeIndex) ?: continue
+                        val episodePath: String = episodeJson.optString("slugPath")
+                        if (episodePath.isBlank()) continue
+
+                        val episodePoster: String? =
+                            episodeJson.optJSONObject("content")?.image()
+                                ?: episodeJson.image()
+                                ?: poster
+
+                        episodes.add(newEpisode("$mainUrl/" + episodePath.trimStart('/')) {
+                            name = episodeJson.optString("name")
+                                .ifBlank { episodeJson.optString("eventLabel") }
+                                .ifBlank { "Bölüm ${episodeIndex + 1}" }
+                            season = seasonNumber
+                            episode = episodeJson.optInt("number", episodeIndex + 1)
+                            posterUrl = episodePoster
+                            description = episodeJson.optString("description").takeIf { it.isNotBlank() }
+                        })
+                    }
+
+                    // Sayfalama kontrolü
+                    val totalPages = seasonData.optInt("total_pages", 1)
+                    hasMore = page < totalPages
+                    page++
+
+                    // Güvenlik: max 20 sayfa
+                    if (page > 20) break
                 }
             }
+
+            if (episodes.isEmpty()) {
+                println("PuhuTV load: $title için bölüm bulunamadı (seasons vardı ama boş)")
+                return null
+            }
+
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 posterUrl = poster
                 plot = data.optString("description").takeIf { it.isNotBlank() }
             }
         }
 
-        val assets = data.optJSONArray("assets")
-        val firstAsset: JSONObject? = if (assets == null || assets.length() == 0) null else assets.optJSONObject(0)
-        val videoSlug: String = if (firstAsset == null) slug else firstAsset.optString("slug").removeSuffix("-izle")
-        val watchUrl: String = "$mainUrl/$videoSlug-izle"
-        return newMovieLoadResponse(title, watchUrl, TvType.Movie, watchUrl) {
-            posterUrl = poster
-            plot = data.optString("description").takeIf { it.isNotBlank() }
+        // ⬇️ FİLM Mİ? (assets varsa)
+        if (assets != null && assets.length() > 0) {
+            val firstAsset: JSONObject = assets.optJSONObject(0) ?: return null
+            val videoSlug: String = firstAsset.optString("slug").removeSuffix("-izle")
+            if (videoSlug.isBlank()) {
+                println("PuhuTV load: $title için asset slug boş")
+                return null
+            }
+
+            val watchUrl: String = "$mainUrl/$videoSlug-izle"
+            return newMovieLoadResponse(title, watchUrl, TvType.Movie, watchUrl) {
+                posterUrl = poster
+                plot = data.optString("description").takeIf { it.isNotBlank() }
+            }
         }
+
+        // ⬇️ Ne dizi ne film → null dön ("çok yakında" gösterme)
+        println("PuhuTV load: $title için ne seasons ne assets bulundu (içerik henüz yayında değil)")
+        return null
     }
 
     // ============ LİNKLERİ YÜKLE (DEĞİŞTİRİLMEDİ) ============
@@ -258,6 +347,10 @@ class PuhuTVProvider : MainAPI() {
 
         if (!isDetail && !isIzle && !isList) return null
 
+        // Bölüm linklerini ana sayfada gösterme (dizi detay linkini tercih et)
+        val isEpisode = isIzle && slug.contains("-bolum-izle")
+        if (isEpisode) return null
+
         val image: Element? = selectFirst("img")
         val alt: String = image?.attr("alt") ?: ""
 
@@ -267,16 +360,10 @@ class PuhuTVProvider : MainAPI() {
             slug.removeSuffix("-detay").removeSuffix("-izle").titleTr()
         }
 
-        // ⬇️ 1) __NEXT_DATA__ haritasından dene (en temiz kaynak)
         val slugKey = slug.removeSuffix("-detay").removeSuffix("-izle") + "-detay"
         val fromNextData = nextDataPosters[slugKey]
-
-        // ⬇️ 2) Bulunamazsa HTML'den çıkar
         val fromHtml = if (fromNextData == null) findPoster() else null
-
         val poster: String? = fromNextData ?: fromHtml
-
-        println("PuhuTV toResponse: title=$title, poster=$poster, src=${if (fromNextData != null) "NEXT_DATA" else "HTML"}")
 
         return when {
             isDetail -> newTvSeriesSearchResponse(title, href) { posterUrl = poster }
@@ -286,13 +373,9 @@ class PuhuTVProvider : MainAPI() {
         }
     }
 
-    // ============ HTML'DEN POSTER ÇIKARMA ============
     private fun Element.findPoster(): String? {
-        // ⬇️ ÖNCELİK 1: <noscript><img src="..."></noscript> içindeki gerçek URL
-        // PuhuTV gerçek posteri noscript içine koyuyor, dıştaki img placeholder GIF.
         selectFirst("noscript")?.let { ns ->
             val nsHtml = ns.html()
-            // noscript içeriği text olarak gelir, regex ile src'yi çek
             val m = Regex("""<img[^>]+src=["']([^"']+)["']""").find(nsHtml)
             if (m != null) {
                 val url = m.groupValues[1]
@@ -302,12 +385,10 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // ⬇️ ÖNCELİK 2: Doğrudan img'nin src'si (data: ise atla)
         selectFirst("img")?.let { img ->
             extractImgSrc(img)?.let { return it }
         }
 
-        // ⬇️ ÖNCELİK 3: Ebeveyn ve atalarda noscript/img ara
         parent()?.let { p ->
             p.selectFirst("noscript")?.let { ns ->
                 val m = Regex("""<img[^>]+src=["']([^"']+)["']""").find(ns.html())
@@ -323,7 +404,6 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // ⬇️ ÖNCELİK 4: Geniş atalarda ara
         var ancestor: Element? = parent()
         var depth = 0
         while (ancestor != null && depth < 5) {
@@ -360,7 +440,6 @@ class PuhuTVProvider : MainAPI() {
             .ifBlank { image.attr("data-srcset") }
             .ifBlank { image.attr("srcset") }
         if (raw.isBlank()) return null
-        // data: URI ise atla (placeholder)
         if (raw.startsWith("data:")) return null
         return fixUrl(normalizeSrcset(raw))
     }
