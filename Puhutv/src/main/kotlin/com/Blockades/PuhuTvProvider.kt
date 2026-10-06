@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
-import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.util.Locale
@@ -26,7 +25,6 @@ class PuhuTVProvider : MainAPI() {
     // ============ YARDIMCI ============
     private fun fixUrl(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
-        // data: URI'lerini reddet
         if (raw.startsWith("data:")) return null
         return when {
             raw.startsWith("http://") || raw.startsWith("https://") -> raw
@@ -59,7 +57,7 @@ class PuhuTVProvider : MainAPI() {
         }
     }
 
-    // ============ ANA SAYFA (Next.js JSON parse) ============
+    // ============ ANA SAYFA ============
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val path: String = request.data.ifBlank { "/" }
         val url = if (page > 1) "$mainUrl$path?sayfa=$page" else "$mainUrl$path"
@@ -73,29 +71,26 @@ class PuhuTVProvider : MainAPI() {
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
 
-        // Önce __NEXT_DATA__ JSON'unu dene
         val nextData = document.selectFirst("script#__NEXT_DATA__")?.data()
         if (!nextData.isNullOrBlank()) {
-            val results = parseNextData(nextData, path)
+            val results = parseNextData(nextData)
             if (results.isNotEmpty()) {
-                println("PuhuTV getMainPage (JSON) sonuç sayısı: ${results.size}")
+                println("PuhuTV getMainPage (JSON) sonuç: ${results.size}")
                 return newHomePageResponse(request.name, results, hasNext = false)
             }
         }
 
-        // Fallback: HTML'den noscript içindeki gerçek img'leri al
-        println("PuhuTV getMainPage: __NEXT_DATA__ boş, HTML fallback")
-        val results = document.select("a[href*=-detay], a[href*=-izle]")
+        println("PuhuTV getMainPage: JSON boş, HTML fallback")
+        val results = document.select("a[href*=-detay]")
             .mapNotNull { it.toResponse() }
             .distinctBy { it.url }
             .take(40)
 
-        println("PuhuTV getMainPage (HTML) sonuç sayısı: ${results.size}")
         return newHomePageResponse(request.name, results, hasNext = false)
     }
 
-    // __NEXT_DATA__ JSON'undan içerikleri çek
-    private fun parseNextData(jsonText: String, path: String): List<SearchResponse> {
+    // ============ __NEXT_DATA__ PARSER ============
+    private fun parseNextData(jsonText: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         try {
             val root = JSONObject(jsonText)
@@ -106,8 +101,8 @@ class PuhuTVProvider : MainAPI() {
             for (ci in 0 until containers.length()) {
                 val container = containers.optJSONObject(ci) ?: continue
                 val containerType = container.optString("type")
-                // Sadece poster/clips/spotlight içeriklerini al
-                if (containerType != "poster" && containerType != "clips" && containerType != "spotlight") continue
+                // Sadece poster tipindeki container'ları al
+                if (containerType != "poster") continue
 
                 val items = container.optJSONArray("items") ?: continue
                 for (ii in 0 until items.length()) {
@@ -125,12 +120,11 @@ class PuhuTVProvider : MainAPI() {
         return results.take(40)
     }
 
-    // JSON item → SearchResponse
+    // ============ JSON → SearchResponse ============
     private fun JSONObject.toSearchResponse(): SearchResponse? {
         val type = optString("type")
         val name = optString("name").ifBlank { return null }
 
-        // Poster URL: önce image_vertical_mobile (7x10 dikey), sonra image
         val poster: String? = sequenceOf(
             optString("image_vertical_mobile"),
             optString("image"),
@@ -138,18 +132,13 @@ class PuhuTVProvider : MainAPI() {
         ).firstOrNull { it.startsWith("http") }
 
         val meta = optJSONObject("meta")
-        val slug = meta?.optString("slug")?.ifBlank { null }
-            ?: optString("to_watch_asset_slug").ifBlank { null }
-            ?: return null
-
-        val webUrl = meta?.optString("web_url")?.ifBlank { null }
-            ?: "$mainUrl/$slug"
+        val slug = meta?.optString("slug")?.ifBlank { null } ?: return null
+        val webUrl = meta.optString("web_url").ifBlank { "$mainUrl/$slug" }
 
         return when (type) {
-            "title_serie", "asset_episode", "asset_fragment" ->
-                newTvSeriesSearchResponse(name, webUrl) { posterUrl = poster }
-            "title_movie" ->
-                newMovieSearchResponse(name, webUrl, TvType.Movie) { posterUrl = poster }
+            "title_serie" -> newTvSeriesSearchResponse(name, webUrl) { posterUrl = poster }
+            "title_movie" -> newMovieSearchResponse(name, webUrl, TvType.Movie) { posterUrl = poster }
+            // asset_episode ve asset_fragment'ları ATLA — bunlar ayrı bölümlerde gösteriliyor
             else -> null
         }
     }
@@ -161,17 +150,23 @@ class PuhuTVProvider : MainAPI() {
         val slug: String = requestedPath.removeSuffix("-detay").removeSuffix("-izle")
         if (slug.isBlank()) return null
         val suffix: String = if (isDetail) "-detay" else "-izle"
+
+        println("PuhuTV load: slug=$slug suffix=$suffix")
+
         val data: JSONObject = try {
             JSONObject(app.get("$mainUrl/api/slug/$slug$suffix").text).getJSONObject("data")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            println("PuhuTV load HATA: ${e.message}")
             return null
         }
+
         val title: String = data.optString("name").ifBlank { slug.titleTr() }
         val content: JSONObject? = data.optJSONObject("content")
         val poster: String? = content?.image() ?: data.image()
         val seasons = data.optJSONArray("seasons")
 
-        if (isDetail && seasons != null && seasons.length() > 0) {
+        // Dizi: bölümleri listele
+        if (seasons != null && seasons.length() > 0) {
             val episodes = mutableListOf<Episode>()
             for (seasonIndex in 0 until seasons.length()) {
                 val seasonJson: JSONObject = seasons.optJSONObject(seasonIndex) ?: continue
@@ -195,16 +190,20 @@ class PuhuTVProvider : MainAPI() {
                     })
                 }
             }
+            println("PuhuTV load: ${episodes.size} bölüm bulundu")
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 posterUrl = poster
                 plot = data.optString("description").takeIf { it.isNotBlank() }
             }
         }
 
+        // Film: tek video
         val assets = data.optJSONArray("assets")
         val firstAsset: JSONObject? = if (assets == null || assets.length() == 0) null else assets.optJSONObject(0)
         val videoSlug: String = if (firstAsset == null) slug else firstAsset.optString("slug").removeSuffix("-izle")
         val watchUrl: String = "$mainUrl/$videoSlug-izle"
+        println("PuhuTV load: film watchUrl=$watchUrl")
+
         return newMovieLoadResponse(title, watchUrl, TvType.Movie, watchUrl) {
             posterUrl = poster
             plot = data.optString("description").takeIf { it.isNotBlank() }
@@ -219,18 +218,31 @@ class PuhuTVProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val slug: String = data.substringAfter(mainUrl).substringBefore("?").trim('/').removeSuffix("-izle")
+
+        println("PuhuTV loadLinks: data=$data slug=$slug")
+
         val info: JSONObject = try {
             JSONObject(app.get("$mainUrl/api/slug/$slug-izle").text).getJSONObject("data")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            println("PuhuTV loadLinks info HATA: ${e.message}")
             return false
         }
-        val id: String = info.getString("id")
-        if (id.isBlank()) return false
+
+        val id: String = info.optString("id")
+        if (id.isBlank()) {
+            println("PuhuTV loadLinks: id boş")
+            return false
+        }
+
         val videos = try {
             JSONObject(app.get("$mainUrl/api/assets/$id/videos").text).getJSONObject("data").getJSONArray("videos")
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            println("PuhuTV loadLinks videos HATA: ${e.message}")
             return false
         }
+
+        println("PuhuTV loadLinks: ${videos.length()} video bulundu")
+
         for (index in 0 until videos.length()) {
             val video: JSONObject = videos.getJSONObject(index)
             val streamUrl: String = video.optString("url")
@@ -255,10 +267,9 @@ class PuhuTVProvider : MainAPI() {
         return true
     }
 
-    // ============ HTML FALLBACK (noscript içindeki gerçek img) ============
+    // ============ HTML FALLBACK ============
     private fun Element.toResponse(): SearchResponse? {
-        val rawHref: String = attr("href")
-        val href: String = fixUrl(rawHref) ?: return null
+        val href: String = fixUrl(attr("href")) ?: return null
         if (!href.startsWith(mainUrl)) return null
 
         val slug: String = href.substringAfterLast("/").substringBefore("?").trim('/')
@@ -268,7 +279,6 @@ class PuhuTVProvider : MainAPI() {
         val isIzle: Boolean = slug.endsWith("-izle")
         if (!isDetail && !isIzle) return null
 
-        // noscript içindeki <img> gerçek URL'yi içerir
         val noscriptImg: Element? = selectFirst("noscript img")
         val normalImg: Element? = selectFirst("img")
 
@@ -277,7 +287,7 @@ class PuhuTVProvider : MainAPI() {
             normalImg?.attr("data-src"),
             normalImg?.attr("src")
         ).mapNotNull { fixUrl(it) }
-            .firstOrNull { it.startsWith("https://") && !it.contains("data:") }
+            .firstOrNull { it.startsWith("https://") }
 
         val alt: String = normalImg?.attr("alt") ?: ""
         val title: String = if (alt.isNotBlank()) alt
@@ -291,7 +301,7 @@ class PuhuTVProvider : MainAPI() {
     }
 }
 
-// ============ YARDIMCI FONKSİYONLAR ============
+// ============ YARDIMCI ============
 
 private fun JSONObject.image(): String? {
     val images: JSONObject = optJSONObject("images") ?: return null
