@@ -540,8 +540,24 @@ class PuhuTVProvider : MainAPI() {
         return true
     }
 
+    // ============================================================
+    // toResponse — CGTN Documentary ve canlı yayın filtreli
+    // ============================================================
     private fun Element.toResponse(posterMap: Map<String, String>): SearchResponse? {
         val rawHref: String = attr("href")
+
+        // ⬇️ CGTN Documentary ve canlı yayın linklerini TÜM kategorilerden çıkar
+        val hrefLower = rawHref.lowercase()
+        if (hrefLower.contains("cgtn") ||
+            hrefLower.contains("documentary") ||
+            hrefLower.contains("canli-yayin") ||
+            hrefLower.contains("canli_yayin") ||
+            hrefLower.contains("canli-tv") ||
+            hrefLower.contains("uzak-dogu")
+        ) {
+            return null
+        }
+
         val fullHref: String = fixUrl(rawHref) ?: return null
 
         if (!fullHref.startsWith(mainUrl)) return null
@@ -565,6 +581,16 @@ class PuhuTVProvider : MainAPI() {
             altText
         } else {
             itemSlug.removeSuffix("-detay").removeSuffix("-izle").titleTr()
+        }
+
+        // ⬇️ Başlıkta CGTN/documentary varsa da çıkar
+        val titleLower = cardTitle.lowercase()
+        if (titleLower.contains("cgtn") ||
+            titleLower.contains("documentary") ||
+            titleLower.contains("canlı yayın") ||
+            titleLower.contains("canli yayin")
+        ) {
+            return null
         }
 
         val slugKey = itemSlug.removeSuffix("-detay").removeSuffix("-izle") + "-detay"
