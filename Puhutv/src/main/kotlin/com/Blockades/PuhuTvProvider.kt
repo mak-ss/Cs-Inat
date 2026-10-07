@@ -121,9 +121,6 @@ class PuhuTVProvider : MainAPI() {
         return map
     }
 
-    // ============================================================
-    // TEK load() FONKSİYONU — val reassign YOK
-    // ============================================================
     override suspend fun load(url: String): LoadResponse? {
         val requestedPath: String = url.substringAfter(mainUrl).substringBefore("?").trim('/')
         if (requestedPath.isBlank()) return null
@@ -210,10 +207,8 @@ class PuhuTVProvider : MainAPI() {
         val plot: String? = meta?.optString("description")?.takeIf { it.isNotBlank() }
             ?: titleData.optString("description").takeIf { it.isNotBlank() }
 
-        // Bölümleri topla
         val episodes = mutableListOf<Episode>()
 
-        // KAYNAK 1: pageProps.allEpisodes
         val allEpisodes = pageProps?.optJSONArray("allEpisodes")
         if (allEpisodes != null && allEpisodes.length() > 0) {
             for (i in 0 until allEpisodes.length()) {
@@ -243,7 +238,6 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // KAYNAK 2: pageProps.episodeData.data.episodes
         val episodeData = pageProps?.optJSONObject("episodeData")?.optJSONObject("data")
         if (episodeData != null) {
             val epsArr = episodeData.optJSONArray("episodes")
@@ -284,13 +278,11 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // KAYNAK 3: HTML → ld+json ItemList
         if (episodes.isEmpty()) {
             val ldEpisodes = extractEpisodesFromLdJson(document)
             episodes.addAll(ldEpisodes)
         }
 
-        // KAYNAK 4: Eski __NEXT_DATA__ fallback
         if (episodes.isEmpty()) {
             val oldEps = extractEpisodesFromNextData(titleData)
             episodes.addAll(oldEps)
@@ -307,7 +299,6 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // Film kontrolü
         val assets = titleData.optJSONArray("assets")
             ?: meta?.optJSONArray("assets")
         if (assets != null && assets.length() > 0) {
