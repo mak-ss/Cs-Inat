@@ -133,7 +133,6 @@ class PuhuTVProvider : MainAPI() {
         val requestedPath: String = url.substringAfter(mainUrl).substringBefore("?").trim('/')
         if (requestedPath.isBlank()) return null
 
-        // ⬇️ Liste sayfalarını atla (film/dizi değil)
         if (requestedPath.startsWith("list/")) {
             println("PuhuTV load: Liste sayfası atlanıyor → $requestedPath")
             return null
@@ -147,7 +146,7 @@ class PuhuTVProvider : MainAPI() {
 
         if (cleanSlug.isBlank()) return null
 
-        // ⬇️ Bölüm linki mi? (tek bölüm → Movie olarak dön)
+        // ⬇️ Tek bölüm linki → Movie olarak dön
         val isEpisodeLink = isWatch && (
             cleanSlug.contains(Regex("""-\d+-bolum$""")) ||
             cleanSlug.endsWith("-pilot-bolum") ||
@@ -182,117 +181,8 @@ class PuhuTVProvider : MainAPI() {
 
         // ============================================================
         // DETAY SAYFASI
-        // 1) Önce API'den dene (bölüm listesi burada gelir)
-        // 2) Başarısız olursa HTML + __NEXT_DATA__ fallback
         // ============================================================
         println("PuhuTV load: Detay yükleniyor → $requestedPath")
-
-        // ---- 1) API YOLU ----
-        val apiData: JSONObject? = try {
-            JSONObject(app.get("$mainUrl/api/slug/$cleanSlug-detay").text).optJSONObject("data")
-        } catch (e: Exception) {
-            println("PuhuTV load: Detay API hatası = ${e.message}")
-            null
-        }
-
-        if (apiData != null) {
-            val title: String = apiData.optString("name")
-                .ifBlank { cleanSlug.titleTr() }
-            val content: JSONObject? = apiData.optJSONObject("content")
-            val poster: String? = content?.image()
-                ?: apiData.optString("image").takeIf { it.isNotBlank() }
-                ?: apiData.optString("image_vertical_mobile").takeIf { it.isNotBlank() }
-
-            val seasons = apiData.optJSONArray("seasons")
-            val episodes = mutableListOf<Episode>()
-
-            if (seasons != null && seasons.length() > 0) {
-                println("PuhuTV load: $title → ${seasons.length()} sezon (API), bölümler çekiliyor")
-
-                for (s in 0 until seasons.length()) {
-                    val season = seasons.optJSONObject(s) ?: continue
-                    val seasonId = season.optString("id")
-                        .ifBlank { season.optString("_id") }
-                        .ifBlank { season.optString("season_id") }
-                    val seasonNumber = season.optInt("number", s + 1).let { if (it <= 0) s + 1 else it }
-
-                    if (seasonId.isBlank()) {
-                        println("PuhuTV load: Sezon $seasonNumber id BOŞ, atlanıyor")
-                        continue
-                    }
-
-                    // ✅ Doğru endpoint: /seasons/{id}/episodes
-                    val epsArr = fetchSeasonEpisodes(seasonId)
-                    if (epsArr == null || epsArr.length() == 0) {
-                        println("PuhuTV load: Sezon $seasonNumber için bölüm bulunamadı")
-                        continue
-                    }
-
-                    println("PuhuTV load: Sezon $seasonNumber → ${epsArr.length()} bölüm")
-
-                    for (i in 0 until epsArr.length()) {
-                        val ep = epsArr.optJSONObject(i) ?: continue
-                        // PuhuTV'de bölüm yolu genelde "url" veya "slug" alanında
-                        val slugPath = ep.optString("url")
-                            .ifBlank { ep.optString("slug") }
-                            .ifBlank { ep.optString("slugPath") }
-                            .ifBlank { ep.optString("slug_path") }
-                            .ifBlank { ep.optString("path") }
-                        if (slugPath.isBlank()) continue
-
-                        val fullUrl = when {
-                            slugPath.startsWith("http") -> slugPath
-                            slugPath.startsWith("/") -> "$mainUrl$slugPath"
-                            else -> "$mainUrl/$slugPath"
-                        }
-
-                        val epPoster: String? = ep.optJSONObject("content")?.image()
-                            ?: ep.optString("image").takeIf { it.isNotBlank() }
-                            ?: poster
-
-                        episodes.add(newEpisode(fullUrl) {
-                            name = ep.optString("name")
-                                .ifBlank { ep.optString("eventLabel") }
-                                .ifBlank { ep.optString("event_label") }
-                                .ifBlank { "Bölüm ${i + 1}" }
-                            this.season = ep.optInt("season", seasonNumber).let { if (it <= 0) seasonNumber else it }
-                            this.episode = ep.optInt("number", i + 1).let { if (it <= 0) i + 1 else it }
-                            posterUrl = epPoster
-                            description = ep.optString("description").takeIf { it.isNotBlank() }
-                        })
-                    }
-                }
-            }
-
-            if (episodes.isNotEmpty()) {
-                val sorted = episodes
-                    .distinctBy { it.data }
-                    .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 0 }))
-
-                println("PuhuTV load: $title → API'den ${sorted.size} bölüm dönülüyor")
-                return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
-                    posterUrl = poster
-                    plot = apiData.optString("description").takeIf { it.isNotBlank() }
-                }
-            }
-
-            // Bölüm yok → film olabilir
-            val assets = apiData.optJSONArray("assets")
-            if (assets != null && assets.length() > 0) {
-                val firstAsset = assets.optJSONObject(0)
-                val videoSlug = firstAsset?.optString("slug")?.removeSuffix("-izle").orEmpty()
-                if (videoSlug.isNotBlank()) {
-                    val watchUrl = "$mainUrl/$videoSlug-izle"
-                    return newMovieLoadResponse(title, watchUrl, TvType.Movie, watchUrl) {
-                        posterUrl = poster
-                        plot = apiData.optString("description").takeIf { it.isNotBlank() }
-                    }
-                }
-            }
-        }
-
-        // ---- 2) HTML + __NEXT_DATA__ FALLBACK ----
-        println("PuhuTV load: API başarısız, HTML fallback → $requestedPath")
 
         val document = try {
             app.get("$mainUrl/$requestedPath").document
@@ -301,7 +191,7 @@ class PuhuTVProvider : MainAPI() {
             return null
         }
 
-        val nextData = try {
+        val nextData: JSONObject? = try {
             document.selectFirst("script#__NEXT_DATA__")?.let { script ->
                 val jsonText = script.data().ifBlank { script.html() }
                 if (jsonText.isNotBlank()) JSONObject(jsonText) else null
@@ -311,134 +201,212 @@ class PuhuTVProvider : MainAPI() {
             null
         }
 
-        val titleData = findTitleData(nextData)
+        val pageProps: JSONObject? = nextData
+            ?.optJSONObject("props")
+            ?.optJSONObject("pageProps")
+
+        // ✅ YENİ: pageProps.details.data → title objesi
+        val titleData: JSONObject? = pageProps
+            ?.optJSONObject("details")
+            ?.optJSONObject("data")
+            ?: findTitleData(nextData)
+
         if (titleData == null) {
-            println("PuhuTV load: __NEXT_DATA__ içinde title verisi bulunamadı")
+            println("PuhuTV load: title verisi bulunamadı")
             return null
         }
 
         val title: String = titleData.optString("name")
             .ifBlank { titleData.optString("title") }
             .ifBlank { cleanSlug.titleTr() }
-        val content: JSONObject? = titleData.optJSONObject("content")
-        val poster: String? = content?.image()
-            ?: titleData.optString("image").takeIf { it.isNotBlank() }
-            ?: titleData.optString("image_vertical_mobile").takeIf { it.isNotBlank() }
+
+        val meta: JSONObject? = titleData.optJSONObject("meta")
+
+        val poster: String? = titleData.optString("image").takeIf { it.isNotBlank() }
+            ?: titleData.optString("background_image").takeIf { it.isNotBlank() }
+
+        val plot: String? = meta?.optString("description")?.takeIf { it.isNotBlank() }
+            ?: titleData.optString("description").takeIf { it.isNotBlank() }
 
         println("PuhuTV load: title=$title, poster=$poster")
 
-        val nextDataEpisodes = extractEpisodesFromNextData(titleData)
-        println("PuhuTV load: $title → __NEXT_DATA__'dan ${nextDataEpisodes.size} bölüm")
+        // ============================================================
+        // BÖLÜMLERİ TOPLA — 4 FARKLI KAYNAK
+        // ============================================================
+        val episodes = mutableListOf<Episode>()
 
-        if (nextDataEpisodes.isNotEmpty()) {
-            val sorted = nextDataEpisodes
-                .distinctBy { it.data }
-                .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 0 }))
+        // ---- KAYNAK 1: pageProps.allEpisodes (tüm bölümler, sezon bilgisi YOK) ----
+        val allEpisodes = pageProps?.optJSONArray("allEpisodes")
+        if (allEpisodes != null && allEpisodes.length() > 0) {
+            println("PuhuTV load: allEpisodes bulundu → ${allEpisodes.length()} bölüm")
+            for (i in 0 until allEpisodes.length()) {
+                val ep = allEpisodes.optJSONObject(i) ?: continue
+                val slugPath = ep.optString("slug").ifBlank { ep.optString("url") }
+                if (slugPath.isBlank()) continue
 
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
-                posterUrl = poster
-                plot = titleData.optString("description").takeIf { it.isNotBlank() }
+                val fullUrl = when {
+                    slugPath.startsWith("http") -> slugPath
+                    slugPath.startsWith("/") -> "$mainUrl$slugPath"
+                    else -> "$mainUrl/$slugPath"
+                }
+
+                val rawTitle = ep.optString("title").ifBlank { ep.optString("name") }
+                val epName = rawTitle.replace(Regex(""".*?\s+(\d+\.\s*Bölüm).*"""), "$1")
+                    .ifBlank { rawTitle }
+
+                val numberMatch = Regex("""-(\d+)-bolum-izle""").find(slugPath)
+                val epNum = numberMatch?.groupValues?.get(1)?.toIntOrNull() ?: (i + 1)
+
+                episodes.add(newEpisode(fullUrl) {
+                    name = epName.ifBlank { "Bölüm ${i + 1}" }
+                    episode = epNum
+                    season = 1
+                    posterUrl = poster
+                })
             }
         }
 
-        // Bölüm yok — film olabilir
+        // ---- KAYNAK 2: pageProps.episodeData.data.episodes (son sezon bölümleri) ----
+        val episodeData = pageProps?.optJSONObject("episodeData")?.optJSONObject("data")
+        if (episodeData != null) {
+            val epsArr = episodeData.optJSONArray("episodes")
+            val seasonName = episodeData.optString("name")
+            val seasonSlug = episodeData.optString("slug")
+
+            val seasonNum = Regex("""(\d+)\.\s*Sezon""").find(seasonName)
+                ?.groupValues?.get(1)?.toIntOrNull()
+                ?: Regex("""-(\d+)-sezon""").find(seasonSlug)?.groupValues?.get(1)?.toIntOrNull()
+                ?: 1
+
+            if (epsArr != null && epsArr.length() > 0) {
+                println("PuhuTV load: episodeData bulundu → $seasonName, ${epsArr.length()} bölüm")
+                for (i in 0 until epsArr.length()) {
+                    val ep = epsArr.optJSONObject(i) ?: continue
+                    val slugPath = ep.optString("slug").ifBlank { ep.optString("url") }
+                    if (slugPath.isBlank()) continue
+
+                    val fullUrl = when {
+                        slugPath.startsWith("http") -> slugPath
+                        slugPath.startsWith("/") -> "$mainUrl$slugPath"
+                        else -> "$mainUrl/$slugPath"
+                    }
+
+                    val epMeta = ep.optJSONObject("meta")
+                    val pos = epMeta?.optInt("position", 0) ?: 0
+                    val epNum = if (pos > 0) pos else (i + 1)
+
+                    val epImage = ep.optString("image").takeIf { it.isNotBlank() } ?: poster
+
+                    episodes.add(newEpisode(fullUrl) {
+                        name = ep.optString("name").ifBlank { "Bölüm $epNum" }
+                        episode = epNum
+                        season = seasonNum
+                        posterUrl = epImage
+                        description = epMeta?.optString("short_description")?.takeIf { it.isNotBlank() }
+                    })
+                }
+            }
+        }
+
+        // ---- KAYNAK 3: HTML → application/ld+json ItemList (fallback) ----
+        if (episodes.isEmpty()) {
+            println("PuhuTV load: __NEXT_DATA__'da bölüm yok, ld+json deneniyor")
+            val ldEpisodes = extractEpisodesFromLdJson(document)
+            println("PuhuTV load: ld+json → ${ldEpisodes.size} bölüm")
+            episodes.addAll(ldEpisodes)
+        }
+
+        // ---- KAYNAK 4: Eski __NEXT_DATA__ fallback ----
+        if (episodes.isEmpty()) {
+            println("PuhuTV load: hâlâ bölüm yok, eski extractEpisodesFromNextData deneniyor")
+            val oldEps = extractEpisodesFromNextData(titleData)
+            println("PuhuTV load: eski yöntem → ${oldEps.size} bölüm")
+            episodes.addAll(oldEps)
+        }
+
+        if (episodes.isNotEmpty()) {
+            val sorted = episodes
+                .distinctBy { it.data }
+                .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 0 }))
+
+            println("PuhuTV load: $title → toplam ${sorted.size} bölüm dönülüyor")
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
+                posterUrl = poster
+                plot = plot
+            }
+        }
+
+        // ---- Film kontrolü ----
         val assets = titleData.optJSONArray("assets")
+            ?: meta?.optJSONArray("assets")
         if (assets != null && assets.length() > 0) {
-            val firstAsset: JSONObject = assets.optJSONObject(0) ?: return null
-            val videoSlug: String = firstAsset.optString("slug").removeSuffix("-izle")
+            val firstAsset = assets.optJSONObject(0)
+            val videoSlug = firstAsset?.optString("slug")?.removeSuffix("-izle").orEmpty()
             if (videoSlug.isNotBlank()) {
                 val watchUrl = "$mainUrl/$videoSlug-izle"
                 return newMovieLoadResponse(title, watchUrl, TvType.Movie, watchUrl) {
                     posterUrl = poster
-                    plot = titleData.optString("description").takeIf { it.isNotBlank() }
+                    plot = plot
                 }
             }
         }
 
-        println("PuhuTV load: $title için ne bölüm ne asset bulundu")
+        println("PuhuTV load: $title için bölüm/asset bulunamadı")
         return null
     }
 
-    // ============ SEZON BÖLÜMLERİNİ API'DEN ÇEK ============
-    private suspend fun fetchSeasonEpisodes(seasonId: String): org.json.JSONArray? {
-        // PuhuTV'nin gerçek endpoint'i: /seasons/{id}/episodes
-        val endpoints = listOf(
-            "https://galadriel.puhutv.com/seasons/$seasonId/episodes?page=1&per=100",
-            "https://galadriel.puhutv.com/api/seasons/$seasonId/episodes?page=1&per=100",
-            "https://galadriel.puhutv.com/seasons/$seasonId?page=1&per=100",
-            "https://api.puhutv.com/seasons/$seasonId/episodes?page=1&per=100",
-            "$mainUrl/api/seasons/$seasonId/episodes?page=1&per=100",
-            "$mainUrl/api/seasons/$seasonId?page=1&per=100"
-        )
+    // ⬇️ HTML'deki ld+json ItemList'ten bölümleri çıkar
+    private fun extractEpisodesFromLdJson(document: org.jsoup.nodes.Document): List<Episode> {
+        val episodes = mutableListOf<Episode>()
+        try {
+            val scripts = document.select("script[type=application/ld+json]")
+            for (script in scripts) {
+                val raw = script.data().ifBlank { script.html() }
+                if (raw.isBlank() || !raw.contains("ItemList")) continue
 
-        for (endpoint in endpoints) {
-            try {
-                val response = app.get(endpoint).text
-                if (response.isBlank() || !response.trimStart().startsWith("{")) continue
+                val json = try { JSONObject(raw) } catch (_: Exception) { continue }
+                val type = json.optString("@type")
+                if (type != "ItemList") continue
 
-                val json = JSONObject(response)
+                val items = json.optJSONArray("itemListElement") ?: continue
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    val epUrl = item.optString("url")
+                    if (epUrl.isBlank()) continue
 
-                // Olası tüm yapıları dene
-                val arr = json.optJSONArray("episodes")
-                    ?: json.optJSONObject("data")?.optJSONArray("episodes")
-                    ?: json.optJSONArray("items")
-                    ?: json.optJSONObject("data")?.optJSONArray("items")
-                    ?: json.optJSONArray("data")
+                    val numMatch = Regex("""-(\d+)-bolum-izle""").find(epUrl)
+                    val epNum = numMatch?.groupValues?.get(1)?.toIntOrNull() ?: (i + 1)
 
-                if (arr != null && arr.length() > 0) {
-                    println("PuhuTV fetchSeasonEpisodes: BAŞARILI → $endpoint (${arr.length()} bölüm)")
-                    return arr
+                    episodes.add(newEpisode(epUrl) {
+                        name = "$epNum. Bölüm"
+                        episode = epNum
+                        season = 1
+                    })
                 }
-            } catch (e: Exception) {
-                println("PuhuTV fetchSeasonEpisodes hata ($endpoint) = ${e.message}")
+                if (episodes.isNotEmpty()) break
             }
+        } catch (e: Exception) {
+            println("PuhuTV ld+json parse hatası: ${e.message}")
         }
-        return null
+        return episodes
     }
 
-    // ⬇️ __NEXT_DATA__ içinden title objesini bul (recursive)
-    // ✅ DÜZELTİLDİ: data.data.title yolu eklendi
+    // ⬇️ __NEXT_DATA__ içinden title objesini bul (fallback)
     private fun findTitleData(root: JSONObject?): JSONObject? {
         if (root == null) return null
 
-        val pageProps = root.optJSONObject("props")?.optJSONObject("pageProps")
+        val pageProps = root.optJSONObject("props")?.optJSONObject("pageProps") ?: return null
 
-        // pageProps.title
-        pageProps?.optJSONObject("title")?.let { return it }
+        // ✅ YENİ: pageProps.details.data
+        pageProps.optJSONObject("details")?.optJSONObject("data")?.let { return it }
 
-        val dataLevel1 = pageProps?.optJSONObject("data")
-        if (dataLevel1 != null) {
-            // data.title
-            dataLevel1.optJSONObject("title")?.let { return it }
-
-            // ✅ data.data.title  (EN KRİTİK EKSİK YOL)
-            val dataLevel2 = dataLevel1.optJSONObject("data")
-            if (dataLevel2 != null) {
-                dataLevel2.optJSONObject("title")?.let { return it }
-                dataLevel2.optJSONObject("series")?.let { return it }
-                dataLevel2.optJSONObject("movie")?.let { return it }
-
-                // data.data içinde assets/seasons/episodes varsa direkt onu dön
-                if ((dataLevel2.has("assets") || dataLevel2.has("seasons") || dataLevel2.has("episodes")) &&
-                    (dataLevel2.has("name") || dataLevel2.has("slug") || dataLevel2.has("title"))
-                ) {
-                    return dataLevel2
-                }
-            }
-
-            // data.items[] içinde ara
-            val items = dataLevel1.optJSONArray("items")
-            if (items != null && items.length() > 0) {
-                for (i in 0 until items.length()) {
-                    val item = items.optJSONObject(i) ?: continue
-                    if (item.has("assets") || item.has("seasons") || item.has("episodes")) {
-                        return item
-                    }
-                }
-            }
+        // Eski yollar (fallback)
+        pageProps.optJSONObject("title")?.let { return it }
+        pageProps.optJSONObject("data")?.let { data ->
+            data.optJSONObject("title")?.let { return it }
+            data.optJSONObject("data")?.optJSONObject("title")?.let { return it }
         }
 
-        // Derin arama
         return deepFindTitle(root)
     }
 
@@ -474,7 +442,7 @@ class PuhuTVProvider : MainAPI() {
         return null
     }
 
-    // ⬇️ __NEXT_DATA__ içindeki bölümleri çıkar
+    // ⬇️ Eski __NEXT_DATA__ bölüm çıkarma (fallback)
     private fun extractEpisodesFromNextData(titleData: JSONObject): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
@@ -490,6 +458,21 @@ class PuhuTVProvider : MainAPI() {
                 val season = seasons.optJSONObject(s) ?: continue
                 val seasonNumber = season.optInt("number", s + 1).let { if (it <= 0) s + 1 else it }
 
+                for (field in listOf("episodes", "items", "assets")) {
+                    season.optJSONArray(field)?.let { arr ->
+                        for (i in 0 until arr.length()) {
+                            val ep = arr.optJSONObject(i) ?: continue
+                            parseEpisode(ep, seasonNumber)?.let { episodes.add(it) }
+                        }
+                    }
+                }
+            }
+        }
+
+        titleData.optJSONObject("meta")?.optJSONArray("seasons")?.let { seasons ->
+            for (s in 0 until seasons.length()) {
+                val season = seasons.optJSONObject(s) ?: continue
+                val seasonNumber = season.optInt("position", s + 1).let { if (it <= 0) s + 1 else it }
                 for (field in listOf("episodes", "items", "assets")) {
                     season.optJSONArray(field)?.let { arr ->
                         for (i in 0 until arr.length()) {
@@ -522,7 +505,6 @@ class PuhuTVProvider : MainAPI() {
         return episodes.distinctBy { it.data }
     }
 
-    // ✅ DÜZELTİLDİ: PuhuTV gerçek alanları (url/slug) önce deneniyor
     private fun parseEpisode(ep: JSONObject, defaultSeason: Int): Episode? {
         val slugPath = ep.optString("url")
             .ifBlank { ep.optString("slug") }
