@@ -121,12 +121,14 @@ class PuhuTVProvider : MainAPI() {
         return map
     }
 
+    // ============================================================
+    // TEK load() FONKSİYONU — val reassign YOK
+    // ============================================================
     override suspend fun load(url: String): LoadResponse? {
         val requestedPath: String = url.substringAfter(mainUrl).substringBefore("?").trim('/')
         if (requestedPath.isBlank()) return null
 
         if (requestedPath.startsWith("list/")) {
-            println("PuhuTV load: Liste sayfası atlanıyor → $requestedPath")
             return null
         }
 
@@ -146,11 +148,9 @@ class PuhuTVProvider : MainAPI() {
         )
 
         if (isEpisodeLink && isWatch) {
-            println("PuhuTV load: Bölüm linki algılandı → $requestedPath")
             val data: JSONObject = try {
                 JSONObject(app.get("$mainUrl/api/slug/$cleanSlug-izle").text).getJSONObject("data")
-            } catch (e: Exception) {
-                println("PuhuTV load: Bölüm API hatası = ${e.message}")
+            } catch (_: Exception) {
                 return null
             }
             val title: String = data.optString("name").ifBlank { cleanSlug.titleTr() }
@@ -170,12 +170,9 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        println("PuhuTV load: Detay yükleniyor → $requestedPath")
-
         val document = try {
             app.get("$mainUrl/$requestedPath").document
-        } catch (e: Exception) {
-            println("PuhuTV load: Detay HTML hatası = ${e.message}")
+        } catch (_: Exception) {
             return null
         }
 
@@ -184,8 +181,7 @@ class PuhuTVProvider : MainAPI() {
                 val jsonText = script.data().ifBlank { script.html() }
                 if (jsonText.isNotBlank()) JSONObject(jsonText) else null
             }
-        } catch (e: Exception) {
-            println("PuhuTV load: __NEXT_DATA__ parse hatası = ${e.message}")
+        } catch (_: Exception) {
             null
         }
 
@@ -199,7 +195,6 @@ class PuhuTVProvider : MainAPI() {
             ?: findTitleData(nextData)
 
         if (titleData == null) {
-            println("PuhuTV load: title verisi bulunamadı")
             return null
         }
 
@@ -215,17 +210,12 @@ class PuhuTVProvider : MainAPI() {
         val plot: String? = meta?.optString("description")?.takeIf { it.isNotBlank() }
             ?: titleData.optString("description").takeIf { it.isNotBlank() }
 
-        println("PuhuTV load: title=$title, poster=$poster")
-
-        // ============================================================
-        // BÖLÜMLERİ TOPLA — 4 FARKLI KAYNAK
-        // ============================================================
+        // Bölümleri topla
         val episodes = mutableListOf<Episode>()
 
         // KAYNAK 1: pageProps.allEpisodes
         val allEpisodes = pageProps?.optJSONArray("allEpisodes")
         if (allEpisodes != null && allEpisodes.length() > 0) {
-            println("PuhuTV load: allEpisodes bulundu → ${allEpisodes.length()} bölüm")
             for (i in 0 until allEpisodes.length()) {
                 val ep = allEpisodes.optJSONObject(i) ?: continue
                 val slugPath = ep.optString("slug").ifBlank { ep.optString("url") }
@@ -266,7 +256,6 @@ class PuhuTVProvider : MainAPI() {
                 ?: 1
 
             if (epsArr != null && epsArr.length() > 0) {
-                println("PuhuTV load: episodeData bulundu → $seasonName, ${epsArr.length()} bölüm")
                 for (i in 0 until epsArr.length()) {
                     val ep = epsArr.optJSONObject(i) ?: continue
                     val slugPath = ep.optString("slug").ifBlank { ep.optString("url") }
@@ -297,17 +286,13 @@ class PuhuTVProvider : MainAPI() {
 
         // KAYNAK 3: HTML → ld+json ItemList
         if (episodes.isEmpty()) {
-            println("PuhuTV load: __NEXT_DATA__'da bölüm yok, ld+json deneniyor")
             val ldEpisodes = extractEpisodesFromLdJson(document)
-            println("PuhuTV load: ld+json → ${ldEpisodes.size} bölüm")
             episodes.addAll(ldEpisodes)
         }
 
         // KAYNAK 4: Eski __NEXT_DATA__ fallback
         if (episodes.isEmpty()) {
-            println("PuhuTV load: hâlâ bölüm yok, eski extractEpisodesFromNextData deneniyor")
             val oldEps = extractEpisodesFromNextData(titleData)
-            println("PuhuTV load: eski yöntem → ${oldEps.size} bölüm")
             episodes.addAll(oldEps)
         }
 
@@ -316,7 +301,6 @@ class PuhuTVProvider : MainAPI() {
                 .distinctBy { it.data }
                 .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 0 }))
 
-            println("PuhuTV load: $title → toplam ${sorted.size} bölüm dönülüyor")
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, sorted) {
                 posterUrl = poster
                 plot = plot
@@ -338,7 +322,6 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        println("PuhuTV load: $title için bölüm/asset bulunamadı")
         return null
     }
 
@@ -371,8 +354,7 @@ class PuhuTVProvider : MainAPI() {
                 }
                 if (episodes.isNotEmpty()) break
             }
-        } catch (e: Exception) {
-            println("PuhuTV ld+json parse hatası: ${e.message}")
+        } catch (_: Exception) {
         }
         return episodes
     }
