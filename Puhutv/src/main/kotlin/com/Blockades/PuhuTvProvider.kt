@@ -207,12 +207,13 @@ class PuhuTVProvider : MainAPI() {
         val plot: String? = meta?.optString("description")?.takeIf { it.isNotBlank() }
             ?: titleData.optString("description").takeIf { it.isNotBlank() }
 
-        val episodes = mutableListOf<Episode>()
+        // ⬇️ DEĞİŞKEN ADI: episodeList (episodes değil)
+        val episodeList = mutableListOf<Episode>()
 
-        val allEpisodes = pageProps?.optJSONArray("allEpisodes")
-        if (allEpisodes != null && allEpisodes.length() > 0) {
-            for (i in 0 until allEpisodes.length()) {
-                val ep = allEpisodes.optJSONObject(i) ?: continue
+        val allEpisodesArr = pageProps?.optJSONArray("allEpisodes")
+        if (allEpisodesArr != null && allEpisodesArr.length() > 0) {
+            for (i in 0 until allEpisodesArr.length()) {
+                val ep = allEpisodesArr.optJSONObject(i) ?: continue
                 val slugPath = ep.optString("slug").ifBlank { ep.optString("url") }
                 if (slugPath.isBlank()) continue
 
@@ -229,7 +230,7 @@ class PuhuTVProvider : MainAPI() {
                 val numberMatch = Regex("""-(\d+)-bolum-izle""").find(slugPath)
                 val epNum = numberMatch?.groupValues?.get(1)?.toIntOrNull() ?: (i + 1)
 
-                episodes.add(newEpisode(fullUrl) {
+                episodeList.add(newEpisode(fullUrl) {
                     name = epName.ifBlank { "Bölüm ${i + 1}" }
                     episode = epNum
                     season = 1
@@ -238,11 +239,11 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        val episodeData = pageProps?.optJSONObject("episodeData")?.optJSONObject("data")
-        if (episodeData != null) {
-            val epsArr = episodeData.optJSONArray("episodes")
-            val seasonName = episodeData.optString("name")
-            val seasonSlug = episodeData.optString("slug")
+        val episodeDataObj = pageProps?.optJSONObject("episodeData")?.optJSONObject("data")
+        if (episodeDataObj != null) {
+            val epsArr = episodeDataObj.optJSONArray("episodes")
+            val seasonName = episodeDataObj.optString("name")
+            val seasonSlug = episodeDataObj.optString("slug")
 
             val seasonNum = Regex("""(\d+)\.\s*Sezon""").find(seasonName)
                 ?.groupValues?.get(1)?.toIntOrNull()
@@ -267,7 +268,7 @@ class PuhuTVProvider : MainAPI() {
 
                     val epImage = ep.optString("image").takeIf { it.isNotBlank() } ?: poster
 
-                    episodes.add(newEpisode(fullUrl) {
+                    episodeList.add(newEpisode(fullUrl) {
                         name = ep.optString("name").ifBlank { "Bölüm $epNum" }
                         episode = epNum
                         season = seasonNum
@@ -278,18 +279,18 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        if (episodes.isEmpty()) {
-            val ldEpisodes = extractEpisodesFromLdJson(document)
-            episodes.addAll(ldEpisodes)
+        if (episodeList.isEmpty()) {
+            val ldEps = extractEpisodesFromLdJson(document)
+            episodeList.addAll(ldEps)
         }
 
-        if (episodes.isEmpty()) {
+        if (episodeList.isEmpty()) {
             val oldEps = extractEpisodesFromNextData(titleData)
-            episodes.addAll(oldEps)
+            episodeList.addAll(oldEps)
         }
 
-        if (episodes.isNotEmpty()) {
-            val sorted = episodes
+        if (episodeList.isNotEmpty()) {
+            val sorted = episodeList
                 .distinctBy { it.data }
                 .sortedWith(compareBy({ it.season ?: 1 }, { it.episode ?: 0 }))
 
@@ -299,10 +300,10 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        val assets = titleData.optJSONArray("assets")
+        val assetsArr = titleData.optJSONArray("assets")
             ?: meta?.optJSONArray("assets")
-        if (assets != null && assets.length() > 0) {
-            val firstAsset = assets.optJSONObject(0)
+        if (assetsArr != null && assetsArr.length() > 0) {
+            val firstAsset = assetsArr.optJSONObject(0)
             val videoSlug = firstAsset?.optString("slug")?.removeSuffix("-izle").orEmpty()
             if (videoSlug.isNotBlank()) {
                 val watchUrl = "$mainUrl/$videoSlug-izle"
@@ -317,7 +318,7 @@ class PuhuTVProvider : MainAPI() {
     }
 
     private fun extractEpisodesFromLdJson(document: org.jsoup.nodes.Document): List<Episode> {
-        val episodes = mutableListOf<Episode>()
+        val result = mutableListOf<Episode>()
         try {
             val scripts = document.select("script[type=application/ld+json]")
             for (script in scripts) {
@@ -337,17 +338,17 @@ class PuhuTVProvider : MainAPI() {
                     val numMatch = Regex("""-(\d+)-bolum-izle""").find(epUrl)
                     val epNum = numMatch?.groupValues?.get(1)?.toIntOrNull() ?: (i + 1)
 
-                    episodes.add(newEpisode(epUrl) {
+                    result.add(newEpisode(epUrl) {
                         name = "$epNum. Bölüm"
                         episode = epNum
                         season = 1
                     })
                 }
-                if (episodes.isNotEmpty()) break
+                if (result.isNotEmpty()) break
             }
         } catch (_: Exception) {
         }
-        return episodes
+        return result
     }
 
     private fun findTitleData(root: JSONObject?): JSONObject? {
@@ -399,12 +400,12 @@ class PuhuTVProvider : MainAPI() {
     }
 
     private fun extractEpisodesFromNextData(titleData: JSONObject): List<Episode> {
-        val episodes = mutableListOf<Episode>()
+        val result = mutableListOf<Episode>()
 
         titleData.optJSONArray("episodes")?.let { arr ->
             for (i in 0 until arr.length()) {
                 val ep = arr.optJSONObject(i) ?: continue
-                parseEpisode(ep, 1)?.let { episodes.add(it) }
+                parseEpisode(ep, 1)?.let { result.add(it) }
             }
         }
 
@@ -417,7 +418,7 @@ class PuhuTVProvider : MainAPI() {
                     season.optJSONArray(field)?.let { arr ->
                         for (i in 0 until arr.length()) {
                             val ep = arr.optJSONObject(i) ?: continue
-                            parseEpisode(ep, seasonNumber)?.let { episodes.add(it) }
+                            parseEpisode(ep, seasonNumber)?.let { result.add(it) }
                         }
                     }
                 }
@@ -432,7 +433,7 @@ class PuhuTVProvider : MainAPI() {
                     season.optJSONArray(field)?.let { arr ->
                         for (i in 0 until arr.length()) {
                             val ep = arr.optJSONObject(i) ?: continue
-                            parseEpisode(ep, seasonNumber)?.let { episodes.add(it) }
+                            parseEpisode(ep, seasonNumber)?.let { result.add(it) }
                         }
                     }
                 }
@@ -445,19 +446,19 @@ class PuhuTVProvider : MainAPI() {
                 val items = container.optJSONArray("items") ?: continue
                 for (i in 0 until items.length()) {
                     val item = items.optJSONObject(i) ?: continue
-                    parseEpisode(item, 1)?.let { episodes.add(it) }
+                    parseEpisode(item, 1)?.let { result.add(it) }
 
                     item.optJSONArray("assets")?.let { assets ->
                         for (a in 0 until assets.length()) {
                             val asset = assets.optJSONObject(a) ?: continue
-                            parseEpisode(asset, 1)?.let { episodes.add(it) }
+                            parseEpisode(asset, 1)?.let { result.add(it) }
                         }
                     }
                 }
             }
         }
 
-        return episodes.distinctBy { it.data }
+        return result.distinctBy { it.data }
     }
 
     private fun parseEpisode(ep: JSONObject, defaultSeason: Int): Episode? {
