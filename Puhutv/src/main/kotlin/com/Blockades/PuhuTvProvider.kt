@@ -205,7 +205,7 @@ class PuhuTVProvider : MainAPI() {
             ?.optJSONObject("props")
             ?.optJSONObject("pageProps")
 
-        // ✅ YENİ: pageProps.details.data → title objesi
+        // ✅ pageProps.details.data → title objesi
         val titleData: JSONObject? = pageProps
             ?.optJSONObject("details")
             ?.optJSONObject("data")
@@ -235,7 +235,7 @@ class PuhuTVProvider : MainAPI() {
         // ============================================================
         val episodes = mutableListOf<Episode>()
 
-        // ---- KAYNAK 1: pageProps.allEpisodes (tüm bölümler, sezon bilgisi YOK) ----
+        // ---- KAYNAK 1: pageProps.allEpisodes (tüm bölümler) ----
         val allEpisodes = pageProps?.optJSONArray("allEpisodes")
         if (allEpisodes != null && allEpisodes.length() > 0) {
             println("PuhuTV load: allEpisodes bulundu → ${allEpisodes.length()} bölüm")
@@ -397,7 +397,7 @@ class PuhuTVProvider : MainAPI() {
 
         val pageProps = root.optJSONObject("props")?.optJSONObject("pageProps") ?: return null
 
-        // ✅ YENİ: pageProps.details.data
+        // ✅ pageProps.details.data
         pageProps.optJSONObject("details")?.optJSONObject("data")?.let { return it }
 
         // Eski yollar (fallback)
