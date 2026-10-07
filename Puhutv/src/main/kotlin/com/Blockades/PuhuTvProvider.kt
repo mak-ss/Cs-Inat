@@ -32,7 +32,6 @@ class PuhuTVProvider : MainAPI() {
         }
     }
 
-    // ============ ARAMA ============
     override suspend fun search(query: String): List<SearchResponse> {
         val slug: String = query.slug()
         if (slug.isBlank()) return emptyList()
@@ -55,7 +54,6 @@ class PuhuTVProvider : MainAPI() {
         }
     }
 
-    // ============ ANA SAYFA ============
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val path: String = request.data.ifBlank { "/" }
         val url = if (page > 1) "$mainUrl$path?sayfa=$page" else "$mainUrl$path"
@@ -70,21 +68,16 @@ class PuhuTVProvider : MainAPI() {
         }
 
         val nextDataPosters: Map<String, String> = extractNextDataPosters(document)
-        println("PuhuTV __NEXT_DATA__ poster haritası boyutu: ${nextDataPosters.size}")
 
         val elements = document.select(
             "a[href*=-detay], a[href*=-izle], " +
             "a[href^=list/], a[href*=/list/]"
         )
 
-        println("PuhuTV getMainPage bulunan element sayısı: ${elements.size}")
-
         val results: List<SearchResponse> = elements
             .mapNotNull { element -> element.toResponse(nextDataPosters) }
             .distinctBy { it.url }
             .take(40)
-
-        println("PuhuTV getMainPage sonuç sayısı: ${results.size}")
 
         val hasNext = results.isNotEmpty() && document.selectFirst("a[href*='sayfa=${page + 1}']") != null
         return newHomePageResponse(request.name, results, hasNext = hasNext)
@@ -128,7 +121,6 @@ class PuhuTVProvider : MainAPI() {
         return map
     }
 
-    // ============ İÇERİK YÜKLE ============
     override suspend fun load(url: String): LoadResponse? {
         val requestedPath: String = url.substringAfter(mainUrl).substringBefore("?").trim('/')
         if (requestedPath.isBlank()) return null
@@ -146,7 +138,6 @@ class PuhuTVProvider : MainAPI() {
 
         if (cleanSlug.isBlank()) return null
 
-        // ⬇️ Tek bölüm linki → Movie olarak dön
         val isEpisodeLink = isWatch && (
             cleanSlug.contains(Regex("""-\d+-bolum$""")) ||
             cleanSlug.endsWith("-pilot-bolum") ||
@@ -179,9 +170,6 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // ============================================================
-        // DETAY SAYFASI
-        // ============================================================
         println("PuhuTV load: Detay yükleniyor → $requestedPath")
 
         val document = try {
@@ -205,7 +193,6 @@ class PuhuTVProvider : MainAPI() {
             ?.optJSONObject("props")
             ?.optJSONObject("pageProps")
 
-        // ✅ pageProps.details.data → title objesi
         val titleData: JSONObject? = pageProps
             ?.optJSONObject("details")
             ?.optJSONObject("data")
@@ -235,7 +222,7 @@ class PuhuTVProvider : MainAPI() {
         // ============================================================
         val episodes = mutableListOf<Episode>()
 
-        // ---- KAYNAK 1: pageProps.allEpisodes (tüm bölümler) ----
+        // KAYNAK 1: pageProps.allEpisodes
         val allEpisodes = pageProps?.optJSONArray("allEpisodes")
         if (allEpisodes != null && allEpisodes.length() > 0) {
             println("PuhuTV load: allEpisodes bulundu → ${allEpisodes.length()} bölüm")
@@ -266,7 +253,7 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // ---- KAYNAK 2: pageProps.episodeData.data.episodes (son sezon bölümleri) ----
+        // KAYNAK 2: pageProps.episodeData.data.episodes
         val episodeData = pageProps?.optJSONObject("episodeData")?.optJSONObject("data")
         if (episodeData != null) {
             val epsArr = episodeData.optJSONArray("episodes")
@@ -308,7 +295,7 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // ---- KAYNAK 3: HTML → application/ld+json ItemList (fallback) ----
+        // KAYNAK 3: HTML → ld+json ItemList
         if (episodes.isEmpty()) {
             println("PuhuTV load: __NEXT_DATA__'da bölüm yok, ld+json deneniyor")
             val ldEpisodes = extractEpisodesFromLdJson(document)
@@ -316,7 +303,7 @@ class PuhuTVProvider : MainAPI() {
             episodes.addAll(ldEpisodes)
         }
 
-        // ---- KAYNAK 4: Eski __NEXT_DATA__ fallback ----
+        // KAYNAK 4: Eski __NEXT_DATA__ fallback
         if (episodes.isEmpty()) {
             println("PuhuTV load: hâlâ bölüm yok, eski extractEpisodesFromNextData deneniyor")
             val oldEps = extractEpisodesFromNextData(titleData)
@@ -336,7 +323,7 @@ class PuhuTVProvider : MainAPI() {
             }
         }
 
-        // ---- Film kontrolü ----
+        // Film kontrolü
         val assets = titleData.optJSONArray("assets")
             ?: meta?.optJSONArray("assets")
         if (assets != null && assets.length() > 0) {
@@ -355,7 +342,6 @@ class PuhuTVProvider : MainAPI() {
         return null
     }
 
-    // ⬇️ HTML'deki ld+json ItemList'ten bölümleri çıkar
     private fun extractEpisodesFromLdJson(document: org.jsoup.nodes.Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
         try {
@@ -391,16 +377,13 @@ class PuhuTVProvider : MainAPI() {
         return episodes
     }
 
-    // ⬇️ __NEXT_DATA__ içinden title objesini bul (fallback)
     private fun findTitleData(root: JSONObject?): JSONObject? {
         if (root == null) return null
 
         val pageProps = root.optJSONObject("props")?.optJSONObject("pageProps") ?: return null
 
-        // ✅ pageProps.details.data
         pageProps.optJSONObject("details")?.optJSONObject("data")?.let { return it }
 
-        // Eski yollar (fallback)
         pageProps.optJSONObject("title")?.let { return it }
         pageProps.optJSONObject("data")?.let { data ->
             data.optJSONObject("title")?.let { return it }
@@ -442,7 +425,6 @@ class PuhuTVProvider : MainAPI() {
         return null
     }
 
-    // ⬇️ Eski __NEXT_DATA__ bölüm çıkarma (fallback)
     private fun extractEpisodesFromNextData(titleData: JSONObject): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
@@ -546,7 +528,6 @@ class PuhuTVProvider : MainAPI() {
         }
     }
 
-    // ============ LİNKLERİ YÜKLE ============
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -590,7 +571,6 @@ class PuhuTVProvider : MainAPI() {
         return true
     }
 
-    // ============ HTML ELEMENT → SearchResponse ============
     private fun Element.toResponse(nextDataPosters: Map<String, String>): SearchResponse? {
         val rawHref: String = attr("href")
         val href: String = fixUrl(rawHref) ?: return null
@@ -721,8 +701,6 @@ class PuhuTVProvider : MainAPI() {
         return fixUrl(match.groupValues[1])
     }
 }
-
-// ============ YARDIMCI FONKSİYONLAR ============
 
 private fun JSONObject.image(): String? {
     for (key in listOf(
