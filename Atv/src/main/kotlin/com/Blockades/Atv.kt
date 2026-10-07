@@ -39,7 +39,7 @@ class Atv : MainAPI() {
         "teaser", "trailer", "ozet", "özet", "promo", "kamera-arkasi"
     )
 
-    // ★ Birden fazla olası kart seçicisi (fallback zinciri)
+    // Kart seçici fallback zinciri
     private val cardSelectors = listOf(
         "div.diziler-list div.card",
         "div.series-list div.card",
@@ -57,7 +57,7 @@ class Atv : MainAPI() {
         "figure a[href]"
     )
 
-    // ★ ÜÇ ANA KATEGORİ
+    // ÜÇ ANA KATEGORİ
     override val mainPage = mainPageOf(
         "${mainUrl}/diziler"      to "Diziler",
         "${mainUrl}/eski-diziler" to "Eski Diziler",
@@ -70,11 +70,10 @@ class Atv : MainAPI() {
         try {
             val listDoc = app.get(request.data).document
 
-            // ★ Fallback zinciriyle kart seçici dene
             var cards: List<Element> = emptyList()
             for (selector in cardSelectors) {
                 val found = listDoc.select(selector)
-                if (found.size >= 3) { // en az 3 kart varsa geçerli say
+                if (found.size >= 3) {
                     cards = found
                     Log.d("ATV", "Kart seçici tuttu: $selector (${found.size} kart)")
                     break
@@ -99,13 +98,13 @@ class Atv : MainAPI() {
             Log.e("ATV", "Liste sayfası hatası: ${e.message}")
         }
 
-        // Menüden de takviye yap (Diziler ve Programlar için)
+        // Menüden takviye
         try {
             val mainDoc = app.get(mainUrl).document
             val menuSelector = when (request.name) {
                 "Diziler"      -> "div.series-drop .sub-menu-list li a[href]"
                 "Programlar"   -> "div.program-drop-menu .sub-menu-list li a[href]"
-                "Eski Diziler" -> "div.series-drop .sub-menu-list li a[href]" // fallback
+                "Eski Diziler" -> "div.series-drop .sub-menu-list li a[href]"
                 else -> ""
             }
             if (menuSelector.isNotEmpty()) {
@@ -130,9 +129,6 @@ class Atv : MainAPI() {
         return trailerKeywords.any { lower.contains(it) }
     }
 
-    /**
-     * Kart container'ından sonuç çıkarır
-     */
     private fun Element.toCardResult(): SearchResponse? {
         val link = this.selectFirst("a[href]") ?: return null
         val hrefRaw = link.attr("href")
@@ -204,7 +200,6 @@ class Atv : MainAPI() {
         if (path.contains("/")) return null
         if (systemPages.contains(path)) return null
 
-        // Resim şart (kart olduğunu doğrular)
         val img = this.selectFirst("img") ?: return null
 
         val title = this.selectFirst("figcaption p, figcaption .title, h2, h3, .title, .caption")
@@ -281,7 +276,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // Menüden de ekle
         try {
             val mainDoc = app.get(mainUrl).document
             mainDoc.select("div.series-drop .sub-menu-list li a[href], div.program-drop-menu .sub-menu-list li a[href]")
@@ -318,6 +312,7 @@ class Atv : MainAPI() {
 
         val document = app.get(url).document
 
+        // Tek bölüm sayfası
         if (url.contains("/izle")) {
             if (isTrailer(url)) return null
 
@@ -342,11 +337,15 @@ class Atv : MainAPI() {
             }
         }
 
+        // Dizi detay sayfası
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
         val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
-        val episodes = getEpisodes(document, url)
+        // ★ TÜM BÖLÜMLERİ ÇEK
+        val episodes = getAllEpisodes(document, url)
+
+        Log.d("ATV", "load: $title -> ${episodes.size} bölüm")
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
@@ -354,103 +353,144 @@ class Atv : MainAPI() {
         }
     }
 
-    private suspend fun getEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
+    /**
+     * ★ Tüm bölümleri toplar. Önce /bolumler sayfasını dener,
+     * sonra AJAX endpoint'lerini, en sonunda detay sayfasındaki statik linkleri.
+     */
+    private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
-        try {
-            val episodeContainer = document.selectFirst(
-                "div.bolumler-list, div.episodes-list, div[class*=bolum], div[class*=episode]"
-            )
 
-            val episodeLinks = (episodeContainer ?: document).select("a[href*='/izle']")
-                .filter { element ->
-                    val href = element.attr("href")
-                    if (isTrailer(href)) return@filter false
-                    val text = element.text()
-                    if (isTrailer(text)) return@filter false
-                    href.contains("-bolum") && href.endsWith("/izle")
-                }
+        // 1. ADIM: "TÜMÜ" / "/bolumler" linkini bul
+        val cleanBaseUrl = baseUrl.substringBefore("?").substringBefore("#").trimEnd('/')
 
-            if (episodeLinks.isNotEmpty()) {
-                Log.d("ATV", "Statik ${episodeLinks.size} bölüm linki bulundu")
-                episodeLinks.distinctBy { it.attr("href") }.forEachIndexed { index, element ->
-                    val href = fixUrlNull(element.attr("href")) ?: return@forEachIndexed
-                    if (isTrailer(href)) return@forEachIndexed
+        val allEpisodesUrls = mutableListOf<String>()
 
-                    val epName = element.selectFirst(".style-01, .style-02, h3, .title, .date")
-                        ?.text()?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: element.text().trim().takeIf { it.isNotEmpty() }
-                        ?: "Bölüm ${index + 1}"
+        // Detay sayfasındaki "TÜMÜ" veya "/bolumler" linki
+        document.select("a[href*='/bolumler']").forEach { el ->
+            fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
+        }
+        document.select("a:contains(TÜMÜ), a:contains(Tümü), a:contains(Tüm Bölümler)").forEach { el ->
+            fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
+        }
 
-                    if (isTrailer(epName)) return@forEachIndexed
+        // Doğrudan /bolumler varsayımı
+        allEpisodesUrls.add("$cleanBaseUrl/bolumler")
 
-                    val epNum = Regex("/(\\d+)-bolum").find(href)?.groupValues?.get(1)?.toIntOrNull()
-                        ?: (index + 1)
+        // AJAX endpoint'leri
+        val slug = cleanBaseUrl.substringAfter(mainUrl).trim('/').substringBefore("/")
+        allEpisodesUrls.add("$mainUrl/ajax/series/$slug/episodes")
+        allEpisodesUrls.add("$mainUrl/ajax/$slug/episodes")
 
-                    newEpisode(href) {
-                        this.name = epName
-                        this.episode = epNum
-                    }?.let { allEpisodes.add(it) }
-                }
-
-                return allEpisodes.sortedBy { it.episode }
-            }
-
-            val slug = baseUrl.substringAfter(mainUrl).trim('/').substringBefore("/")
-            val ajaxUrls = listOf(
-                "$mainUrl/ajax/series/$slug/episodes",
-                "$mainUrl/ajax/$slug/episodes"
-            )
-
-            for (ajaxUrl in ajaxUrls) {
-                try {
-                    val response = app.get(
-                        ajaxUrl,
-                        headers = mapOf(
-                            "X-Requested-With" to "XMLHttpRequest",
-                            "Referer" to baseUrl
-                        )
+        // 2. ADIM: Her URL'yi dene
+        for (url in allEpisodesUrls.distinct()) {
+            try {
+                Log.d("ATV", "Bölüm listesi deneniyor: $url")
+                val doc = app.get(
+                    url,
+                    headers = mapOf(
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Referer" to baseUrl
                     )
-                    val doc = response.document
-                    val links = doc.select("a[href*='/izle']")
-                        .filter { element ->
-                            val href = element.attr("href")
-                            if (isTrailer(href)) return@filter false
-                            val text = element.text()
-                            if (isTrailer(text)) return@filter false
-                            href.contains("-bolum")
-                        }
+                ).document
 
-                    if (links.isNotEmpty()) {
-                        links.distinctBy { it.attr("href") }.forEachIndexed { index, element ->
-                            val href = fixUrlNull(element.attr("href")) ?: return@forEachIndexed
-                            if (isTrailer(href)) return@forEachIndexed
+                val found = extractEpisodesFromDoc(doc)
+                if (found.isNotEmpty()) {
+                    Log.d("ATV", "✓ $url -> ${found.size} bölüm bulundu")
+                    allEpisodes.addAll(found)
+                    // En çok bölüm bulduğumuz listeden devam etme, hepsini topla
+                } else {
+                    Log.d("ATV", "✗ $url -> bölüm yok")
+                }
+            } catch (e: Exception) {
+                Log.d("ATV", "Deneme başarısız ($url): ${e.message}")
+            }
+        }
 
-                            val epName = element.selectFirst(".style-01, .style-02, h3, .title")
-                                ?.text()?.trim()?.takeIf { it.isNotEmpty() }
-                                ?: "Bölüm ${index + 1}"
+        // 3. ADIM: Detay sayfasının kendisinde de statik bölüm linkleri olabilir
+        val staticFromDetail = extractEpisodesFromDoc(document)
+        allEpisodes.addAll(staticFromDetail)
 
-                            if (isTrailer(epName)) return@forEachIndexed
+        // 4. ADIM: Sezon (Sezon) tab'larını da tara
+        // Bazı dizilerde /bolumler sayfasında sezon linkleri var
+        try {
+            val sezonLinks = document.select("a[href*='sezon'], a[href*='sezonlar'], a[href*='season']")
+                .mapNotNull { fixUrlNull(it.attr("href")) }
+                .distinct()
 
-                            val epNum = Regex("/(\\d+)-bolum").find(href)?.groupValues?.get(1)?.toIntOrNull()
-                                ?: (index + 1)
-
-                            newEpisode(href) {
-                                this.name = epName
-                                this.episode = epNum
-                            }?.let { allEpisodes.add(it) }
-                        }
-                        if (allEpisodes.isNotEmpty()) return allEpisodes.sortedBy { it.episode }
+            for (sezonUrl in sezonLinks) {
+                try {
+                    val doc = app.get(sezonUrl).document
+                    val found = extractEpisodesFromDoc(doc)
+                    if (found.isNotEmpty()) {
+                        Log.d("ATV", "Sezon sayfası: $sezonUrl -> ${found.size} bölüm")
+                        allEpisodes.addAll(found)
                     }
                 } catch (e: Exception) {
-                    Log.d("ATV", "AJAX denemesi başarısız ($ajaxUrl): ${e.message}")
+                    Log.d("ATV", "Sezon hatası ($sezonUrl): ${e.message}")
                 }
             }
-
-            return emptyList()
         } catch (e: Exception) {
-            Log.e("ATV", "Bölüm çekme hatası: ${e.message}")
-            return emptyList()
+            Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
+
+        // 5. ADIM: Tekrarları temizle ve sırala
+        val uniqueEpisodes = allEpisodes
+            .distinctBy { it.data }
+            .sortedBy { it.episode ?: 0 }
+
+        Log.d("ATV", "Toplam ${uniqueEpisodes.size} benzersiz bölüm")
+
+        // Bölüm numarası eksik olanları doldur
+        return uniqueEpisodes.mapIndexed { index, ep ->
+            if (ep.episode == null || ep.episode == 0) {
+                ep.episode = index + 1
+            }
+            ep
+        }
+    }
+
+    /**
+     * Bir document içindeki tüm bölüm linklerini çıkarır
+     */
+    private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
+        val episodes = mutableListOf<Episode>()
+
+        val episodeLinks = document.select("a[href*='/izle']")
+            .filter { element ->
+                val href = element.attr("href")
+
+                // Fragman filtresi
+                if (isTrailer(href)) return@filter false
+
+                val text = element.text()
+                if (isTrailer(text)) return@filter false
+
+                // Bölüm linki olmalı
+                href.contains("-bolum") && href.endsWith("/izle")
+            }
+
+        episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
+            val href = fixUrlNull(element.attr("href")) ?: return@forEach
+            if (isTrailer(href)) return@forEach
+
+            val epName = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
+                ?.text()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: element.text().trim().takeIf { it.isNotEmpty() }
+                ?: "Bölüm"
+
+            if (isTrailer(epName)) return@forEach
+
+            // Bölüm numarasını URL'den çıkar
+            val epNum = Regex("/(\\d+)-bolum").find(href)?.groupValues?.get(1)?.toIntOrNull()
+                ?: Regex("(\\d+)-bolum").find(href)?.groupValues?.get(1)?.toIntOrNull()
+
+            newEpisode(href) {
+                this.name = epName
+                this.episode = epNum
+            }?.let { episodes.add(it) }
+        }
+
+        return episodes
     }
 
     override suspend fun loadLinks(
