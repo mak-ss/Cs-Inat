@@ -33,6 +33,12 @@ class Atv : MainAPI() {
         "hikaye-ve-kunye", "d-shorts", "bolumler"
     )
 
+    // Fragman/önizleme anahtar kelimeleri
+    private val trailerKeywords = listOf(
+        "fragman", "tanitim", "tanıtım", "onizleme", "önizleme",
+        "teaser", "trailer", "ozet", "özet", "promo", "kamera-arkasi"
+    )
+
     override val mainPage = mainPageOf(
         "${mainUrl}/diziler"    to "Diziler",
         "${mainUrl}/programlar" to "Programlar"
@@ -76,9 +82,20 @@ class Atv : MainAPI() {
         )
     }
 
+    /**
+     * Verilen metin veya URL'de fragman anahtar kelimesi var mı kontrol eder.
+     */
+    private fun isTrailer(text: String): Boolean {
+        val lower = text.lowercase(Locale.getDefault())
+        return trailerKeywords.any { lower.contains(it) }
+    }
+
     private fun Element.toMenuItemResult(): SearchResponse? {
         val hrefRaw = this.attr("href")
         if (hrefRaw.isBlank()) return null
+
+        // Fragman linklerini atla
+        if (isTrailer(hrefRaw)) return null
 
         val fullUrl = fixUrlNull(hrefRaw) ?: return null
         if (!fullUrl.contains("atv.com.tr")) return null
@@ -91,6 +108,9 @@ class Atv : MainAPI() {
         if (systemPages.contains(path)) return null
 
         val title = this.text().trim().takeIf { it.isNotEmpty() } ?: return null
+
+        // Başlıkta fragman geçiyorsa atla
+        if (isTrailer(title)) return null
 
         // Menüde poster genelde kardeş <img>'de
         val poster = this.parent()?.selectFirst("img")?.let { img ->
@@ -105,6 +125,9 @@ class Atv : MainAPI() {
     private fun Element.toListPageResult(): SearchResponse? {
         val hrefRaw = this.attr("href")
         if (hrefRaw.isBlank()) return null
+
+        // Fragman linklerini atla
+        if (isTrailer(hrefRaw)) return null
 
         val fullUrl = fixUrlNull(hrefRaw) ?: return null
         if (!fullUrl.contains("atv.com.tr")) return null
@@ -125,6 +148,9 @@ class Atv : MainAPI() {
             ?: img.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
             ?: return null
+
+        // Başlıkta fragman geçiyorsa atla
+        if (isTrailer(title)) return null
 
         // Poster
         val poster = fixUrlNull(
@@ -214,13 +240,32 @@ class Atv : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
+        // ★ Fragman sayfası ise hiç işleme
+        if (isTrailer(url)) {
+            Log.d("ATV", "Fragman sayfası atlandı: $url")
+            return null
+        }
+
         val document = app.get(url).document
 
         // ★ Bölüm sayfası mı? (/izle ile bitiyorsa tek bölüm olarak işle)
         if (url.contains("/izle")) {
+            // Fragman bölümü ise atla
+            if (isTrailer(url)) {
+                Log.d("ATV", "Fragman izleme sayfası atlandı: $url")
+                return null
+            }
+
             val title = document.selectFirst("h1.video-title")?.text()?.trim()
                 ?: document.selectFirst("h1")?.text()?.trim()
                 ?: return null
+
+            // Başlıkta fragman geçiyorsa atla
+            if (isTrailer(title)) {
+                Log.d("ATV", "Fragman başlığı atlandı: $title")
+                return null
+            }
+
             val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
             val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
@@ -253,10 +298,25 @@ class Atv : MainAPI() {
         val allEpisodes = mutableListOf<Episode>()
         try {
             // ★ Bölüm linklerini topla
-            // Format: /mercan-kosk/1-bolum/izle veya /mercan-kosk/1-bolum-1-fragman/izle
+            // Format: /mercan-kosk/1-bolum/izle
+            // Fragman hariç: /mercan-kosk/1-bolum-1-fragman/izle gibi linkler atlanır
             val episodeLinks = document.select("a[href*='/izle']")
                 .filter { element ->
                     val href = element.attr("href")
+
+                    // Fragman/tanıtım/önizleme linklerini atla
+                    if (isTrailer(href)) {
+                        Log.d("ATV", "Fragman linki atlandı: $href")
+                        return@filter false
+                    }
+
+                    // Fragman/tanıtım/önizleme metinlerini de kontrol et
+                    val text = element.text()
+                    if (isTrailer(text)) {
+                        Log.d("ATV", "Fragman metni atlandı: $text")
+                        return@filter false
+                    }
+
                     // Fragman değil, bölüm olmalı: "-bolum/" veya "-bolum-"
                     href.contains("-bolum") && href.endsWith("/izle")
                 }
@@ -271,6 +331,9 @@ class Atv : MainAPI() {
                         ?.text()?.trim()?.takeIf { it.isNotEmpty() }
                         ?: element.text().trim().takeIf { it.isNotEmpty() }
                         ?: "Bölüm ${index + 1}"
+
+                    // Bölüm adında fragman geçiyorsa atla
+                    if (isTrailer(epName)) return@forEachIndexed
 
                     // Bölüm numarasını URL'den çıkarmaya çalış
                     val epNum = Regex("/(\\d+)-bolum").find(href)?.groupValues?.get(1)?.toIntOrNull()
@@ -304,14 +367,33 @@ class Atv : MainAPI() {
                     )
                     val doc = response.document
                     val links = doc.select("a[href*='/izle']")
-                        .filter { it.attr("href").contains("-bolum") }
+                        .filter { element ->
+                            val href = element.attr("href")
+
+                            // Fragman linklerini atla
+                            if (isTrailer(href)) return@filter false
+
+                            // Fragman metinlerini atla
+                            val text = element.text()
+                            if (isTrailer(text)) return@filter false
+
+                            href.contains("-bolum")
+                        }
+
                     if (links.isNotEmpty()) {
                         Log.d("ATV", "AJAX'den ${links.size} bölüm bulundu: $ajaxUrl")
                         links.distinctBy { it.attr("href") }.forEachIndexed { index, element ->
                             val href = fixUrlNull(element.attr("href")) ?: return@forEachIndexed
+
+                            // Fragman kontrolü (tekrar güvenlik için)
+                            if (isTrailer(href)) return@forEachIndexed
+
                             val epName = element.selectFirst(".style-01, .style-02, h3, .title")
                                 ?.text()?.trim()?.takeIf { it.isNotEmpty() }
                                 ?: "Bölüm ${index + 1}"
+
+                            if (isTrailer(epName)) return@forEachIndexed
+
                             val epNum = Regex("/(\\d+)-bolum").find(href)?.groupValues?.get(1)?.toIntOrNull()
                                 ?: (index + 1)
 
@@ -341,21 +423,52 @@ class Atv : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("ATV", "Video data: $data")
+
+        // ★ Fragman linklerini hiç işleme
+        if (isTrailer(data)) {
+            Log.d("ATV", "Fragman linki atlandı: $data")
+            return false
+        }
+
         try {
             if (data.isBlank()) return false
 
             val document = app.get(data).document
             var found = false
 
-            // ★ Öncelik 1: JSON-LD VideoObject > contentUrl
+            // Sayfa başlığında fragman var mı kontrol et
+            val pageTitle = document.selectFirst("h1")?.text()?.trim() ?: ""
+            val isTrailerPage = isTrailer(pageTitle) || isTrailer(data)
+            if (isTrailerPage) {
+                Log.d("ATV", "Fragman sayfası algılandı, video çekilmedi: $pageTitle")
+                return false
+            }
+
+            // ★ Öncelik 1: JSON-LD VideoObject > contentUrl (fragman hariç)
             val ldJsonScripts = document.select("script[type=application/ld+json]")
             for (script in ldJsonScripts) {
                 val content = script.data()
-                if (!content.contains("VideoObject") && !content.contains("contentUrl")) continue
+                if (!content.contains("VideoObject")) continue
+
+                // Fragman/önizleme içeren script'leri atla
+                val lowerContent = content.lowercase(Locale.getDefault())
+                if (trailerKeywords.any { lowerContent.contains(it) }) {
+                    Log.d("ATV", "Fragman JSON-LD atlandı")
+                    continue
+                }
+
                 try {
                     val json = JSONObject(content)
                     if (json.optString("@type").contains("VideoObject")) {
                         val contentUrl = json.optString("contentUrl", "")
+                        val videoName = json.optString("name", "").lowercase(Locale.getDefault())
+
+                        // Video adında da fragman kontrolü
+                        if (trailerKeywords.any { videoName.contains(it) }) {
+                            Log.d("ATV", "Fragman video atlandı: $videoName")
+                            continue
+                        }
+
                         if (contentUrl.isNotEmpty() && contentUrl.startsWith("http")) {
                             Log.d("ATV", "JSON-LD contentUrl bulundu: $contentUrl")
                             callback.invoke(
@@ -370,6 +483,7 @@ class Atv : MainAPI() {
                                 }
                             )
                             found = true
+                            break // İlk geçerli videoyu al
                         }
                     }
                 } catch (e: Exception) {
@@ -377,19 +491,42 @@ class Atv : MainAPI() {
                 }
             }
 
-            // ★ Öncelik 2: Regex ile contentUrl / m3u8 / mp4 ara
+            // ★ Öncelik 2: Sadece player/video script'lerinde regex ile ara
             if (!found) {
+                // Video player içeren script'leri seç
+                val playerScripts = document.select("script").filter { script ->
+                    val data = script.data().lowercase(Locale.getDefault())
+                    (data.contains("player") ||
+                     data.contains("video") ||
+                     data.contains("hls") ||
+                     data.contains("m3u8") ||
+                     data.contains("contenturl")) &&
+                    // Fragman içeren script'leri dışla
+                    !trailerKeywords.any { data.contains(it) }
+                }
+
                 val patterns = listOf(
                     Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+\\.m3u8[^\"]*)\""),
                     Regex("\"contentUrl\"\\s*:\\s*\"([^\"]+\\.mp4[^\"]*)\""),
+                    Regex("\"file\"\\s*:\\s*\"([^\"]+\\.m3u8[^\"]*)\""),
+                    Regex("\"source\"\\s*:\\s*\"([^\"]+\\.m3u8[^\"]*)\""),
                     Regex("(https?://[^\"'\\s]+\\.m3u8[^\"'\\s]*)"),
                     Regex("(https?://[^\"'\\s]+\\.mp4[^\"'\\s]*)")
                 )
-                for (script in document.select("script")) {
+
+                for (script in playerScripts) {
                     val content = script.data()
+
                     for (pattern in patterns) {
                         pattern.find(content)?.let { match ->
                             val videoUrl = match.groupValues[1].replace("\\/", "/")
+
+                            // URL'de fragman geçiyorsa atla
+                            if (isTrailer(videoUrl)) {
+                                Log.d("ATV", "Fragman URL atlandı: $videoUrl")
+                                return@let
+                            }
+
                             Log.d("ATV", "Regex ile bulundu: $videoUrl")
                             callback.invoke(
                                 newExtractorLink(
@@ -403,18 +540,26 @@ class Atv : MainAPI() {
                             )
                             found = true
                         }
+                        if (found) break
                     }
+                    if (found) break
                 }
             }
 
-            // ★ Öncelik 3: iframe embed
+            // ★ Öncelik 3: iframe embed (fragman değilse)
             if (!found) {
                 val iframe = document.selectFirst("iframe[src]")
                 if (iframe != null) {
                     val embedUrl = fixUrl(iframe.attr("src"))
-                    Log.d("ATV", "iframe bulundu: $embedUrl")
-                    if (loadExtractor(embedUrl, data, subtitleCallback, callback)) {
-                        found = true
+
+                    // iframe URL'sinde fragman geçiyorsa atla
+                    if (isTrailer(embedUrl)) {
+                        Log.d("ATV", "Fragman iframe atlandı: $embedUrl")
+                    } else {
+                        Log.d("ATV", "iframe bulundu: $embedUrl")
+                        if (loadExtractor(embedUrl, data, subtitleCallback, callback)) {
+                            found = true
+                        }
                     }
                 }
             }
