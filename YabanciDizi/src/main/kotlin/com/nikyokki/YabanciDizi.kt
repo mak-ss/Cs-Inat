@@ -325,21 +325,28 @@ class YabanciDizi : MainAPI() {
                             val subFrame = vdm.selectFirst("iframe")?.attr("src") ?: ""
                             Log.d("YBD", "VidMoly subFrame: '$subFrame'")
 
-                            if (subFrame.isNotEmpty()) {
-                                loadExtractor(subFrame, "$mainUrl/", subtitleCallback) { link ->
-                                    callback.invoke(
-                                        ExtractorLink(
-                                            source = "$dilAd - ${link.name}",
-                                            name = "$dilAd - ${link.name}",
-                                            url = link.url,
-                                            referer = link.referer,
-                                            quality = link.quality,
-                                            headers = link.headers,
-                                            extractorData = link.extractorData,
-                                            type = link.type
-                                        )
+                            if (subFrame.isEmpty()) continue
+
+                            var found = false
+                            loadExtractor(subFrame, "$mainUrl/", subtitleCallback) { link ->
+                                found = true
+                                callback.invoke(
+                                    ExtractorLink(
+                                        source = "$dilAd - ${link.name}",
+                                        name = "$dilAd - ${link.name}",
+                                        url = link.url,
+                                        referer = link.referer,
+                                        quality = link.quality,
+                                        headers = link.headers,
+                                        extractorData = link.extractorData,
+                                        type = link.type
                                     )
-                                }
+                                )
+                            }
+
+                            if (!found) {
+                                Log.d("YBD", "loadExtractor sonuç vermedi, manuel parse deneniyor")
+                                loadVidMolyManuel(subFrame, callback, dilAd, itemName)
                             }
                         } catch (e: Exception) {
                             Log.e("YBD", "VidMoly işleme hatası: ${e.message}")
@@ -387,6 +394,84 @@ class YabanciDizi : MainAPI() {
         }
 
         return true
+    }
+
+    /**
+     * VidMoly iframe'ini manuel olarak parse eder.
+     * Master M3U8'i indirip kaliteleri ayrı ayrı callback'e gönderir.
+     */
+    private suspend fun loadVidMolyManuel(
+        iframeUrl: String,
+        callback: (ExtractorLink) -> Unit,
+        dilAd: String,
+        itemName: String
+    ) {
+        Log.d("YBD", "loadVidMolyManuel iframeUrl -> $iframeUrl")
+
+        val headers = mapOf(
+            "user-agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+            "Referer" to "$mainUrl/"
+        )
+
+        val iframeHtml = try {
+            app.get(iframeUrl, headers = headers, interceptor = interceptor).text
+        } catch (e: Exception) {
+            Log.e("YBD", "VidMoly iframe indirme hatası: ${e.message}")
+            return
+        }
+
+        val m3u8Url = Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""")
+            .find(iframeHtml)?.groupValues?.get(1)
+            ?: Regex("""["'](https?://[^"']*\.m3u8[^"']*)["']""")
+                .find(iframeHtml)?.groupValues?.get(1)
+            ?: ""
+
+        Log.d("YBD", "VidMoly m3u8Url -> $m3u8Url")
+
+        if (m3u8Url.isEmpty()) {
+            Log.d("YBD", "VidMoly m3u8 bulunamadı")
+            return
+        }
+
+        val m3u8Body = try {
+            app.get(m3u8Url, headers = headers, interceptor = interceptor).text
+        } catch (e: Exception) {
+            Log.e("YBD", "M3U8 indirme hatası: ${e.message}")
+            return
+        }
+
+        // Ana M3U8'i her zaman gönder
+        callback.invoke(
+            newExtractorLink(
+                source = "$dilAd - VidMoly",
+                name = "$dilAd - VidMoly",
+                url = m3u8Url,
+                ExtractorLinkType.M3U8
+            ) {
+                this.referer = iframeUrl
+                this.headers = headers
+                this.quality = Qualities.Unknown.value
+            }
+        )
+
+        val streamList = extractStreamInfoWithRegex(m3u8Body, m3u8Url)
+        Log.d("YBD", "VidMoly bulunan kalite sayısı: ${streamList.size}")
+
+        for (sonUrl in streamList) {
+            Log.d("YBD", "VidMoly Kalite: ${sonUrl.resolution} -> ${sonUrl.link}")
+            callback.invoke(
+                newExtractorLink(
+                    source = "$dilAd - $itemName - ${sonUrl.resolution}",
+                    name = "$dilAd - $itemName - ${sonUrl.resolution}",
+                    url = sonUrl.link,
+                    ExtractorLinkType.M3U8
+                ) {
+                    this.referer = iframeUrl
+                    this.headers = headers
+                    this.quality = getQualityFromName(sonUrl.resolution)
+                }
+            )
+        }
     }
 
     private suspend fun loadMac(
@@ -468,11 +553,11 @@ class YabanciDizi : MainAPI() {
             return
         }
 
-        val streamList = extractStreamInfoWithRegex(m3u8Body)
-        Log.d("YBD", "Bulunan kalite sayısı: ${streamList.size}")
+        val streamList = extractStreamInfoWithRegex(m3u8Body, vidUrl)
+        Log.d("YBD", "Mac bulunan kalite sayısı: ${streamList.size}")
 
         for (sonUrl in streamList) {
-            Log.d("YBD", "Kalite: ${sonUrl.resolution} -> ${sonUrl.link}")
+            Log.d("YBD", "Mac Kalite: ${sonUrl.resolution} -> ${sonUrl.link}")
             callback.invoke(
                 newExtractorLink(
                     source = "$dilAd - $itemName - ${sonUrl.resolution}",
@@ -491,25 +576,70 @@ class YabanciDizi : MainAPI() {
         }
     }
 
-    private fun extractStreamInfoWithRegex(m3uString: String): List<StreamInfo> {
+    /**
+     * M3U8 içeriğinden kalite bilgilerini çıkarır.
+     * İki mod destekler:
+     *  1. Klasik HLS: #EXT-X-STREAM-INF + RESOLUTION / BANDWIDTH
+     *  2. VidMoly: `_,n,l,` gibi çoklu kalite URL pattern'i (baseUrl ile birlikte)
+     */
+    private fun extractStreamInfoWithRegex(m3uString: String, baseUrl: String = ""): List<StreamInfo> {
         val result = mutableListOf<StreamInfo>()
+
+        // Mod 1: Klasik HLS
         var currentResolution: String? = null
+        var currentBandwidth: String? = null
 
         for (rawLine in m3uString.lines()) {
             val line = rawLine.trim()
             when {
                 line.startsWith("#EXT-X-STREAM-INF") -> {
                     val resMatch = Regex("""RESOLUTION=([^\s,]+)""").find(line)
+                    val bwMatch = Regex("""BANDWIDTH=(\d+)""").find(line)
                     currentResolution = resMatch?.groupValues?.get(1)
+                    currentBandwidth = bwMatch?.groupValues?.get(1)
                 }
-                line.startsWith("http") && currentResolution != null -> {
-                    result.add(StreamInfo(currentResolution, line))
+                line.startsWith("http") && (currentResolution != null || currentBandwidth != null) -> {
+                    val res = currentResolution
+                        ?: bandwidthToResolution(currentBandwidth)
+                        ?: "auto"
+                    result.add(StreamInfo(res, line))
                     currentResolution = null
+                    currentBandwidth = null
+                }
+            }
+        }
+
+        // Mod 2: VidMoly `_,n,l,` pattern'i (baseUrl üzerinden türet)
+        if (result.isEmpty() && baseUrl.isNotEmpty()) {
+            val baseMatch = Regex("""([^/"]+)_(?:,n,l,|,n,|,l,|,)\.urlset/master\.m3u8""").find(baseUrl)
+            if (baseMatch != null) {
+                val base = baseMatch.groupValues[1]
+                val qualityMap = linkedMapOf(
+                    "n" to "640x360",
+                    "l" to "854x480",
+                    "m" to "1280x720",
+                    "h" to "1920x1080"
+                )
+                val dir = baseUrl.substringBeforeLast("/")
+                for ((suffix, resolution) in qualityMap) {
+                    val variantUrl = "$dir/${base}_$suffix.m3u8"
+                    result.add(StreamInfo(resolution, variantUrl))
                 }
             }
         }
 
         return result
+    }
+
+    private fun bandwidthToResolution(bandwidth: String?): String? {
+        val bw = bandwidth?.toLongOrNull() ?: return null
+        return when {
+            bw < 500_000 -> "426x240"
+            bw < 1_000_000 -> "640x360"
+            bw < 2_000_000 -> "854x480"
+            bw < 4_000_000 -> "1280x720"
+            else -> "1920x1080"
+        }
     }
 }
 
