@@ -152,14 +152,18 @@ class Atv : MainAPI() {
         return trailerKeywords.any { lower.contains(it) }
     }
 
-    // ★ TÜM POSTER KAYNAKLARINI DENE
-    // img[src], img[data-src], img[data-original], img[data-lazy-src], img[data-srcset], img[srcset],
-    // picture > source[srcset], div[style*=background-image]
+    /**
+     * ★ TÜM POSTER KAYNAKLARINI DENE
+     * Sırasıyla:
+     * 1. img[data-src, data-original, data-lazy-src, data-lazy, src, data-srcset, srcset]
+     * 2. picture > source[srcset, data-srcset]
+     * 3. div[style*=background-image]
+     * 4. Element üzerindeki data-poster, data-image, data-thumb, data-cover
+     */
     private fun Element.extractPoster(): String? {
         // 1. İlk img'i al
         val img = this.selectFirst("img")
         if (img != null) {
-            // Denenecek attribute sırası (öncelik sırasıyla)
             val attrs = listOf(
                 "data-src",
                 "data-original",
@@ -171,7 +175,7 @@ class Atv : MainAPI() {
             )
             for (attr in attrs) {
                 val value = img.attr(attr).trim()
-                if (value.isNotEmpty()) {
+                if (value.isNotEmpty() && !value.startsWith("data:")) {
                     // srcset formatı: "url1 1x, url2 2x" → ilk URL'yi al
                     val url = if (attr.contains("srcset")) {
                         value.substringBefore(",").trim().substringBefore(" ")
@@ -184,8 +188,8 @@ class Atv : MainAPI() {
             }
         }
 
-        // 2. picture > source[srcset]
-        val source = this.selectFirst("picture source[srcset], source[data-srcset]")
+        // 2. picture > source[srcset, data-srcset]
+        val source = this.selectFirst("picture source[srcset], picture source[data-srcset], source[srcset], source[data-srcset]")
         if (source != null) {
             val srcset = source.attr("srcset").ifEmpty { source.attr("data-srcset") }
             if (srcset.isNotBlank()) {
@@ -196,6 +200,7 @@ class Atv : MainAPI() {
 
         // 3. div[style*=background-image:url(...)]
         val styledDiv = this.selectFirst("[style*=background-image]")
+            ?: this.parent()?.selectFirst("[style*=background-image]")
         if (styledDiv != null) {
             val style = styledDiv.attr("style")
             val match = Regex("background-image\\s*:\\s*url\\(['\"]?([^'\")]+)['\"]?\\)", RegexOption.IGNORE_CASE)
@@ -205,8 +210,8 @@ class Atv : MainAPI() {
             }
         }
 
-        // 4. Link'in kendisinde data-poster, data-image vs. var mı?
-        val dataAttrs = listOf("data-poster", "data-image", "data-thumb", "data-cover")
+        // 4. Element üzerindeki data attribute'ları
+        val dataAttrs = listOf("data-poster", "data-image", "data-thumb", "data-cover", "data-background")
         for (attr in dataAttrs) {
             val value = this.attr(attr).trim()
             if (value.isNotEmpty()) {
@@ -214,7 +219,32 @@ class Atv : MainAPI() {
             }
         }
 
+        // 5. Parent üzerindeki data attribute'ları
+        val parent = this.parent()
+        if (parent != null) {
+            for (attr in dataAttrs) {
+                val value = parent.attr(attr).trim()
+                if (value.isNotEmpty()) {
+                    fixUrlNull(value)?.let { if (it.isNotBlank()) return it }
+                }
+            }
+        }
+
         return null
+    }
+
+    /**
+     * ★ PROGRAM SAYFALARI İÇİN ÖZEL: Poster bulunamazsa Google favicon servisini kullan
+     * Müge Anlı, Esra Erol, Mutfak Bahane gibi programların kart posterleri
+     * bazen HTML'de olmayabilir; bu durumda Google favicon fallback kullanılır.
+     */
+    private fun getProgramPosterFallback(path: String): String? {
+        return try {
+            // Google favicon servisini kullan (256px'e kadar büyütülmüş)
+            "https://www.google.com/s2/favicons?domain=www.atv.com.tr&sz=256"
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun Element.toCardResult(): SearchResponse? {
@@ -239,7 +269,12 @@ class Atv : MainAPI() {
         if (isTrailer(title)) return null
 
         // ★ extractPoster ile tüm kaynakları dene
-        val poster = this.extractPoster()
+        var poster = this.extractPoster()
+
+        // ★ Fallback: poster yoksa Google favicon kullan
+        if (poster.isNullOrBlank()) {
+            poster = getProgramPosterFallback(path)
+        }
 
         Log.d("ATV", "  ✓ [$path] → $title | poster: ${poster ?: "YOK"}")
 
@@ -264,8 +299,11 @@ class Atv : MainAPI() {
         val title = this.text().trim().takeIf { it.isNotEmpty() } ?: return null
         if (isTrailer(title)) return null
 
-        // ★ Menüde poster genelde parent'ta olur
-        val poster = this.parent()?.extractPoster()
+        // ★ Menüde poster parent'ta olur; yedek olarak favicon fallback
+        var poster = this.parent()?.extractPoster() ?: this.extractPoster()
+        if (poster.isNullOrBlank()) {
+            poster = getProgramPosterFallback(path)
+        }
 
         return newMovieSearchResponse(title, fullUrl, TvType.TvSeries) {
             this.posterUrl = poster
@@ -285,7 +323,7 @@ class Atv : MainAPI() {
         if (path.contains("/")) return null
         if (systemPages.contains(path)) return null
 
-        // Başlık: önce link içinden dene
+        // Başlık
         val title = this.selectFirst("figcaption p, figcaption .title, h2, h3, .title, .caption")
             ?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
@@ -294,8 +332,13 @@ class Atv : MainAPI() {
 
         if (isTrailer(title)) return null
 
-        // ★ extractPoster ile tüm kaynakları dene (bu element ve parent'ı)
-        val poster = this.extractPoster() ?: this.parent()?.extractPoster()
+        // ★ extractPoster - element ve parent üzerinde dene
+        var poster = this.extractPoster() ?: this.parent()?.extractPoster()
+
+        // ★ Fallback: hâlâ yoksa Google favicon kullan
+        if (poster.isNullOrBlank()) {
+            poster = getProgramPosterFallback(path)
+        }
 
         Log.d("ATV", "  ✓ [$path] → $title | poster: ${poster ?: "YOK"}")
 
@@ -417,7 +460,9 @@ class Atv : MainAPI() {
 
             if (isTrailer(title)) return null
 
-            val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+            var poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+                ?: fixUrlNull(document.selectFirst("meta[name=twitter:image]")?.attr("content"))
+
             val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
             val epNum = extractEpisodeNumber(url)
@@ -434,11 +479,37 @@ class Atv : MainAPI() {
             }
         }
 
-        // Dizi detay sayfası - poster için og:image + yedekleri dene
+        // Dizi/Program detay sayfası
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+
+        // ★ POSTER ÇEKME: çok katmanlı
+        var poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
             ?: fixUrlNull(document.selectFirst("meta[name=twitter:image]")?.attr("content"))
-            ?: document.body().extractPoster()
+
+        // og:image yoksa sayfa içinden bul
+        if (poster.isNullOrBlank()) {
+            poster = document.selectFirst(
+                "img[src*='poster'], img[src*='cover'], img[src*='jacket'], " +
+                "img[data-src*='poster'], img[data-src*='cover'], " +
+                ".program-poster img, .show-poster img, .cover-image img, " +
+                ".detail-poster img, .dizi-poster img, .poster img"
+            )?.let { img ->
+                fixUrlNull(img.attr("data-src").ifEmpty {
+                    img.attr("src").ifEmpty { img.attr("data-original") }
+                })
+            }
+        }
+
+        // Son çare: body içinde boyutu büyük ilk resmi al
+        if (poster.isNullOrBlank()) {
+            poster = document.body().extractPoster()
+        }
+
+        // Hâlâ yoksa favicon fallback
+        if (poster.isNullOrBlank()) {
+            poster = getProgramPosterFallback(url)
+        }
+
         val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
         val episodes = getAllEpisodes(document, url)
