@@ -1,5 +1,6 @@
 
 
+package com.nikyokki
 
 import android.util.Base64
 import java.security.MessageDigest
