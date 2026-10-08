@@ -62,6 +62,8 @@ class Atv : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val results = mutableListOf<SearchResponse>()
+        // ★ Aynı sayfa içinde tekrar eden URL'leri engelle
+        val seenUrls = mutableSetOf<String>()
 
         try {
             val listDoc = app.get(request.data).document
@@ -82,10 +84,14 @@ class Atv : MainAPI() {
             }
 
             cards.forEach { element ->
-                if (element.tagName() == "a") {
-                    element.toListPageResult()?.let { results.add(it) }
+                val result = if (element.tagName() == "a") {
+                    element.toListPageResult()
                 } else {
-                    element.toCardResult()?.let { results.add(it) }
+                    element.toCardResult()
+                }
+                // ★ Sadece daha önce görülmemiş URL'leri ekle
+                if (result != null && seenUrls.add(result.url)) {
+                    results.add(result)
                 }
             }
 
@@ -104,18 +110,21 @@ class Atv : MainAPI() {
             }
             if (menuSelector.isNotEmpty()) {
                 mainDoc.select(menuSelector).forEach { element ->
-                    element.toMenuItemResult()?.let { results.add(it) }
+                    val result = element.toMenuItemResult()
+                    // ★ Tekrar kontrolü
+                    if (result != null && seenUrls.add(result.url)) {
+                        results.add(result)
+                    }
                 }
             }
         } catch (e: Exception) {
             Log.e("ATV", "Menü çekme hatası: ${e.message}")
         }
 
-        val uniqueResults = results.distinctBy { it.url }
-        Log.d("ATV", "getMainPage: ${request.name} -> ${uniqueResults.size} sonuç")
+        Log.d("ATV", "getMainPage: ${request.name} -> ${results.size} sonuç")
 
         return newHomePageResponse(
-            listOf(HomePageList(request.name, uniqueResults))
+            listOf(HomePageList(request.name, results))
         )
     }
 
@@ -239,6 +248,9 @@ class Atv : MainAPI() {
         }
 
         val allContent = mutableListOf<SearchResponse>()
+        // ★ Global tekrar önleme
+        val seenUrls = mutableSetOf<String>()
+
         val pagesToScan = listOf(
             "${mainUrl}/diziler",
             "${mainUrl}/eski-diziler",
@@ -260,10 +272,14 @@ class Atv : MainAPI() {
                 if (cards.isEmpty()) cards = document.select("a[href]")
 
                 cards.forEach { element ->
-                    if (element.tagName() == "a") {
-                        element.toListPageResult()?.let { allContent.add(it) }
+                    val result = if (element.tagName() == "a") {
+                        element.toListPageResult()
                     } else {
-                        element.toCardResult()?.let { allContent.add(it) }
+                        element.toCardResult()
+                    }
+                    // ★ Tekrar kontrolü
+                    if (result != null && seenUrls.add(result.url)) {
+                        allContent.add(result)
                     }
                 }
             } catch (e: Exception) {
@@ -275,17 +291,19 @@ class Atv : MainAPI() {
             val mainDoc = app.get(mainUrl).document
             mainDoc.select("div.series-drop .sub-menu-list li a[href], div.program-drop-menu .sub-menu-list li a[href]")
                 .forEach { element ->
-                    element.toMenuItemResult()?.let { allContent.add(it) }
+                    val result = element.toMenuItemResult()
+                    if (result != null && seenUrls.add(result.url)) {
+                        allContent.add(result)
+                    }
                 }
         } catch (e: Exception) {
             Log.e("ATV", "Menü çekme hatası: ${e.message}")
         }
 
-        val uniqueContent = allContent.distinctBy { it.url }
-        allContentCache = uniqueContent
+        allContentCache = allContent
         cacheTime = currentTime
-        Log.d("ATV", "getAllContent: ${uniqueContent.size} öğe önbelleğe alındı")
-        return uniqueContent
+        Log.d("ATV", "getAllContent: ${allContent.size} öğe önbelleğe alındı")
+        return allContent
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -320,7 +338,6 @@ class Atv : MainAPI() {
             val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
             val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
-            // ★ Bölüm numarasını URL'den çıkar
             val epNum = extractEpisodeNumber(url)
 
             val episode = newEpisode(url) {
@@ -352,17 +369,12 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ URL'den bölüm numarasını çıkarır. ATV URL formatı:
-     * - /dizi-adi/1-bolum/izle
-     * - /dizi-adi/12-bolum/izle
-     * - /dizi-adi/1-bolum-1-fragman/izle (fragman - zaten filtre dışı)
-     * - /dizi-adi/bolum-1/izle (alternatif)
-     * - /dizi-adi/1-sezon-5-bolum/izle (sezonlu)
+     * URL'den bölüm numarasını çıkarır.
      */
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
 
-        // 1. "X-bolum" formatı (en yaygın) - ilk eşleşme
+        // 1. "X-bolum" formatı (en yaygın)
         Regex("/(\\d+)-bolum(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 return it.groupValues[1].toIntOrNull()
@@ -390,9 +402,7 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ Tüm bölümleri toplar ve DOĞRU SIRALAR.
-     * ATV sayfaları genelde son bölümü en üstte gösterir, bu yüzden
-     * ekrandaki sıraya GÜVENME, bölüm numarasına göre sırala.
+     * Tüm bölümleri toplar ve DOĞRU SIRALAR.
      */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
@@ -467,23 +477,17 @@ class Atv : MainAPI() {
             Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
 
-        // ★ KRİTİK: Tekrarları temizle ve BÖLÜM NUMARASINA GÖRE sırala
-        // Aynı URL birden fazla kaynaktan gelebilir; ilk geleni tut
+        // Tekrarları temizle ve BÖLÜM NUMARASINA GÖRE sırala
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
-        // Bölüm numarası olanları ayır, olmayanları da al
         val withNumber = uniqueByUrl.filter { it.episode != null && it.episode!! > 0 }
         val withoutNumber = uniqueByUrl.filter { it.episode == null || it.episode == 0 }
 
-        // Numaralıları bölüm numarasına göre sırala (küçükten büyüğe)
         val sortedWithNumber = withNumber.sortedBy { it.episode }
-
-        // Numarasızları URL'den sıralamaya çalış
         val sortedWithoutNumber = withoutNumber.sortedBy { extractEpisodeNumber(it.data) ?: Int.MAX_VALUE }
 
         val finalEpisodes = sortedWithNumber + sortedWithoutNumber
 
-        // Hâlâ numarasız kalan varsa sıralı index ata (baştan)
         val result = finalEpisodes.mapIndexed { index, ep ->
             if (ep.episode == null || ep.episode == 0) {
                 ep.episode = index + 1
@@ -510,7 +514,6 @@ class Atv : MainAPI() {
                 val text = element.text()
                 if (isTrailer(text)) return@filter false
 
-                // Bölüm linki olmalı: "-bolum" içermeli ve "/izle" ile bitmeli
                 href.contains("-bolum") && href.endsWith("/izle")
             }
 
@@ -525,7 +528,6 @@ class Atv : MainAPI() {
 
             if (isTrailer(epName)) return@forEach
 
-            // ★ Bölüm numarasını merkezi fonksiyonla çıkar
             val epNum = extractEpisodeNumber(href)
 
             newEpisode(href) {
