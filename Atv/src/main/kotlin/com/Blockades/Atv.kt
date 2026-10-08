@@ -42,9 +42,30 @@ class Atv : MainAPI() {
         1392, 2384, 2390, 3817, 10333
     )
 
-    // ★ "5. Bölüm" başlığı sadece bu dizi için kalacak (slug bazlı)
-    private val allowedFiveTitleSlugs = setOf(
-        "ask-ve-taht"
+    // ★ Türkçe ay isimleri - tarih formatı dönüşümü için
+    private val turkishMonths = mapOf(
+        "ocak" to "Ocak",
+        "şubat" to "Şubat", "subat" to "Şubat",
+        "mart" to "Mart",
+        "nisan" to "Nisan",
+        "mayıs" to "Mayıs", "mayis" to "Mayıs",
+        "haziran" to "Haziran",
+        "temmuz" to "Temmuz",
+        "ağustos" to "Ağustos", "agustos" to "Ağustos",
+        "eylül" to "Eylül", "eylul" to "Eylül",
+        "ekim" to "Ekim",
+        "kasım" to "Kasım", "kasim" to "Kasım",
+        "aralık" to "Aralık", "aralik" to "Aralık"
+    )
+
+    private val turkishDays = mapOf(
+        "pazartesi" to "Pazartesi",
+        "salı" to "Salı", "sali" to "Salı",
+        "çarşamba" to "Çarşamba", "carsamba" to "Çarşamba",
+        "perşembe" to "Perşembe", "persembe" to "Perşembe",
+        "cuma" to "Cuma",
+        "cumartesi" to "Cumartesi",
+        "pazar" to "Pazar"
     )
 
     private val cardSelectors = listOf(
@@ -159,22 +180,15 @@ class Atv : MainAPI() {
         val img = this.selectFirst("img")
         if (img != null) {
             val attrs = listOf(
-                "data-src",
-                "data-original",
-                "data-lazy-src",
-                "data-lazy",
-                "src",
-                "data-srcset",
-                "srcset"
+                "data-src", "data-original", "data-lazy-src", "data-lazy",
+                "src", "data-srcset", "srcset"
             )
             for (attr in attrs) {
                 val value = img.attr(attr).trim()
                 if (value.isNotEmpty() && !value.startsWith("data:")) {
                     val url = if (attr.contains("srcset")) {
                         value.substringBefore(",").trim().substringBefore(" ")
-                    } else {
-                        value
-                    }
+                    } else value
                     val fixed = fixUrlNull(url)
                     if (!fixed.isNullOrBlank()) return fixed
                 }
@@ -234,7 +248,6 @@ class Atv : MainAPI() {
         val link = this.selectFirst("a[href]") ?: return null
         val hrefRaw = link.attr("href")
         if (hrefRaw.isBlank()) return null
-
         if (isTrailer(hrefRaw)) return null
 
         val fullUrl = fixUrlNull(hrefRaw) ?: return null
@@ -252,9 +265,7 @@ class Atv : MainAPI() {
         if (isTrailer(title)) return null
 
         var poster = this.extractPoster()
-        if (poster.isNullOrBlank()) {
-            poster = getProgramPosterFallback(path)
-        }
+        if (poster.isNullOrBlank()) poster = getProgramPosterFallback(path)
 
         Log.d("ATV", "  ✓ [$path] → $title | poster: ${poster ?: "YOK"}")
 
@@ -266,7 +277,6 @@ class Atv : MainAPI() {
     private fun Element.toMenuItemResult(): SearchResponse? {
         val hrefRaw = this.attr("href")
         if (hrefRaw.isBlank()) return null
-
         if (isTrailer(hrefRaw)) return null
 
         val fullUrl = fixUrlNull(hrefRaw) ?: return null
@@ -280,9 +290,7 @@ class Atv : MainAPI() {
         if (isTrailer(title)) return null
 
         var poster = this.parent()?.extractPoster() ?: this.extractPoster()
-        if (poster.isNullOrBlank()) {
-            poster = getProgramPosterFallback(path)
-        }
+        if (poster.isNullOrBlank()) poster = getProgramPosterFallback(path)
 
         return newMovieSearchResponse(title, fullUrl, TvType.TvSeries) {
             this.posterUrl = poster
@@ -292,7 +300,6 @@ class Atv : MainAPI() {
     private fun Element.toListPageResult(): SearchResponse? {
         val hrefRaw = this.attr("href")
         if (hrefRaw.isBlank()) return null
-
         if (isTrailer(hrefRaw)) return null
 
         val fullUrl = fixUrlNull(hrefRaw) ?: return null
@@ -311,9 +318,7 @@ class Atv : MainAPI() {
         if (isTrailer(title)) return null
 
         var poster = this.extractPoster() ?: this.parent()?.extractPoster()
-        if (poster.isNullOrBlank()) {
-            poster = getProgramPosterFallback(path)
-        }
+        if (poster.isNullOrBlank()) poster = getProgramPosterFallback(path)
 
         Log.d("ATV", "  ✓ [$path] → $title | poster: ${poster ?: "YOK"}")
 
@@ -476,13 +481,8 @@ class Atv : MainAPI() {
             }
         }
 
-        if (poster.isNullOrBlank()) {
-            poster = document.body().extractPoster()
-        }
-
-        if (poster.isNullOrBlank()) {
-            poster = getProgramPosterFallback(url)
-        }
+        if (poster.isNullOrBlank()) poster = document.body().extractPoster()
+        if (poster.isNullOrBlank()) poster = getProgramPosterFallback(url)
 
         val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
@@ -533,7 +533,6 @@ class Atv : MainAPI() {
         }
 
         allEpisodesUrls.add("$cleanBaseUrl/bolumler")
-
         allEpisodesUrls.add("$mainUrl/ajax/series/$slug/episodes")
         allEpisodesUrls.add("$mainUrl/ajax/$slug/episodes")
 
@@ -548,7 +547,7 @@ class Atv : MainAPI() {
                     )
                 ).document
 
-                val found = extractEpisodesFromDoc(doc, slug)
+                val found = extractEpisodesFromDoc(doc)
                 if (found.isNotEmpty()) {
                     Log.d("ATV", "✓ $url -> ${found.size} bölüm bulundu")
                     allEpisodes.addAll(found)
@@ -560,7 +559,7 @@ class Atv : MainAPI() {
             }
         }
 
-        val staticFromDetail = extractEpisodesFromDoc(document, slug)
+        val staticFromDetail = extractEpisodesFromDoc(document)
         Log.d("ATV", "Detay sayfasından doğrudan ${staticFromDetail.size} bölüm")
         allEpisodes.addAll(staticFromDetail)
 
@@ -572,7 +571,7 @@ class Atv : MainAPI() {
             for (sezonUrl in sezonLinks) {
                 try {
                     val doc = app.get(sezonUrl).document
-                    val found = extractEpisodesFromDoc(doc, slug)
+                    val found = extractEpisodesFromDoc(doc)
                     if (found.isNotEmpty()) {
                         Log.d("ATV", "Sezon sayfası: $sezonUrl -> ${found.size} bölüm")
                         allEpisodes.addAll(found)
@@ -612,53 +611,19 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ Bölüm başlıklarını temizler.
-     * "5. Bölüm" gibi başlıklar sadece Aşk ve Taht dizisinde kalır.
-     * Diğer dizilerde bu başlık URL'den üretilen standart isimle değiştirilir.
+     * ★ extractEpisodesFromDoc
+     * Başlık çıkarma stratejisi:
+     * 1. Kart içindeki tarih metnini bul (örn: "29 Haziran 2026, Pazartesi")
+     * 2. Yoksa başlığı (h3, .title vs.) al
+     * 3. Yoksa URL'den üret
+     * 
+     * Sonuç: "5. Bölüm" gibi başlıklar TARİHLİ olanla değiştirilir.
      */
-    private fun cleanEpisodeTitle(
-        rawTitle: String,
-        episodeNumber: Int?,
-        slug: String
-    ): String {
-        val trimmed = rawTitle.trim()
-        if (trimmed.isEmpty()) {
-            return if (episodeNumber != null) "$episodeNumber. Bölüm" else "Bölüm"
-        }
-
-        // "5. Bölüm", "5.Bölüm", "5 . Bölüm" varyasyonlarını tespit et
-        val simpleNumberTitlePattern = Regex("^(\\d+)\\s*\\.?\\s*Bölüm$", RegexOption.IGNORE_CASE)
-
-        val match = simpleNumberTitlePattern.matchEntire(trimmed)
-
-        if (match != null) {
-            val num = match.groupValues[1].toIntOrNull()
-
-            // Aşk ve Taht → olduğu gibi bırak
-            if (slug in allowedFiveTitleSlugs) {
-                return trimmed
-            }
-
-            // Diğer diziler → "X. Bölüm" formatına çevir
-            if (num != null) {
-                return "$num. Bölüm"
-            }
-        }
-
-        return trimmed
-    }
-
-    /**
-     * ★ Karadayı / Kara Para Aşk gibi eski diziler için genişletilmiş filtre.
-     */
-    private fun extractEpisodesFromDoc(
-        document: org.jsoup.nodes.Document,
-        slug: String
-    ): List<Episode> {
+    private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
         val allIzleLinks = document.select("a[href*='/izle']")
-        Log.d("ATV", "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki (slug=$slug) ===")
+        Log.d("ATV", "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki ===")
 
         val episodeLinks = allIzleLinks
             .filter { element ->
@@ -681,12 +646,11 @@ class Atv : MainAPI() {
             val href = fixUrlNull(element.attr("href")) ?: return@forEach
             if (isTrailer(href)) return@forEach
 
-            val rawEpName = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
-                ?.text()?.trim()?.takeIf { it.isNotEmpty() }
-                ?: element.text().trim().takeIf { it.isNotEmpty() }
-                ?: "Bölüm"
+            // ★ Başlık önceliği: element içi tarih > kart tarih > başlık > URL
+            val rawTitle = extractBestTitle(element)
 
-            if (isTrailer(rawEpName)) return@forEach
+            if (rawTitle.isNullOrBlank()) return@forEach
+            if (isTrailer(rawTitle)) return@forEach
 
             val epNum = extractEpisodeNumber(href)
 
@@ -695,17 +659,68 @@ class Atv : MainAPI() {
                 return@forEach
             }
 
-            // ★ Başlığı temizle
-            val cleanedName = cleanEpisodeTitle(rawEpName, epNum, slug)
-
             newEpisode(href) {
-                this.name = cleanedName
+                this.name = rawTitle
                 this.episode = epNum
             }?.let { episodes.add(it) }
         }
 
         Log.d("ATV", "extractEpisodesFromDoc sonuç: ${episodes.size} bölüm")
         return episodes
+    }
+
+    /**
+     * ★ En iyi başlığı seç. Öncelik sırası:
+     * 1. Element içindeki tarih (örn: "29 Haziran 2026, Pazartesi")
+     * 2. Kardeş/üst elementlerdeki tarih
+     * 3. Element içindeki .title / h3 / span
+     * 4. Element text
+     * 5. null
+     */
+    private fun extractBestTitle(element: Element): String? {
+        // 1. Element içindeki tarih kalıbını ara
+        val datePattern = Regex(
+            "\\d{1,2}\\s+(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\\s+\\d{4}(?:,\\s*\\w+)?",
+            RegexOption.IGNORE_CASE
+        )
+
+        // Element'in kendi metni
+        val ownText = element.text().trim()
+        datePattern.find(ownText)?.let { return it.value }
+
+        // Element içindeki tüm child'larda ara
+        element.select("*").forEach { child ->
+            val childText = child.text().trim()
+            datePattern.find(childText)?.let { return it.value }
+        }
+
+        // 2. Parent ve kardeşlerde ara
+        val parent = element.parent()
+        if (parent != null) {
+            val parentText = parent.text().trim()
+            datePattern.find(parentText)?.let { return it.value }
+
+            parent.select("*").forEach { sib ->
+                val sibText = sib.text().trim()
+                datePattern.find(sibText)?.let { return it.value }
+            }
+        }
+
+        // 3. Büyük parent'ta ara (kart)
+        val grandParent = element.parent()?.parent()
+        if (grandParent != null) {
+            val gpText = grandParent.text().trim()
+            datePattern.find(gpText)?.let { return it.value }
+        }
+
+        // 4. Tarih yok → klasik başlık elementlerini dene
+        element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
+            ?.text()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+
+        // 5. Element text
+        ownText.takeIf { it.isNotEmpty() }?.let { return it }
+
+        return null
     }
 
     override suspend fun loadLinks(
@@ -818,17 +833,4 @@ class Atv : MainAPI() {
                 if (iframe != null) {
                     val embedUrl = fixUrl(iframe.attr("src"))
                     if (!isTrailer(embedUrl)) {
-                        if (loadExtractor(embedUrl, data, subtitleCallback, callback)) {
-                            found = true
-                        }
-                    }
-                }
-            }
-
-            return found
-        } catch (e: Exception) {
-            Log.e("ATV", "LoadLinks hatası: ${e.message}")
-            return false
-        }
-    }
-}
+                        if (
