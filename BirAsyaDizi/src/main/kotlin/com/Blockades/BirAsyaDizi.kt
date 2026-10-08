@@ -109,45 +109,36 @@ class BirAsyaDizi : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // Başlık: dizi-bilgi içindeki aktif bölüm başlığı veya h1
         val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim()
             ?: document.selectFirst("h1")?.text()?.trim()
             ?: return null
 
-        // Poster: dizi-bilgi .afis img (data-src)
         val poster = fixUrlNull(
             document.selectFirst("div.dizi-bilgi .afis img")?.attr("data-src")
                 ?: document.selectFirst("div.dizi-bilgi .afis img")?.attr("src")
         )
 
-        // Açıklama: #t2 (Dizi sekmesi) .aciklama
         val description = document.selectFirst("ol#t2 .aciklama")?.text()?.trim()
             ?: document.selectFirst("div.dizi-bilgi .aciklama")?.text()?.trim()
 
-        // Yıl (varsa)
         val year = document.selectFirst("ol#t2 h2 span")?.text()?.trim()
             ?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
 
-        // Türler: sag-vliste altındaki kategori veya dizi-bilgi detay
         val tags = document.select("ol#t2 .alt b, div.dizi-bilgi .detay li span")
             .map { it.text().trim() }
             .filter { it.isNotEmpty() }
 
-        // Puan: IMDb veya yıldız puanı
         val rating = document.selectFirst("div.dizi-bilgi .puan b")?.text()?.trim()
             ?: document.selectFirst("ol#t2 .bilgi span i.fa-imdb")?.parent()?.text()?.trim()
 
-        // Öneriler: sag-vliste li
         val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
 
-        // Bölümler: sag taraftaki dizi-bolumler listesi (#s0 içindeki <li>)
         val episodes = document.select("ol#s0 li[id^=eb]").mapNotNull { bolum ->
             val epHref = fixUrlNull(bolum.selectFirst("a")?.attr("href")) ?: return@mapNotNull null
             val epName = bolum.selectFirst("span.blm")?.text()?.trim()
                 ?: bolum.selectFirst("span.dizi-isim")?.text()?.trim()
                 ?: bolum.selectFirst("a")?.attr("title")?.trim()
 
-            // Bölüm numarası: "01-03. Bölüm" -> ilk sayıyı al
             val epEpisode = bolum.selectFirst("span.blm")?.text()?.trim()
                 ?.let { Regex("""(\d+)""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
 
@@ -157,9 +148,7 @@ class BirAsyaDizi : MainAPI() {
             }
         }
 
-        // Eğer bölüm listesi yoksa (dizi değil de tek bölüm sayfasıysa) — yine de bölüm olarak dön
         if (episodes.isEmpty()) {
-            // Bu sayfa muhtemelen tek bir bölüm (film gibi) — yine de dizi türü olarak dönüyoruz
             return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, listOf(newEpisode(url) { this.name = title })) {
                 this.posterUrl = poster
                 this.plot = description
@@ -205,11 +194,18 @@ class BirAsyaDizi : MainAPI() {
 
         // 1) Ana player iframe (id=Vidpplayera) — vdo-src attribute'unda gerçek kaynak var
         document.select("iframe#Vidpplayera, #vast iframe, iframe[vdo-src]").forEach { iframe ->
-            val link = fixUrlNull(
+            var link = fixUrlNull(
                 iframe.attr("vdo-src").takeIf { it.isNotBlank() }
                     ?: iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" }
                     ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
             )
+
+            // Odnoklassniki embed'ini ok.ru formatına çevir (custom extractor için)
+            if (link != null && link.contains("odnoklassniki.ru/videoembed/")) {
+                val videoId = link.substringAfterLast("/")
+                link = "https://ok.ru/videoembed/$videoId"
+            }
+
             if (link != null) {
                 Log.d("kraptor_$name", "player iframe » $link")
                 if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
@@ -241,8 +237,7 @@ class BirAsyaDizi : MainAPI() {
         }
 
         if (!found) {
-            Log.w("kraptor_$name", "Hiçbir link bulunamadı! HTML snippet:")
-            Log.w("kraptor_$name", document.select("body").html().take(2000))
+            Log.w("kraptor_$name", "Hiçbir link bulunamadı!")
         }
 
         return found
