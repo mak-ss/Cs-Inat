@@ -715,26 +715,26 @@ class Atv : MainAPI() {
             }
 
         episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
-            val href: String = fixUrlNull(element.attr("href")) ?: return@forEach
-            if (isTrailer(href)) return@forEach
+            val rawHref = element.attr("href")
+            if (rawHref.isBlank() || isTrailer(rawHref)) return@forEach
 
             val safeTitle: String = extractBestTitle(element)
 
-            if (safeTitle.isBlank()) return@forEach
-            if (isTrailer(safeTitle)) return@forEach
+            if (safeTitle.isBlank() || isTrailer(safeTitle)) return@forEach
 
-            val epNum = extractEpisodeNumber(href)
+            val epNum = extractEpisodeNumber(rawHref)
 
             if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
-                Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $href")
+                Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $rawHref")
                 return@forEach
             }
 
-            val ep = newEpisode(href) {
-                this.name = safeTitle
-                this.episode = epNum
+            fixUrlNull(rawHref)?.let { validUrl ->
+                newEpisode(validUrl) {
+                    this.name = safeTitle
+                    this.episode = epNum
+                }?.let { episodes.add(it) }
             }
-            if (ep != null) episodes.add(ep)
         }
 
         Log.d("ATV", "extractEpisodesFromDoc sonuç: ${episodes.size} bölüm")
