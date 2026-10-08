@@ -120,7 +120,7 @@ class Ell3sm3 : MainAPI() {
         Log.d("IPTV", "loadData » $loadData")
 
         val kanallar = IptvPlaylistParser().parseM3U(app.get(mainUrl).text)
-        val kanal    = kanallar.items.first { it.url == loadData.url }
+        val kanal    = kanallar.items.firstOrNull { it.url == loadData.url } ?: return false
         Log.d("IPTV", "kanal » $kanal")
 
         callback.invoke(
@@ -152,7 +152,8 @@ class Ell3sm3 : MainAPI() {
             return parseJson<LoadData>(data)
         } else {
             val kanallar = IptvPlaylistParser().parseM3U(app.get(mainUrl).text)
-            val kanal    = kanallar.items.first { it.url == data }
+            val kanal    = kanallar.items.firstOrNull { it.url == data }
+                ?: return LoadData(data, "", "", "", "")
 
             val streamurl   = kanal.url.toString()
             val channelname = kanal.title.toString()
@@ -166,7 +167,7 @@ class Ell3sm3 : MainAPI() {
 }
 
 // ---------------------------------------------------------------------------
-// M3U Playlist Parser — must be present in the same package/file
+// M3U Playlist Parser
 // ---------------------------------------------------------------------------
 
 data class Playlist(
@@ -183,10 +184,18 @@ data class PlaylistItem(
 
 class IptvPlaylistParser {
 
+    /**
+     * Parse M3U8 string into [Playlist]
+     */
     fun parseM3U(content: String): Playlist {
         return parseM3U(content.byteInputStream())
     }
 
+    /**
+     * Parse M3U8 content [InputStream] into [Playlist]
+     *
+     * Defensive: bozuk / başıboş URL satırları çökme yerine atlanır.
+     */
     @Throws(PlaylistParserException::class)
     fun parseM3U(input: InputStream): Playlist {
         val reader = input.bufferedReader()
@@ -208,26 +217,35 @@ class IptvPlaylistParser {
 
                     playlistItems.add(PlaylistItem(title, attributes))
                 } else if (line.startsWith(EXT_VLC_OPT)) {
-                    val item      = playlistItems[currentIndex]
-                    val userAgent = item.userAgent ?: line.getTagValue("http-user-agent")
-                    val referrer  = line.getTagValue("http-referrer")
+                    // #EXTINF gelmeden #EXTVLCOPT gelirse atla (güvenli kontrol)
+                    if (currentIndex < playlistItems.size) {
+                        val item      = playlistItems[currentIndex]
+                        val userAgent = item.userAgent ?: line.getTagValue("http-user-agent")
+                        val referrer  = line.getTagValue("http-referrer")
 
-                    val headers = mutableMapOf<String, String>()
+                        val headers = mutableMapOf<String, String>()
 
-                    if (userAgent != null) {
-                        headers["user-agent"] = userAgent
+                        if (userAgent != null) {
+                            headers["user-agent"] = userAgent
+                        }
+
+                        if (referrer != null) {
+                            headers["referrer"] = referrer
+                        }
+
+                        playlistItems[currentIndex] = item.copy(
+                            userAgent = userAgent,
+                            headers   = headers
+                        )
                     }
-
-                    if (referrer != null) {
-                        headers["referrer"] = referrer
-                    }
-
-                    playlistItems[currentIndex] = item.copy(
-                        userAgent = userAgent,
-                        headers   = headers
-                    )
                 } else {
                     if (!line.startsWith("#")) {
+                        // #EXTINF olmadan gelen başıboş URL satırlarını atla
+                        if (currentIndex >= playlistItems.size) {
+                            line = reader.readLine()
+                            continue
+                        }
+
                         val item       = playlistItems[currentIndex]
                         val url        = line.getUrl()
                         val userAgent  = line.getUrlParameter("user-agent")
@@ -251,20 +269,25 @@ class IptvPlaylistParser {
         return Playlist(playlistItems)
     }
 
+    /** Replace "" (quotes) from given string. */
     private fun String.replaceQuotesAndTrim(): String {
         return replace("\"", "").trim()
     }
 
+    /** Check if given content is valid M3U8 playlist. */
     private fun String.isExtendedM3u(): Boolean = startsWith(EXT_M3U)
 
+    /** Get title of media. */
     private fun String.getTitle(): String? {
         return split(",").lastOrNull()?.replaceQuotesAndTrim()
     }
 
+    /** Get media url. */
     private fun String.getUrl(): String? {
         return split("|").firstOrNull()?.replaceQuotesAndTrim()
     }
 
+    /** Get url parameter with key. */
     private fun String.getUrlParameter(key: String): String? {
         val urlRegex     = Regex("^(.*)\\|", RegexOption.IGNORE_CASE)
         val keyRegex     = Regex("$key=(\\w[^&]*)", RegexOption.IGNORE_CASE)
@@ -273,6 +296,7 @@ class IptvPlaylistParser {
         return keyRegex.find(paramsString)?.groups?.get(1)?.value
     }
 
+    /** Get attributes from `#EXTINF` tag as Map<String, String>. */
     private fun String.getAttributes(): Map<String, String> {
         val extInfRegex      = Regex("(#EXTINF:.?[0-9]+)", RegexOption.IGNORE_CASE)
         val attributesString = replace(extInfRegex, "").replaceQuotesAndTrim().split(",").first()
@@ -286,6 +310,7 @@ class IptvPlaylistParser {
             .toMap()
     }
 
+    /** Get value from a tag. */
     private fun String.getTagValue(key: String): String? {
         val keyRegex = Regex("$key=(.*)", RegexOption.IGNORE_CASE)
 
@@ -299,6 +324,7 @@ class IptvPlaylistParser {
     }
 }
 
+/** Exception thrown when an error occurs while parsing playlist. */
 sealed class PlaylistParserException(message: String) : Exception(message) {
     class InvalidHeader :
         PlaylistParserException("Invalid file header. Header doesn't start with #EXTM3U")
