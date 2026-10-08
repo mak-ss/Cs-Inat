@@ -62,7 +62,6 @@ class Atv : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val results = mutableListOf<SearchResponse>()
-        // ★ Normalize edilmiş path'ler üzerinden tekrar kontrolü
         val seenPaths = mutableSetOf<String>()
 
         try {
@@ -89,7 +88,6 @@ class Atv : MainAPI() {
                 } else {
                     element.toCardResult()
                 }
-                // ★ Path bazlı tekrar kontrolü
                 if (result != null) {
                     val key = normalizeForCompare(result.url)
                     if (key != null && seenPaths.add(key)) {
@@ -133,13 +131,6 @@ class Atv : MainAPI() {
         )
     }
 
-    /**
-     * ★ URL'yi karşılaştırma için normalize eder.
-     * Farklı formatları aynı stringe çevirir:
-     * - https://www.atv.com.tr/dizi → dizi
-     * - https://atv.com.tr/dizi/ → dizi
-     * - /dizi → dizi
-     */
     private fun normalizeForCompare(url: String): String? {
         return try {
             var p = url.lowercase(Locale.getDefault())
@@ -159,6 +150,71 @@ class Atv : MainAPI() {
     private fun isTrailer(text: String): Boolean {
         val lower = text.lowercase(Locale.getDefault())
         return trailerKeywords.any { lower.contains(it) }
+    }
+
+    // ★ TÜM POSTER KAYNAKLARINI DENE
+    // img[src], img[data-src], img[data-original], img[data-lazy-src], img[data-srcset], img[srcset],
+    // picture > source[srcset], div[style*=background-image]
+    private fun Element.extractPoster(): String? {
+        // 1. İlk img'i al
+        val img = this.selectFirst("img")
+        if (img != null) {
+            // Denenecek attribute sırası (öncelik sırasıyla)
+            val attrs = listOf(
+                "data-src",
+                "data-original",
+                "data-lazy-src",
+                "data-lazy",
+                "src",
+                "data-srcset",
+                "srcset"
+            )
+            for (attr in attrs) {
+                val value = img.attr(attr).trim()
+                if (value.isNotEmpty()) {
+                    // srcset formatı: "url1 1x, url2 2x" → ilk URL'yi al
+                    val url = if (attr.contains("srcset")) {
+                        value.substringBefore(",").trim().substringBefore(" ")
+                    } else {
+                        value
+                    }
+                    val fixed = fixUrlNull(url)
+                    if (!fixed.isNullOrBlank()) return fixed
+                }
+            }
+        }
+
+        // 2. picture > source[srcset]
+        val source = this.selectFirst("picture source[srcset], source[data-srcset]")
+        if (source != null) {
+            val srcset = source.attr("srcset").ifEmpty { source.attr("data-srcset") }
+            if (srcset.isNotBlank()) {
+                val url = srcset.substringBefore(",").trim().substringBefore(" ")
+                fixUrlNull(url)?.let { if (it.isNotBlank()) return it }
+            }
+        }
+
+        // 3. div[style*=background-image:url(...)]
+        val styledDiv = this.selectFirst("[style*=background-image]")
+        if (styledDiv != null) {
+            val style = styledDiv.attr("style")
+            val match = Regex("background-image\\s*:\\s*url\\(['\"]?([^'\")]+)['\"]?\\)", RegexOption.IGNORE_CASE)
+                .find(style)
+            if (match != null) {
+                fixUrlNull(match.groupValues[1])?.let { if (it.isNotBlank()) return it }
+            }
+        }
+
+        // 4. Link'in kendisinde data-poster, data-image vs. var mı?
+        val dataAttrs = listOf("data-poster", "data-image", "data-thumb", "data-cover")
+        for (attr in dataAttrs) {
+            val value = this.attr(attr).trim()
+            if (value.isNotEmpty()) {
+                fixUrlNull(value)?.let { if (it.isNotBlank()) return it }
+            }
+        }
+
+        return null
     }
 
     private fun Element.toCardResult(): SearchResponse? {
@@ -182,12 +238,10 @@ class Atv : MainAPI() {
 
         if (isTrailer(title)) return null
 
-        val img = this.selectFirst("img")
-        val poster = fixUrlNull(
-            img?.attr("data-src")?.ifEmpty { img.attr("src") }
-        )
+        // ★ extractPoster ile tüm kaynakları dene
+        val poster = this.extractPoster()
 
-        Log.d("ATV", "  ✓ [$path] → $title")
+        Log.d("ATV", "  ✓ [$path] → $title | poster: ${poster ?: "YOK"}")
 
         return newMovieSearchResponse(title, fullUrl, TvType.TvSeries) {
             this.posterUrl = poster
@@ -210,9 +264,8 @@ class Atv : MainAPI() {
         val title = this.text().trim().takeIf { it.isNotEmpty() } ?: return null
         if (isTrailer(title)) return null
 
-        val poster = this.parent()?.selectFirst("img")?.let { img ->
-            fixUrlNull(img.attr("data-src").ifEmpty { img.attr("src") })
-        }
+        // ★ Menüde poster genelde parent'ta olur
+        val poster = this.parent()?.extractPoster()
 
         return newMovieSearchResponse(title, fullUrl, TvType.TvSeries) {
             this.posterUrl = poster
@@ -232,21 +285,19 @@ class Atv : MainAPI() {
         if (path.contains("/")) return null
         if (systemPages.contains(path)) return null
 
-        val img = this.selectFirst("img") ?: return null
-
+        // Başlık: önce link içinden dene
         val title = this.selectFirst("figcaption p, figcaption .title, h2, h3, .title, .caption")
             ?.text()?.trim()?.takeIf { it.isNotEmpty() }
-            ?: img.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
+            ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.attr("title").trim().takeIf { it.isNotEmpty() }
             ?: return null
 
         if (isTrailer(title)) return null
 
-        val poster = fixUrlNull(
-            img.attr("data-src").ifEmpty {
-                img.attr("src").ifEmpty { img.attr("data-lazy-src") }
-            }
-        )
+        // ★ extractPoster ile tüm kaynakları dene (bu element ve parent'ı)
+        val poster = this.extractPoster() ?: this.parent()?.extractPoster()
+
+        Log.d("ATV", "  ✓ [$path] → $title | poster: ${poster ?: "YOK"}")
 
         return newMovieSearchResponse(title, fullUrl, TvType.TvSeries) {
             this.posterUrl = poster
@@ -276,7 +327,6 @@ class Atv : MainAPI() {
         }
 
         val allContent = mutableListOf<SearchResponse>()
-        // ★ Path bazlı global tekrar önleme
         val seenPaths = mutableSetOf<String>()
 
         val pagesToScan = listOf(
@@ -358,7 +408,6 @@ class Atv : MainAPI() {
 
         val document = app.get(url).document
 
-        // Tek bölüm sayfası
         if (url.contains("/izle")) {
             if (isTrailer(url)) return null
 
@@ -385,14 +434,16 @@ class Atv : MainAPI() {
             }
         }
 
-        // Dizi detay sayfası
+        // Dizi detay sayfası - poster için og:image + yedekleri dene
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
         val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+            ?: fixUrlNull(document.selectFirst("meta[name=twitter:image]")?.attr("content"))
+            ?: document.body().extractPoster()
         val description = document.selectFirst("meta[name=description]")?.attr("content")?.trim()
 
         val episodes = getAllEpisodes(document, url)
 
-        Log.d("ATV", "load: $title -> ${episodes.size} bölüm")
+        Log.d("ATV", "load: $title -> ${episodes.size} bölüm | poster: ${poster ?: "YOK"}")
         episodes.take(5).forEach { Log.d("ATV", "  Bölüm ${it.episode}: ${it.name} -> ${it.data}") }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -401,31 +452,24 @@ class Atv : MainAPI() {
         }
     }
 
-    /**
-     * URL'den bölüm numarasını çıkarır.
-     */
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
 
-        // 1. "X-bolum" formatı (en yaygın)
         Regex("/(\\d+)-bolum(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 return it.groupValues[1].toIntOrNull()
             }
 
-        // 2. "bolum-X" formatı
         Regex("/bolum-(\\d+)(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 return it.groupValues[1].toIntOrNull()
             }
 
-        // 3. "X-sezon-Y-bolum" → bölüm Y
         Regex("(\\d+)-sezon-(\\d+)-bolum", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 return it.groupValues[2].toIntOrNull()
             }
 
-        // 4. Sadece /izle öncesindeki son sayı
         Regex("/(\\d+)(?:-[^/]*)?/izle", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 return it.groupValues[1].toIntOrNull()
@@ -434,9 +478,6 @@ class Atv : MainAPI() {
         return null
     }
 
-    /**
-     * Tüm bölümleri toplar ve DOĞRU SIRALAR.
-     */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
 
@@ -444,7 +485,6 @@ class Atv : MainAPI() {
 
         val allEpisodesUrls = mutableListOf<String>()
 
-        // Detay sayfasındaki "TÜMÜ" / "/bolumler" linkleri
         document.select("a[href*='/bolumler']").forEach { el ->
             fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
         }
@@ -452,15 +492,12 @@ class Atv : MainAPI() {
             fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
         }
 
-        // Doğrudan /bolumler tahmini
         allEpisodesUrls.add("$cleanBaseUrl/bolumler")
 
-        // AJAX endpoint'leri
         val slug = cleanBaseUrl.substringAfter(mainUrl).trim('/').substringBefore("/")
         allEpisodesUrls.add("$mainUrl/ajax/series/$slug/episodes")
         allEpisodesUrls.add("$mainUrl/ajax/$slug/episodes")
 
-        // Her URL'yi dene
         for (url in allEpisodesUrls.distinct()) {
             try {
                 Log.d("ATV", "Bölüm listesi deneniyor: $url")
@@ -484,11 +521,9 @@ class Atv : MainAPI() {
             }
         }
 
-        // Detay sayfasının kendisinden de bölüm çıkar
         val staticFromDetail = extractEpisodesFromDoc(document)
         allEpisodes.addAll(staticFromDetail)
 
-        // Sezon linkleri
         try {
             val sezonLinks = document.select("a[href*='sezon'], a[href*='sezonlar'], a[href*='season']")
                 .mapNotNull { fixUrlNull(it.attr("href")) }
@@ -510,7 +545,6 @@ class Atv : MainAPI() {
             Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
 
-        // Tekrarları temizle ve BÖLÜM NUMARASINA GÖRE sırala
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
         val withNumber = uniqueByUrl.filter { it.episode != null && it.episode!! > 0 }
@@ -532,9 +566,6 @@ class Atv : MainAPI() {
         return result
     }
 
-    /**
-     * Bir document içindeki tüm bölüm linklerini çıkarır
-     */
     private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
@@ -597,7 +628,6 @@ class Atv : MainAPI() {
                 return false
             }
 
-            // JSON-LD
             val ldJsonScripts = document.select("script[type=application/ld+json]")
             for (script in ldJsonScripts) {
                 val content = script.data()
@@ -635,7 +665,6 @@ class Atv : MainAPI() {
                 }
             }
 
-            // Regex
             if (!found) {
                 val playerScripts = document.select("script").filter { script ->
                     val data = script.data().lowercase(Locale.getDefault())
@@ -679,7 +708,6 @@ class Atv : MainAPI() {
                 }
             }
 
-            // iframe
             if (!found) {
                 val iframe = document.selectFirst("iframe[src]")
                 if (iframe != null) {
