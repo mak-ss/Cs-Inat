@@ -343,7 +343,6 @@ class Atv : MainAPI() {
         val allContent = mutableListOf<SearchResponse>()
         val seenPaths = mutableSetOf<String>()
 
-        // ★ Sadece Diziler ve Eski Diziler taranıyor
         val pagesToScan = listOf(
             "${mainUrl}/diziler",
             "${mainUrl}/eski-diziler"
@@ -438,7 +437,6 @@ class Atv : MainAPI() {
 
             val epNum = extractEpisodeNumber(url)
 
-            // ★ Hariç tutulan bölüm numaralarını atla
             if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
                 Log.d("ATV", "Hariç tutulan bölüm numarası: $epNum")
                 return null
@@ -515,6 +513,10 @@ class Atv : MainAPI() {
         return null
     }
 
+    /**
+     * Tüm bölümleri toplar ve 1'den başlayarak sıralar.
+     * Karadayı / Kara Para Aşk gibi eski diziler için ek fallback'ler içerir.
+     */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
 
@@ -559,6 +561,7 @@ class Atv : MainAPI() {
         }
 
         val staticFromDetail = extractEpisodesFromDoc(document)
+        Log.d("ATV", "Detay sayfasından doğrudan ${staticFromDetail.size} bölüm")
         allEpisodes.addAll(staticFromDetail)
 
         try {
@@ -608,10 +611,25 @@ class Atv : MainAPI() {
         return result
     }
 
+    /**
+     * ★ Karadayı / Kara Para Aşk gibi eski diziler için genişletilmiş filtre.
+     * Farklı URL formatlarını yakalar:
+     * - /X-bolum/izle
+     * - /bolum-X/izle
+     * - /X/izle
+     * - /X-bolum (uzantısız)
+     */
     private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
-        val episodeLinks = document.select("a[href*='/izle']")
+        // ★ Debug: Tüm /izle linklerini yazdır
+        val allIzleLinks = document.select("a[href*='/izle']")
+        Log.d("ATV", "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki ===")
+        allIzleLinks.take(15).forEachIndexed { i, el ->
+            Log.d("ATV", "  [$i] href=${el.attr("href")} | text=${el.text().trim().take(60)}")
+        }
+
+        val episodeLinks = allIzleLinks
             .filter { element ->
                 val href = element.attr("href")
 
@@ -620,8 +638,16 @@ class Atv : MainAPI() {
                 val text = element.text()
                 if (isTrailer(text)) return@filter false
 
-                href.contains("-bolum") && href.endsWith("/izle")
+                // ★ GENİŞLETİLMİŞ FİLTRE: Birçok URL formatını kabul et
+                val isEpisodeLink = href.contains("-bolum") ||
+                                    href.contains("/bolum-") ||
+                                    Regex("/\\d+/izle", RegexOption.IGNORE_CASE).containsMatchIn(href) ||
+                                    Regex("/\\d+-bolum", RegexOption.IGNORE_CASE).containsMatchIn(href)
+
+                href.endsWith("/izle") && isEpisodeLink
             }
+
+        Log.d("ATV", "Filtreden geçen: ${episodeLinks.size} bölüm linki")
 
         episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
             val href = fixUrlNull(element.attr("href")) ?: return@forEach
@@ -647,6 +673,7 @@ class Atv : MainAPI() {
             }?.let { episodes.add(it) }
         }
 
+        Log.d("ATV", "extractEpisodesFromDoc sonuç: ${episodes.size} bölüm")
         return episodes
     }
 
