@@ -41,7 +41,6 @@ class BirAsyaDizi : MainAPI() {
         "${mainUrl}/diziler/japon-dizileri/"            to "Japon Dizileri",
         "${mainUrl}/diziler/komedi-dizi/"               to "Komedi Dizi",
         "${mainUrl}/diziler/korku-dizi/"                to "Korku Dizi",
-//        "${mainUrl}/diziler/lgbtq-dizileri/"            to "LGBTQ+ Dizileri",
         "${mainUrl}/diziler/macera-dizi/"               to "Macera Dizi",
         "${mainUrl}/diziler/malezya/"                   to "Malezya",
         "${mainUrl}/diziler/melodram-dizi/"             to "Melodram Dizi",
@@ -52,7 +51,6 @@ class BirAsyaDizi : MainAPI() {
         "${mainUrl}/diziler/psikolojik/"                to "Psikolojik",
         "${mainUrl}/diziler/reality-show/"              to "Reality Show",
         "${mainUrl}/diziler/romantik-dizi/"             to "Romantik Dizi",
-//        "${mainUrl}/diziler/rusya/"                     to "Rusya",
         "${mainUrl}/diziler/savas-dizi/"                to "Savaş Dizi",
         "${mainUrl}/diziler/savas-sanatlari/"           to "Savaş Sanatları",
         "${mainUrl}/diziler/singapur/"                  to "Singapur",
@@ -70,13 +68,11 @@ class BirAsyaDizi : MainAPI() {
         "${mainUrl}/diziler/vietnam-dizileri/"          to "Vietnam Dizileri",
         "${mainUrl}/diziler/yasam-dizi/"                to "Yaşam Dizi",
         "${mainUrl}/diziler/yemek-dizi/"                to "Yemek Dizi",
-//        "${mainUrl}/diziler/yetiskin/"                  to "Yetişkin",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get("${request.data}page/$page/").document
         val home     = document.select("div.frag-k.yedi.yan").mapNotNull { it.toMainPageResult() }
-
         return newHomePageResponse(request.name, home)
     }
 
@@ -85,13 +81,11 @@ class BirAsyaDizi : MainAPI() {
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
             ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
-
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("${mainUrl}/?s=${query}").document
-
         return document.select("div.frag-k").mapNotNull { it.toSearchResult() }
     }
 
@@ -100,7 +94,6 @@ class BirAsyaDizi : MainAPI() {
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
             ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
-
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
 
@@ -108,29 +101,20 @@ class BirAsyaDizi : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim()
-            ?: document.selectFirst("h1")?.text()?.trim()
-            ?: return null
-
+            ?: document.selectFirst("h1")?.text()?.trim() ?: return null
         val poster = fixUrlNull(
             document.selectFirst("div.dizi-bilgi .afis img")?.attr("data-src")
                 ?: document.selectFirst("div.dizi-bilgi .afis img")?.attr("src")
         )
-
         val description = document.selectFirst("ol#t2 .aciklama")?.text()?.trim()
             ?: document.selectFirst("div.dizi-bilgi .aciklama")?.text()?.trim()
-
         val year = document.selectFirst("ol#t2 h2 span")?.text()?.trim()
             ?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
-
         val tags = document.select("ol#t2 .alt b, div.dizi-bilgi .detay li span")
-            .map { it.text().trim() }
-            .filter { it.isNotEmpty() }
-
+            .map { it.text().trim() }.filter { it.isNotEmpty() }
         val rating = document.selectFirst("div.dizi-bilgi .puan b")?.text()?.trim()
             ?: document.selectFirst("ol#t2 .bilgi span i.fa-imdb")?.parent()?.text()?.trim()
-
         val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
 
         val episodes = document.select("ol#s0 li[id^=eb]").mapNotNull { bolum ->
@@ -138,18 +122,25 @@ class BirAsyaDizi : MainAPI() {
             val epName = bolum.selectFirst("span.blm")?.text()?.trim()
                 ?: bolum.selectFirst("span.dizi-isim")?.text()?.trim()
                 ?: bolum.selectFirst("a")?.attr("title")?.trim()
-
             val epEpisode = bolum.selectFirst("span.blm")?.text()?.trim()
                 ?.let { Regex("""(\d+)""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
-
             newEpisode(epHref) {
                 this.episode = epEpisode
                 this.name = epName
             }
         }
 
-        if (episodes.isEmpty()) {
-            return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, listOf(newEpisode(url) { this.name = title })) {
+        return if (episodes.isEmpty()) {
+            newTvSeriesLoadResponse(title, url, TvType.AsianDrama, listOf(newEpisode(url) { this.name = title })) {
+                this.posterUrl = poster
+                this.plot = description
+                this.year = year
+                this.tags = tags
+                this.score = Score.from10(rating)
+                this.recommendations = recommendations
+            }
+        } else {
+            newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = year
@@ -158,26 +149,15 @@ class BirAsyaDizi : MainAPI() {
                 this.recommendations = recommendations
             }
         }
-
-        return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
-            this.posterUrl = poster
-            this.plot = description
-            this.year = year
-            this.tags = tags
-            this.score = Score.from10(rating)
-            this.recommendations = recommendations
-        }
     }
 
     private fun Element.toRecommendationResult(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val title = a.attr("title").takeIf { it.isNotBlank() }
-            ?: this.selectFirst("span.baslik")?.text()?.trim()
-            ?: return null
+            ?: this.selectFirst("span.baslik")?.text()?.trim() ?: return null
         val href = fixUrlNull(a.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
             ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
-
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
 
@@ -188,42 +168,36 @@ class BirAsyaDizi : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("kraptor_$name", "loadLinks data » $data")
-
         val document = app.get(data).document
         var found = false
 
-        // 1) Ana player iframe (id=Vidpplayera) — vdo-src attribute'unda gerçek kaynak var
+        // 1) Ana player iframe (id=Vidpplayera) — vdo-src attribute'unda gerçek kaynak
         document.select("iframe#Vidpplayera, #vast iframe, iframe[vdo-src]").forEach { iframe ->
             var link = fixUrlNull(
                 iframe.attr("vdo-src").takeIf { it.isNotBlank() }
                     ?: iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" }
                     ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
             )
-
-            // Odnoklassniki embed'ini ok.ru formatına çevir (custom extractor için)
+            // Odnoklassniki embed'ini ok.ru formatına çevir (built-in Odnoklassniki extractor için)
             if (link != null && link.contains("odnoklassniki.ru/videoembed/")) {
                 val videoId = link.substringAfterLast("/")
                 link = "https://ok.ru/videoembed/$videoId"
             }
-
             if (link != null) {
                 Log.d("kraptor_$name", "player iframe » $link")
                 if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
             }
         }
 
-        // 2) Diğer tüm iframe'ler (fallback) — reklam linklerini atla
+        // 2) Diğer iframe'ler (fallback) — reklam linklerini atla
         document.select("iframe").forEach { iframe ->
             val link = fixUrlNull(
                 iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" && !it.startsWith("about:") }
                     ?: iframe.attr("vdo-src").takeIf { it.isNotBlank() }
                     ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
             )
-            if (link != null &&
-                !link.contains("google.com/url") &&
-                !link.contains("googleads") &&
-                !link.contains("doubleclick")
-            ) {
+            if (link != null && !link.contains("google.com/url") &&
+                !link.contains("googleads") && !link.contains("doubleclick")) {
                 Log.d("kraptor_$name", "fallback iframe » $link")
                 if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
             }
@@ -231,15 +205,11 @@ class BirAsyaDizi : MainAPI() {
 
         // 3) Doğrudan m3u8 / mp4 arama
         Regex("""https?://[^\s"'<>]+\.(m3u8|mp4)(\?[^\s"'<>]*)?""").findAll(document.html()).forEach { m ->
-            val link = m.value
-            Log.d("kraptor_$name", "direct » $link")
-            if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+            Log.d("kraptor_$name", "direct » ${m.value}")
+            if (loadExtractor(m.value, mainUrl, subtitleCallback, callback)) found = true
         }
 
-        if (!found) {
-            Log.w("kraptor_$name", "Hiçbir link bulunamadı!")
-        }
-
+        if (!found) Log.w("kraptor_$name", "Hiçbir link bulunamadı!")
         return found
     }
 }
