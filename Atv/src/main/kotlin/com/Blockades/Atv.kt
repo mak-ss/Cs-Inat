@@ -153,12 +153,7 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ TÜM POSTER KAYNAKLARINI DENE
-     * Sırasıyla:
-     * 1. img[data-src, data-original, data-lazy-src, data-lazy, src, data-srcset, srcset]
-     * 2. picture > source[srcset, data-srcset]
-     * 3. div[style*=background-image]
-     * 4. Element üzerindeki data-poster, data-image, data-thumb, data-cover
+     * TÜM POSTER KAYNAKLARINI DENE
      */
     private fun Element.extractPoster(): String? {
         // 1. İlk img'i al
@@ -176,7 +171,6 @@ class Atv : MainAPI() {
             for (attr in attrs) {
                 val value = img.attr(attr).trim()
                 if (value.isNotEmpty() && !value.startsWith("data:")) {
-                    // srcset formatı: "url1 1x, url2 2x" → ilk URL'yi al
                     val url = if (attr.contains("srcset")) {
                         value.substringBefore(",").trim().substringBefore(" ")
                     } else {
@@ -234,13 +228,10 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ PROGRAM SAYFALARI İÇİN ÖZEL: Poster bulunamazsa Google favicon servisini kullan
-     * Müge Anlı, Esra Erol, Mutfak Bahane gibi programların kart posterleri
-     * bazen HTML'de olmayabilir; bu durumda Google favicon fallback kullanılır.
+     * Poster bulunamazsa Google favicon servisini kullan
      */
     private fun getProgramPosterFallback(path: String): String? {
         return try {
-            // Google favicon servisini kullan (256px'e kadar büyütülmüş)
             "https://www.google.com/s2/favicons?domain=www.atv.com.tr&sz=256"
         } catch (e: Exception) {
             null
@@ -268,10 +259,7 @@ class Atv : MainAPI() {
 
         if (isTrailer(title)) return null
 
-        // ★ extractPoster ile tüm kaynakları dene
         var poster = this.extractPoster()
-
-        // ★ Fallback: poster yoksa Google favicon kullan
         if (poster.isNullOrBlank()) {
             poster = getProgramPosterFallback(path)
         }
@@ -299,7 +287,6 @@ class Atv : MainAPI() {
         val title = this.text().trim().takeIf { it.isNotEmpty() } ?: return null
         if (isTrailer(title)) return null
 
-        // ★ Menüde poster parent'ta olur; yedek olarak favicon fallback
         var poster = this.parent()?.extractPoster() ?: this.extractPoster()
         if (poster.isNullOrBlank()) {
             poster = getProgramPosterFallback(path)
@@ -323,7 +310,6 @@ class Atv : MainAPI() {
         if (path.contains("/")) return null
         if (systemPages.contains(path)) return null
 
-        // Başlık
         val title = this.selectFirst("figcaption p, figcaption .title, h2, h3, .title, .caption")
             ?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotEmpty() }
@@ -332,10 +318,7 @@ class Atv : MainAPI() {
 
         if (isTrailer(title)) return null
 
-        // ★ extractPoster - element ve parent üzerinde dene
         var poster = this.extractPoster() ?: this.parent()?.extractPoster()
-
-        // ★ Fallback: hâlâ yoksa Google favicon kullan
         if (poster.isNullOrBlank()) {
             poster = getProgramPosterFallback(path)
         }
@@ -482,11 +465,10 @@ class Atv : MainAPI() {
         // Dizi/Program detay sayfası
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
 
-        // ★ POSTER ÇEKME: çok katmanlı
+        // ★ POSTER: çok katmanlı
         var poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
             ?: fixUrlNull(document.selectFirst("meta[name=twitter:image]")?.attr("content"))
 
-        // og:image yoksa sayfa içinden bul
         if (poster.isNullOrBlank()) {
             poster = document.selectFirst(
                 "img[src*='poster'], img[src*='cover'], img[src*='jacket'], " +
@@ -500,12 +482,10 @@ class Atv : MainAPI() {
             }
         }
 
-        // Son çare: body içinde boyutu büyük ilk resmi al
         if (poster.isNullOrBlank()) {
             poster = document.body().extractPoster()
         }
 
-        // Hâlâ yoksa favicon fallback
         if (poster.isNullOrBlank()) {
             poster = getProgramPosterFallback(url)
         }
@@ -515,7 +495,6 @@ class Atv : MainAPI() {
         val episodes = getAllEpisodes(document, url)
 
         Log.d("ATV", "load: $title -> ${episodes.size} bölüm | poster: ${poster ?: "YOK"}")
-        episodes.take(5).forEach { Log.d("ATV", "  Bölüm ${it.episode}: ${it.name} -> ${it.data}") }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
@@ -523,32 +502,41 @@ class Atv : MainAPI() {
         }
     }
 
+    /**
+     * ★ URL'den bölüm numarasını çıkarır.
+     * - /dizi-adi/1-bolum/izle       → 1
+     * - /dizi-adi/12-bolum/izle      → 12
+     * - /dizi-adi/bolum-5/izle       → 5
+     * - /dizi-adi/2-sezon-5-bolum    → 5 (sadece bölüm kısmı)
+     * - /dizi-adi/82/izle            → 82 (eski diziler)
+     */
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
 
-        Regex("/(\\d+)-bolum(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
+        // 1. "X-bolum" → X (EN ÖNEMLİ)
+        Regex("(\\d+)-bolum(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
-                return it.groupValues[1].toIntOrNull()
+                it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
             }
 
-        Regex("/bolum-(\\d+)(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
+        // 2. "bolum-X" → X
+        Regex("bolum-(\\d+)(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
-                return it.groupValues[1].toIntOrNull()
+                it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
             }
 
-        Regex("(\\d+)-sezon-(\\d+)-bolum", RegexOption.IGNORE_CASE)
+        // 3. Sadece /izle öncesindeki son sayı (eski diziler)
+        Regex("/(\\d+)/izle", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
-                return it.groupValues[2].toIntOrNull()
-            }
-
-        Regex("/(\\d+)(?:-[^/]*)?/izle", RegexOption.IGNORE_CASE)
-            .find(lowerUrl)?.let {
-                return it.groupValues[1].toIntOrNull()
+                it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
             }
 
         return null
     }
 
+    /**
+     * Tüm bölümleri toplar ve 1'den başlayarak sıralar.
+     */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
 
@@ -616,8 +604,10 @@ class Atv : MainAPI() {
             Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
 
+        // Tekrarları temizle
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
+        // Bölüm numarasına göre sırala (küçükten büyüğe = 1'den başlar)
         val withNumber = uniqueByUrl.filter { it.episode != null && it.episode!! > 0 }
         val withoutNumber = uniqueByUrl.filter { it.episode == null || it.episode == 0 }
 
@@ -634,6 +624,13 @@ class Atv : MainAPI() {
         }
 
         Log.d("ATV", "Toplam ${result.size} benzersiz bölüm (numaralı: ${sortedWithNumber.size})")
+
+        // ★ DEBUG: İlk 10 bölümün sıralamasını kontrol et
+        Log.d("ATV", "=== BÖLÜM SIRALAMASI (ilk 10) ===")
+        result.take(10).forEachIndexed { i, ep ->
+            Log.d("ATV", "  Sıra $i | Bölüm ${ep.episode} | ${ep.name} | ${ep.data}")
+        }
+
         return result
     }
 
