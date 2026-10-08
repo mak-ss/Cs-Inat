@@ -1,11 +1,7 @@
-
 package com.Blockades
-
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.utils.ExtractorApi
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.*
 import org.json.JSONObject
 import java.net.URLDecoder
 
@@ -20,21 +16,16 @@ class OdnoklassnikiExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        // 1. Embed sayfasını çek
         val response = app.get(url, referer = "https://ok.ru/").text
 
-        // 2. data-module="OKVideo" elementinin options attribute'unu bul
-        //    Genelde: data-options="{&quot;videos&quot;:[...]}"
         val optionsRegex = Regex("""data-options="([^"]+)"""", RegexOption.DOT_MATCHES_ALL)
         val rawOptions = optionsRegex.find(response)?.groupValues?.get(1) ?: return
 
-        // 3. HTML entity'lerini decode et (&quot; -> ")
         val decoded = rawOptions
             .replace("&quot;", "\"")
             .replace("&amp;", "&")
             .replace("&#39;", "'")
 
-        // 4. JSON parse et
         val json = try {
             JSONObject(URLDecoder.decode(decoded, "UTF-8"))
         } catch (e: Exception) {
@@ -43,7 +34,6 @@ class OdnoklassnikiExtractor : ExtractorApi() {
 
         val videos = json.optJSONArray("videos") ?: return
 
-        // 5. Her kalite için link oluştur
         for (i in 0 until videos.length()) {
             val video = videos.optJSONObject(i) ?: continue
             val videoUrl = video.optString("url").takeIf { it.isNotBlank() } ?: continue
@@ -58,15 +48,17 @@ class OdnoklassnikiExtractor : ExtractorApi() {
                 else -> Qualities.Unknown.value
             }
 
+            // 使用 newExtractorLink 替代旧构造函数
             callback.invoke(
-                ExtractorLink(
+                newExtractorLink(
                     source = this.name,
                     name = this.name,
                     url = videoUrl,
-                    referer = "https://ok.ru/",
-                    quality = quality,
-                    isM3u8 = videoUrl.contains(".m3u8")
-                )
+                    type = ExtractorLinkType.VIDEO
+                ) {
+                    this.referer = "https://ok.ru/"
+                    this.quality = quality
+                }
             )
         }
     }
