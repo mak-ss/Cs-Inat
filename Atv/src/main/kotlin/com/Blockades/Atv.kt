@@ -45,24 +45,19 @@ class Atv : MainAPI() {
     private val cardSelectors = listOf(
         "div.diziler-list div.card",
         "div.series-list div.card",
-        "div.programlar-list div.card",
-        "div.program-list div.card",
         "ul.dizi-list li",
-        "ul.program-list li",
         "div[class*=dizi] a[href]",
         "div[class*=series] a[href]",
-        "div[class*=program] a[href]",
         "div.card a[href]",
         "li.series-item a[href]",
-        "li.program-item a[href]",
         "article.card a[href]",
         "figure a[href]"
     )
 
+    // ★ Sadece Diziler ve Eski Diziler
     override val mainPage = mainPageOf(
         "${mainUrl}/diziler"      to "Diziler",
-        "${mainUrl}/eski-diziler" to "Eski Diziler",
-        "${mainUrl}/programlar"   to "Programlar"
+        "${mainUrl}/eski-diziler" to "Eski Diziler"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -110,7 +105,6 @@ class Atv : MainAPI() {
             val mainDoc = app.get(mainUrl).document
             val menuSelector = when (request.name) {
                 "Diziler"      -> "div.series-drop .sub-menu-list li a[href]"
-                "Programlar"   -> "div.program-drop-menu .sub-menu-list li a[href]"
                 "Eski Diziler" -> "div.series-drop .sub-menu-list li a[href]"
                 else -> ""
             }
@@ -349,10 +343,10 @@ class Atv : MainAPI() {
         val allContent = mutableListOf<SearchResponse>()
         val seenPaths = mutableSetOf<String>()
 
+        // ★ Sadece Diziler ve Eski Diziler taranıyor
         val pagesToScan = listOf(
             "${mainUrl}/diziler",
-            "${mainUrl}/eski-diziler",
-            "${mainUrl}/programlar"
+            "${mainUrl}/eski-diziler"
         )
 
         for (pageUrl in pagesToScan) {
@@ -389,7 +383,7 @@ class Atv : MainAPI() {
 
         try {
             val mainDoc = app.get(mainUrl).document
-            mainDoc.select("div.series-drop .sub-menu-list li a[href], div.program-drop-menu .sub-menu-list li a[href]")
+            mainDoc.select("div.series-drop .sub-menu-list li a[href]")
                 .forEach { element ->
                     val result = element.toMenuItemResult()
                     if (result != null) {
@@ -500,9 +494,6 @@ class Atv : MainAPI() {
         }
     }
 
-    /**
-     * URL'den bölüm numarasını çıkarır.
-     */
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
 
@@ -524,10 +515,6 @@ class Atv : MainAPI() {
         return null
     }
 
-    /**
-     * Tüm bölümleri toplar ve 1'den başlayarak sıralar.
-     * Belirli bölüm numaraları (anormal değerler) hariç tutulur.
-     */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
 
@@ -595,10 +582,8 @@ class Atv : MainAPI() {
             Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
 
-        // Tekrarları temizle
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
-        // ★ Hariç tutulan bölüm numaralarını filtrele
         val filtered = uniqueByUrl.filter { ep ->
             val num = ep.episode
             num == null || !excludedEpisodeNumbers.contains(num)
@@ -651,7 +636,6 @@ class Atv : MainAPI() {
 
             val epNum = extractEpisodeNumber(href)
 
-            // ★ Hariç tutulan bölüm numaralarını burada da atla
             if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
                 Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $href")
                 return@forEach
