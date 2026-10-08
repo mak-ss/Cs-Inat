@@ -84,6 +84,7 @@ class BirAsyaDizi : MainAPI() {
         val title     = this.selectFirst("a")?.attr("title") ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+            ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
 
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
@@ -97,7 +98,8 @@ class BirAsyaDizi : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title     = this.selectFirst("a")?.attr("title") ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+            ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
 
         return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
@@ -107,34 +109,58 @@ class BirAsyaDizi : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        val title = document.selectFirst("div.tab-icerik img")?.attr("title") ?: return null
-        val poster = fixUrlNull(document.selectFirst("div.tab-icerik img")?.attr("data-src"))
-        val description = document.selectFirst("div.aciklama div.scroll-liste")?.text()?.trim()
-        val year = document.selectFirst("div.extra span.C a")?.text()?.trim()?.toIntOrNull()
-        val tags = document.select("ol.gizli li a").map { it.text() }
-        val rating = document.selectFirst("span.tum-gor")?.text()?.trim()
+        // Başlık: dizi-bilgi içindeki aktif bölüm başlığı veya h1
+        val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim()
+            ?: document.selectFirst("h1")?.text()?.trim()
+            ?: return null
+
+        // Poster: dizi-bilgi .afis img (data-src)
+        val poster = fixUrlNull(
+            document.selectFirst("div.dizi-bilgi .afis img")?.attr("data-src")
+                ?: document.selectFirst("div.dizi-bilgi .afis img")?.attr("src")
+        )
+
+        // Açıklama: #t2 (Dizi sekmesi) .aciklama
+        val description = document.selectFirst("ol#t2 .aciklama")?.text()?.trim()
+            ?: document.selectFirst("div.dizi-bilgi .aciklama")?.text()?.trim()
+
+        // Yıl (varsa)
+        val year = document.selectFirst("ol#t2 h2 span")?.text()?.trim()
+            ?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
+
+        // Türler: sag-vliste altındaki kategori veya dizi-bilgi detay
+        val tags = document.select("ol#t2 .alt b, div.dizi-bilgi .detay li span")
+            .map { it.text().trim() }
+            .filter { it.isNotEmpty() }
+
+        // Puan: IMDb veya yıldız puanı
+        val rating = document.selectFirst("div.dizi-bilgi .puan b")?.text()?.trim()
+            ?: document.selectFirst("ol#t2 .bilgi span i.fa-imdb")?.parent()?.text()?.trim()
+
+        // Öneriler: sag-vliste li
         val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
-//        Log.d("kraptor_$name", "ul.scroll-liste = ${document.select("li.szn")}")
-        val episodes = document.select("li.szn").map { bolum ->
-//            Log.d("kraptor_$name", "bolum = ${bolum}")
-            val epName = bolum.selectFirst("div.baslik a")?.text()?.trim()
-//            Log.d("kraptor_$name", "epName = ${epName}")
-            val epEpisode = bolum.selectFirst("div.resim a")?.attr("href")
-                ?.substringBeforeLast("-bolum")
-                ?.substringAfterLast("-")
-                ?.toIntOrNull()
-//            Log.d("kraptor_$name", "epEpisode = ${epEpisode}")
-//            val epSeason    = bolum.selectFirst("div.resim a")?.attr("href")
-            val epHref = fixUrlNull(bolum.selectFirst("div.resim a")?.attr("href"))
-//            Log.d("kraptor_$name", "epHref = ${epHref}")
-            newEpisode(epHref, {
+
+        // Bölümler: sag taraftaki dizi-bolumler listesi (#s0 içindeki <li>)
+        val episodes = document.select("ol#s0 li[id^=eb]").mapNotNull { bolum ->
+            val epHref = fixUrlNull(bolum.selectFirst("a")?.attr("href")) ?: return@mapNotNull null
+            val epName = bolum.selectFirst("span.blm")?.text()?.trim()
+                ?: bolum.selectFirst("span.dizi-isim")?.text()?.trim()
+                ?: bolum.selectFirst("a")?.attr("title")?.trim()
+
+            // Bölüm numarası: "01-03. Bölüm" -> ilk sayıyı al
+            val epEpisode = bolum.selectFirst("span.blm")?.text()?.trim()
+                ?.let { Regex("""(\d+)""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+
+            newEpisode(epHref) {
                 this.episode = epEpisode
                 this.name = epName
-            })
+            }
         }
 
+        // Eğer bölüm listesi yoksa (dizi değil de tek bölüm sayfasıysa) — yine de bölüm olarak dön
         if (episodes.isEmpty()) {
-            return newMovieLoadResponse(title, url, TvType.AsianDrama, url) {
+            // Bu sayfa muhtemelen tek bir bölüm (film gibi) — yine de dizi türü olarak dönüyoruz
+            return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, listOf(newEpisode(url) { this.name = title })) {
                 this.posterUrl = poster
                 this.plot = description
                 this.year = year
@@ -142,40 +168,83 @@ class BirAsyaDizi : MainAPI() {
                 this.score = Score.from10(rating)
                 this.recommendations = recommendations
             }
-        } else {
-            return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
-                this.posterUrl = poster
-                this.plot = description
-                this.year = year
-                this.tags = tags
-                this.score = Score.from10(rating)
-                this.recommendations = recommendations
-            }
+        }
+
+        return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
+            this.posterUrl = poster
+            this.plot = description
+            this.year = year
+            this.tags = tags
+            this.score = Score.from10(rating)
+            this.recommendations = recommendations
         }
     }
 
     private fun Element.toRecommendationResult(): SearchResponse? {
-        val title     = this.selectFirst("span.baslik")?.text() ?: return null
-        val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("a img")?.attr("data-src"))
+        val a = this.selectFirst("a") ?: return null
+        val title = a.attr("title").takeIf { it.isNotBlank() }
+            ?: this.selectFirst("span.baslik")?.text()?.trim()
+            ?: return null
+        val href = fixUrlNull(a.attr("href")) ?: return null
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+            ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
 
-        return newTvSeriesSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
+        return newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = posterUrl }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        Log.d("kraptor_$name", "data » ${data}")
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        Log.d("kraptor_$name", "loadLinks data » $data")
+
         val document = app.get(data).document
+        var found = false
 
-//        Log.d("kraptor_$name", "document » ${document}")
+        // 1) Ana player iframe (id=Vidpplayera) — vdo-src attribute'unda gerçek kaynak var
+        document.select("iframe#Vidpplayera, #vast iframe, iframe[vdo-src]").forEach { iframe ->
+            val link = fixUrlNull(
+                iframe.attr("vdo-src").takeIf { it.isNotBlank() }
+                    ?: iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" }
+                    ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
+            )
+            if (link != null) {
+                Log.d("kraptor_$name", "player iframe » $link")
+                if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+            }
+        }
 
-        val iframe   = document.select("iframe")
+        // 2) Diğer tüm iframe'ler (fallback) — reklam linklerini atla
+        document.select("iframe").forEach { iframe ->
+            val link = fixUrlNull(
+                iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" && !it.startsWith("about:") }
+                    ?: iframe.attr("vdo-src").takeIf { it.isNotBlank() }
+                    ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
+            )
+            if (link != null &&
+                !link.contains("google.com/url") &&
+                !link.contains("googleads") &&
+                !link.contains("doubleclick")
+            ) {
+                Log.d("kraptor_$name", "fallback iframe » $link")
+                if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+            }
+        }
 
-        val iframeVid = fixUrlNull(iframe.attr("vdo-src")).toString()
+        // 3) Doğrudan m3u8 / mp4 arama
+        Regex("""https?://[^\s"'<>]+\.(m3u8|mp4)(\?[^\s"'<>]*)?""").findAll(document.html()).forEach { m ->
+            val link = m.value
+            Log.d("kraptor_$name", "direct » $link")
+            if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+        }
 
-        Log.d("kraptor_$name", "iframeVid » ${iframeVid}")
+        if (!found) {
+            Log.w("kraptor_$name", "Hiçbir link bulunamadı! HTML snippet:")
+            Log.w("kraptor_$name", document.select("body").html().take(2000))
+        }
 
-         loadExtractor(iframeVid, "${mainUrl}/", subtitleCallback, callback)
-
-        return true
+        return found
     }
 }
