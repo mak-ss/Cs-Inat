@@ -152,11 +152,7 @@ class Atv : MainAPI() {
         return trailerKeywords.any { lower.contains(it) }
     }
 
-    /**
-     * TÜM POSTER KAYNAKLARINI DENE
-     */
     private fun Element.extractPoster(): String? {
-        // 1. İlk img'i al
         val img = this.selectFirst("img")
         if (img != null) {
             val attrs = listOf(
@@ -182,7 +178,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // 2. picture > source[srcset, data-srcset]
         val source = this.selectFirst("picture source[srcset], picture source[data-srcset], source[srcset], source[data-srcset]")
         if (source != null) {
             val srcset = source.attr("srcset").ifEmpty { source.attr("data-srcset") }
@@ -192,7 +187,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // 3. div[style*=background-image:url(...)]
         val styledDiv = this.selectFirst("[style*=background-image]")
             ?: this.parent()?.selectFirst("[style*=background-image]")
         if (styledDiv != null) {
@@ -204,7 +198,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // 4. Element üzerindeki data attribute'ları
         val dataAttrs = listOf("data-poster", "data-image", "data-thumb", "data-cover", "data-background")
         for (attr in dataAttrs) {
             val value = this.attr(attr).trim()
@@ -213,7 +206,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // 5. Parent üzerindeki data attribute'ları
         val parent = this.parent()
         if (parent != null) {
             for (attr in dataAttrs) {
@@ -227,9 +219,6 @@ class Atv : MainAPI() {
         return null
     }
 
-    /**
-     * Poster bulunamazsa Google favicon servisini kullan
-     */
     private fun getProgramPosterFallback(path: String): String? {
         return try {
             "https://www.google.com/s2/favicons?domain=www.atv.com.tr&sz=256"
@@ -462,10 +451,8 @@ class Atv : MainAPI() {
             }
         }
 
-        // Dizi/Program detay sayfası
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
 
-        // ★ POSTER: çok katmanlı
         var poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
             ?: fixUrlNull(document.selectFirst("meta[name=twitter:image]")?.attr("content"))
 
@@ -503,12 +490,7 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ URL'den bölüm numarasını çıkarır.
-     * - /dizi-adi/1-bolum/izle       → 1
-     * - /dizi-adi/12-bolum/izle      → 12
-     * - /dizi-adi/bolum-5/izle       → 5
-     * - /dizi-adi/2-sezon-5-bolum    → 5 (sadece bölüm kısmı)
-     * - /dizi-adi/82/izle            → 82 (eski diziler)
+     * URL'den bölüm numarasını çıkarır.
      */
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
@@ -607,7 +589,7 @@ class Atv : MainAPI() {
         // Tekrarları temizle
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
-        // Bölüm numarasına göre sırala (küçükten büyüğe = 1'den başlar)
+        // Bölüm numarasına göre sırala
         val withNumber = uniqueByUrl.filter { it.episode != null && it.episode!! > 0 }
         val withoutNumber = uniqueByUrl.filter { it.episode == null || it.episode == 0 }
 
@@ -624,13 +606,6 @@ class Atv : MainAPI() {
         }
 
         Log.d("ATV", "Toplam ${result.size} benzersiz bölüm (numaralı: ${sortedWithNumber.size})")
-
-        // ★ DEBUG: İlk 10 bölümün sıralamasını kontrol et
-        Log.d("ATV", "=== BÖLÜM SIRALAMASI (ilk 10) ===")
-        result.take(10).forEachIndexed { i, ep ->
-            Log.d("ATV", "  Sıra $i | Bölüm ${ep.episode} | ${ep.name} | ${ep.data}")
-        }
-
         return result
     }
 
