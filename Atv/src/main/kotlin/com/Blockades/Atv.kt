@@ -604,19 +604,19 @@ class Atv : MainAPI() {
         return result
     }
 
-    /**
-     * ★ Eksik tarihleri komşu bölümlerden tahmin ederek doldurur.
-     */
     private fun fillMissingDates(episodes: List<Episode>): List<Episode> {
         if (episodes.isEmpty()) return episodes
 
         fun parseDate(text: String): Calendar? {
             val m = dateRegex.find(text) ?: return null
-            val day = m.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
-            val monthNameRaw = m.groupValues.getOrNull(2) ?: return null
-            val monthName = monthNameRaw.lowercase(Locale.getDefault())
-            val month = monthNumbers[monthName] ?: return null
-            val year = m.groupValues.getOrNull(3)?.toIntOrNull() ?: return null
+            val dayStr: String = m.groupValues.getOrNull(1) ?: return null
+            val monthNameRaw: String = m.groupValues.getOrNull(2) ?: return null
+            val yearStr: String = m.groupValues.getOrNull(3) ?: return null
+
+            val day: Int = dayStr.toIntOrNull() ?: return null
+            val month: Int = monthNumbers[monthNameRaw.lowercase(Locale.getDefault())] ?: return null
+            val year: Int = yearStr.toIntOrNull() ?: return null
+
             return Calendar.getInstance().apply {
                 set(year, month - 1, day, 0, 0, 0)
                 set(Calendar.MILLISECOND, 0)
@@ -648,8 +648,8 @@ class Atv : MainAPI() {
 
             val estimatedDate: Calendar? = when {
                 beforeNum != null && afterNum != null -> {
-                    val beforeDate = dateMap[beforeNum] ?: return@map ep
-                    val afterDate = dateMap[afterNum] ?: return@map ep
+                    val beforeDate: Calendar = dateMap[beforeNum] ?: return@map ep
+                    val afterDate: Calendar = dateMap[afterNum] ?: return@map ep
                     val totalSteps = afterNum - beforeNum
                     if (totalSteps <= 0) return@map ep
                     val stepMs = (afterDate.timeInMillis - beforeDate.timeInMillis) / totalSteps
@@ -658,13 +658,13 @@ class Atv : MainAPI() {
                     }
                 }
                 beforeNum != null -> {
-                    val beforeDate = dateMap[beforeNum] ?: return@map ep
+                    val beforeDate: Calendar = dateMap[beforeNum] ?: return@map ep
                     Calendar.getInstance().apply {
                         timeInMillis = beforeDate.timeInMillis + 7L * 24 * 60 * 60 * 1000
                     }
                 }
                 afterNum != null -> {
-                    val afterDate = dateMap[afterNum] ?: return@map ep
+                    val afterDate: Calendar = dateMap[afterNum] ?: return@map ep
                     Calendar.getInstance().apply {
                         timeInMillis = afterDate.timeInMillis - 7L * 24 * 60 * 60 * 1000
                     }
@@ -715,10 +715,9 @@ class Atv : MainAPI() {
             }
 
         episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
-            val href = fixUrlNull(element.attr("href")) ?: return@forEach
+            val href: String = fixUrlNull(element.attr("href")) ?: return@forEach
             if (isTrailer(href)) return@forEach
 
-            // ★ extractBestTitle artık non-null String döner
             val safeTitle: String = extractBestTitle(element)
 
             if (safeTitle.isBlank()) return@forEach
@@ -742,27 +741,24 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ En iyi başlığı seç. Dönüş tipi her zaman non-null String.
-     * Öncelik sırası:
-     * 1. Element içindeki tarih
-     * 2. Kardeş/üst elementlerdeki tarih
-     * 3. Klasik başlık elementleri (.title, h3 vs.)
-     * 4. Element text
-     * 5. "Bölüm" (fallback)
+     * ★ En iyi başlığı seç. Dönüş her zaman non-null String.
+     * Tüm dateRegex.find() blokları değişkene atanır, hiçbir yerde nullable geçiş yok.
      */
     private fun extractBestTitle(element: Element): String {
-        val ownText = element.text().trim()
+        val ownText: String = element.text().trim()
 
         // 1. Element kendi metninde tarih
-        dateRegex.find(ownText)?.let {
-            return buildTitleWithDate(element, it.value)
+        val ownMatch = dateRegex.find(ownText)
+        if (ownMatch != null) {
+            return buildTitleWithDate(element, ownMatch.value)
         }
 
         // 2. Child elementlerde tarih
-        element.select("*").forEach { child ->
+        for (child in element.select("*")) {
             val childText = child.text().trim()
-            dateRegex.find(childText)?.let {
-                return buildTitleWithDate(element, it.value)
+            val childMatch = dateRegex.find(childText)
+            if (childMatch != null) {
+                return buildTitleWithDate(element, childMatch.value)
             }
         }
 
@@ -770,14 +766,16 @@ class Atv : MainAPI() {
         val parent = element.parent()
         if (parent != null) {
             val parentText = parent.text().trim()
-            dateRegex.find(parentText)?.let {
-                return buildTitleWithDate(element, it.value)
+            val parentMatch = dateRegex.find(parentText)
+            if (parentMatch != null) {
+                return buildTitleWithDate(element, parentMatch.value)
             }
 
-            parent.select("*").forEach { sib ->
+            for (sib in parent.select("*")) {
                 val sibText = sib.text().trim()
-                dateRegex.find(sibText)?.let {
-                    return buildTitleWithDate(element, it.value)
+                val sibMatch = dateRegex.find(sibText)
+                if (sibMatch != null) {
+                    return buildTitleWithDate(element, sibMatch.value)
                 }
             }
         }
@@ -786,15 +784,16 @@ class Atv : MainAPI() {
         val grandParent = element.parent()?.parent()
         if (grandParent != null) {
             val gpText = grandParent.text().trim()
-            dateRegex.find(gpText)?.let {
-                return buildTitleWithDate(element, it.value)
+            val gpMatch = dateRegex.find(gpText)
+            if (gpMatch != null) {
+                return buildTitleWithDate(element, gpMatch.value)
             }
         }
 
         // 5. Klasik başlık elementleri
         val fromSelector = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
             ?.text()?.trim()
-        if (!fromSelector.isNullOrEmpty()) return fromSelector
+        if (fromSelector != null && fromSelector.isNotEmpty()) return fromSelector
 
         // 6. Element kendi metni
         if (ownText.isNotEmpty()) return ownText
@@ -803,14 +802,11 @@ class Atv : MainAPI() {
         return "Bölüm"
     }
 
-    /**
-     * ★ Tarihi ve bölüm numarasını birleştirip başlık oluşturur.
-     */
     private fun buildTitleWithDate(element: Element, dateText: String): String {
-        val ownText = element.text().trim()
+        val ownText: String = element.text().trim()
         val numMatch = Regex("^(\\d+)\\s*\\.").find(ownText)
 
-        val numFromText: Int? = numMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val numFromText: Int? = if (numMatch != null) numMatch.groupValues[1].toIntOrNull() else null
         val hrefAttr: String = element.attr("href")
         val numFromUrl: Int? = extractEpisodeNumber(hrefAttr)
         val num: Int? = numFromText ?: numFromUrl
@@ -824,16 +820,16 @@ class Atv : MainAPI() {
         }
     }
 
-    /**
-     * ★ Tarih metnini normalize eder. Gün adını Türkçe'ye çevirir.
-     */
     private fun normalizeDateText(dateText: String): String {
         val m = dateRegex.find(dateText) ?: return dateText
-        val day = m.groupValues.getOrNull(1)?.toIntOrNull() ?: return dateText
+        val dayStr: String = m.groupValues.getOrNull(1) ?: return dateText
         val monthName: String = m.groupValues.getOrNull(2) ?: return dateText
-        val year = m.groupValues.getOrNull(3)?.toIntOrNull() ?: return dateText
+        val yearStr: String = m.groupValues.getOrNull(3) ?: return dateText
 
-        val monthNum = monthNumbers[monthName.lowercase(Locale.getDefault())] ?: return dateText
+        val day: Int = dayStr.toIntOrNull() ?: return dateText
+        val monthNum: Int = monthNumbers[monthName.lowercase(Locale.getDefault())] ?: return dateText
+        val year: Int = yearStr.toIntOrNull() ?: return dateText
+
         val cal = Calendar.getInstance().apply {
             set(year, monthNum - 1, day, 0, 0, 0)
         }
@@ -844,7 +840,7 @@ class Atv : MainAPI() {
             "(Pazartesi|Salı|Çarşamba|Perşembe|Cuma|Cumartesi|Pazar)",
             RegexOption.IGNORE_CASE
         ).find(dateText)
-        val finalDay: String = originalDayMatch?.value ?: dayOfWeek
+        val finalDay: String = if (originalDayMatch != null) originalDayMatch.value else dayOfWeek
 
         return "$day $monthName $year, $finalDay"
     }
