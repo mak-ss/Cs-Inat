@@ -37,12 +37,10 @@ class Atv : MainAPI() {
         "teaser", "trailer", "ozet", "özet", "promo", "kamera-arkasi"
     )
 
-    // ★ Belirli bölüm numaralarını hariç tut (anormal değerler)
     private val excludedEpisodeNumbers = setOf(
         1392, 2384, 2390, 3817, 10333
     )
 
-    // ★ Türkçe ay isimleri
     private val monthNames = listOf(
         "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
         "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"
@@ -60,7 +58,6 @@ class Atv : MainAPI() {
         "Perşembe", "Cuma", "Cumartesi"
     )
 
-    // ★ Tarih kalıbı: "29 Haziran 2026, Pazartesi" veya "29 Haziran 2026"
     private val dateRegex = Regex(
         "(\\d{1,2})\\s+(Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\\s+(\\d{4})",
         RegexOption.IGNORE_CASE
@@ -597,7 +594,6 @@ class Atv : MainAPI() {
 
         val combined = sortedWithNumber + sortedWithoutNumber
 
-        // ★ Eksik tarihleri komşulardan tahmin ederek doldur
         val result = fillMissingDates(combined)
 
         Log.d("ATV", "Toplam ${result.size} benzersiz bölüm")
@@ -610,13 +606,10 @@ class Atv : MainAPI() {
 
     /**
      * ★ Eksik tarihleri komşu bölümlerden tahmin ederek doldurur.
-     * Örn: 4. bölüm "6 Temmuz", 6. bölüm "20 Temmuz" ise
-     *      5. bölüm "13 Temmuz" olur.
      */
     private fun fillMissingDates(episodes: List<Episode>): List<Episode> {
         if (episodes.isEmpty()) return episodes
 
-        // Tarih parse eden yardımcı
         fun parseDate(text: String): Calendar? {
             val m = dateRegex.find(text) ?: return null
             val day = m.groupValues[1].toIntOrNull() ?: return null
@@ -629,7 +622,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // Tarihi olan bölümleri haritalandır
         val dateMap = mutableMapOf<Int, Calendar>()
         episodes.forEach { ep ->
             val num = ep.episode ?: return@forEach
@@ -644,12 +636,10 @@ class Atv : MainAPI() {
 
         Log.d("ATV", "Tarih bulunan bölümler: ${dateMap.keys.sorted()}")
 
-        // En yakın tarihleri kullanarak eksikleri doldur
         val result = episodes.map { ep ->
             val num = ep.episode ?: return@map ep
             if (dateMap.containsKey(num)) return@map ep
 
-            // Bu bölümün tarihi yok → komşulardan tahmin et
             val beforeKeys = dateMap.keys.filter { it < num }
             val afterKeys = dateMap.keys.filter { it > num }
             val beforeNum = beforeKeys.maxOrNull()
@@ -657,7 +647,6 @@ class Atv : MainAPI() {
 
             val estimatedDate: Calendar? = when {
                 beforeNum != null && afterNum != null -> {
-                    // İki tarih arasında ortala
                     val beforeDate = dateMap[beforeNum]!!
                     val afterDate = dateMap[afterNum]!!
                     val totalSteps = afterNum - beforeNum
@@ -667,14 +656,12 @@ class Atv : MainAPI() {
                     }
                 }
                 beforeNum != null -> {
-                    // Sonraki yok → +7 gün
                     val beforeDate = dateMap[beforeNum]!!
                     Calendar.getInstance().apply {
                         timeInMillis = beforeDate.timeInMillis + 7L * 24 * 60 * 60 * 1000
                     }
                 }
                 afterNum != null -> {
-                    // Önceki yok → -7 gün
                     val afterDate = dateMap[afterNum]!!
                     Calendar.getInstance().apply {
                         timeInMillis = afterDate.timeInMillis - 7L * 24 * 60 * 60 * 1000
@@ -700,14 +687,6 @@ class Atv : MainAPI() {
         return result
     }
 
-    /**
-     * ★ extractEpisodesFromDoc
-     * Başlık önceliği:
-     * 1. Element içindeki tarih ("29 Haziran 2026, Pazartesi")
-     * 2. Kardeş/üst elementlerdeki tarih
-     * 3. Klasik başlık elementleri (.title, h3 vs.)
-     * 4. Element text
-     */
     private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
@@ -735,11 +714,12 @@ class Atv : MainAPI() {
             val href = fixUrlNull(element.attr("href")) ?: return@forEach
             if (isTrailer(href)) return@forEach
 
-            // ★ En iyi başlığı seç
             val rawTitle = extractBestTitle(element)
 
-            if (rawTitle.isNullOrBlank()) return@forEach
-            if (isTrailer(rawTitle)) return@forEach
+            // ★ null güvenliği
+            val safeTitle: String = if (rawTitle.isNullOrBlank()) "Bölüm" else rawTitle
+
+            if (isTrailer(safeTitle)) return@forEach
 
             val epNum = extractEpisodeNumber(href)
 
@@ -749,7 +729,7 @@ class Atv : MainAPI() {
             }
 
             newEpisode(href) {
-                this.name = rawTitle
+                this.name = safeTitle
                 this.episode = epNum
             }?.let { episodes.add(it) }
         }
@@ -766,14 +746,11 @@ class Atv : MainAPI() {
      * 4. Element text
      */
     private fun extractBestTitle(element: Element): String? {
-        // 1. Element'in kendi metninde tarih ara
         val ownText = element.text().trim()
         dateRegex.find(ownText)?.let {
-            // Tarih bulundu, ama başında bölüm numarası da olabilir
             return buildTitleWithDate(element, it.value)
         }
 
-        // 2. Element içindeki child'larda tarih ara
         element.select("*").forEach { child ->
             val childText = child.text().trim()
             dateRegex.find(childText)?.let {
@@ -781,7 +758,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // 3. Parent ve kardeşlerde ara
         val parent = element.parent()
         if (parent != null) {
             val parentText = parent.text().trim()
@@ -797,7 +773,6 @@ class Atv : MainAPI() {
             }
         }
 
-        // 4. Grand parent (kart)
         val grandParent = element.parent()?.parent()
         if (grandParent != null) {
             val gpText = grandParent.text().trim()
@@ -806,11 +781,9 @@ class Atv : MainAPI() {
             }
         }
 
-        // 5. Tarih yok → klasik başlık elementlerini dene
         element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
             ?.text()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
 
-        // 6. Element text
         ownText.takeIf { it.isNotEmpty() }?.let { return it }
 
         return null
@@ -818,15 +791,12 @@ class Atv : MainAPI() {
 
     /**
      * ★ Tarihi ve bölüm numarasını birleştirip başlık oluşturur.
-     * Örn: num=5, date="13 Temmuz 2026" → "5. 13 Temmuz 2026, Pazartesi"
      */
     private fun buildTitleWithDate(element: Element, dateText: String): String {
-        // Element'ten bölüm numarasını çıkar (URL'den değil, element metninden)
         val numMatch = Regex("^(\\d+)\\s*\\.").find(element.text().trim())
-        val num = numMatch?.groupValues?.get(1)?.toIntOrNull()
+        val num: Int? = numMatch?.groupValues?.get(1)?.toIntOrNull()
             ?: extractEpisodeNumber(element.attr("href"))
 
-        // Tarih metnini normalize et (gün adını Türkçeleştir)
         val normalizedDate = normalizeDateText(dateText)
 
         return if (num != null) {
@@ -840,13 +810,11 @@ class Atv : MainAPI() {
      * ★ Tarih metnini normalize eder. Gün adını Türkçe'ye çevirir.
      */
     private fun normalizeDateText(dateText: String): String {
-        // "13 Temmuz 2026" → "13 Temmuz 2026, Pazartesi"
         val m = dateRegex.find(dateText) ?: return dateText
         val day = m.groupValues[1].toIntOrNull() ?: return dateText
         val monthName = m.groupValues[2]
         val year = m.groupValues[3].toIntOrNull() ?: return dateText
 
-        // Haftanın gününü hesapla
         val monthNum = monthNumbers[monthName.lowercase(Locale.getDefault())] ?: return dateText
         val cal = Calendar.getInstance().apply {
             set(year, monthNum - 1, day, 0, 0, 0)
@@ -854,7 +822,6 @@ class Atv : MainAPI() {
         val dayOfWeekIndex = cal.get(Calendar.DAY_OF_WEEK) - 1
         val dayOfWeek = if (dayOfWeekIndex in dayNames.indices) dayNames[dayOfWeekIndex] else ""
 
-        // Orijinal metinde gün adı zaten varsa onu kullan
         val originalDayMatch = Regex(
             "(Pazartesi|Salı|Çarşamba|Perşembe|Cuma|Cumartesi|Pazar)",
             RegexOption.IGNORE_CASE
