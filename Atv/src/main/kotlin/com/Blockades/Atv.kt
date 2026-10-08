@@ -42,6 +42,11 @@ class Atv : MainAPI() {
         1392, 2384, 2390, 3817, 10333
     )
 
+    // ★ "5. Bölüm" başlığı sadece bu dizi için kalacak (slug bazlı)
+    private val allowedFiveTitleSlugs = setOf(
+        "ask-ve-taht"
+    )
+
     private val cardSelectors = listOf(
         "div.diziler-list div.card",
         "div.series-list div.card",
@@ -54,7 +59,6 @@ class Atv : MainAPI() {
         "figure a[href]"
     )
 
-    // ★ Sadece Diziler ve Eski Diziler
     override val mainPage = mainPageOf(
         "${mainUrl}/diziler"      to "Diziler",
         "${mainUrl}/eski-diziler" to "Eski Diziler"
@@ -513,14 +517,11 @@ class Atv : MainAPI() {
         return null
     }
 
-    /**
-     * Tüm bölümleri toplar ve 1'den başlayarak sıralar.
-     * Karadayı / Kara Para Aşk gibi eski diziler için ek fallback'ler içerir.
-     */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
 
         val cleanBaseUrl = baseUrl.substringBefore("?").substringBefore("#").trimEnd('/')
+        val slug = cleanBaseUrl.substringAfter(mainUrl).trim('/').substringBefore("/")
 
         val allEpisodesUrls = mutableListOf<String>()
 
@@ -533,7 +534,6 @@ class Atv : MainAPI() {
 
         allEpisodesUrls.add("$cleanBaseUrl/bolumler")
 
-        val slug = cleanBaseUrl.substringAfter(mainUrl).trim('/').substringBefore("/")
         allEpisodesUrls.add("$mainUrl/ajax/series/$slug/episodes")
         allEpisodesUrls.add("$mainUrl/ajax/$slug/episodes")
 
@@ -548,7 +548,7 @@ class Atv : MainAPI() {
                     )
                 ).document
 
-                val found = extractEpisodesFromDoc(doc)
+                val found = extractEpisodesFromDoc(doc, slug)
                 if (found.isNotEmpty()) {
                     Log.d("ATV", "✓ $url -> ${found.size} bölüm bulundu")
                     allEpisodes.addAll(found)
@@ -560,7 +560,7 @@ class Atv : MainAPI() {
             }
         }
 
-        val staticFromDetail = extractEpisodesFromDoc(document)
+        val staticFromDetail = extractEpisodesFromDoc(document, slug)
         Log.d("ATV", "Detay sayfasından doğrudan ${staticFromDetail.size} bölüm")
         allEpisodes.addAll(staticFromDetail)
 
@@ -572,7 +572,7 @@ class Atv : MainAPI() {
             for (sezonUrl in sezonLinks) {
                 try {
                     val doc = app.get(sezonUrl).document
-                    val found = extractEpisodesFromDoc(doc)
+                    val found = extractEpisodesFromDoc(doc, slug)
                     if (found.isNotEmpty()) {
                         Log.d("ATV", "Sezon sayfası: $sezonUrl -> ${found.size} bölüm")
                         allEpisodes.addAll(found)
@@ -612,22 +612,53 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ Karadayı / Kara Para Aşk gibi eski diziler için genişletilmiş filtre.
-     * Farklı URL formatlarını yakalar:
-     * - /X-bolum/izle
-     * - /bolum-X/izle
-     * - /X/izle
-     * - /X-bolum (uzantısız)
+     * ★ Bölüm başlıklarını temizler.
+     * "5. Bölüm" gibi başlıklar sadece Aşk ve Taht dizisinde kalır.
+     * Diğer dizilerde bu başlık URL'den üretilen standart isimle değiştirilir.
      */
-    private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
+    private fun cleanEpisodeTitle(
+        rawTitle: String,
+        episodeNumber: Int?,
+        slug: String
+    ): String {
+        val trimmed = rawTitle.trim()
+        if (trimmed.isEmpty()) {
+            return if (episodeNumber != null) "$episodeNumber. Bölüm" else "Bölüm"
+        }
+
+        // "5. Bölüm", "5.Bölüm", "5 . Bölüm" varyasyonlarını tespit et
+        val simpleNumberTitlePattern = Regex("^(\\d+)\\s*\\.?\\s*Bölüm$", RegexOption.IGNORE_CASE)
+
+        val match = simpleNumberTitlePattern.matchEntire(trimmed)
+
+        if (match != null) {
+            val num = match.groupValues[1].toIntOrNull()
+
+            // Aşk ve Taht → olduğu gibi bırak
+            if (slug in allowedFiveTitleSlugs) {
+                return trimmed
+            }
+
+            // Diğer diziler → "X. Bölüm" formatına çevir
+            if (num != null) {
+                return "$num. Bölüm"
+            }
+        }
+
+        return trimmed
+    }
+
+    /**
+     * ★ Karadayı / Kara Para Aşk gibi eski diziler için genişletilmiş filtre.
+     */
+    private fun extractEpisodesFromDoc(
+        document: org.jsoup.nodes.Document,
+        slug: String
+    ): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
-        // ★ Debug: Tüm /izle linklerini yazdır
         val allIzleLinks = document.select("a[href*='/izle']")
-        Log.d("ATV", "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki ===")
-        allIzleLinks.take(15).forEachIndexed { i, el ->
-            Log.d("ATV", "  [$i] href=${el.attr("href")} | text=${el.text().trim().take(60)}")
-        }
+        Log.d("ATV", "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki (slug=$slug) ===")
 
         val episodeLinks = allIzleLinks
             .filter { element ->
@@ -638,7 +669,6 @@ class Atv : MainAPI() {
                 val text = element.text()
                 if (isTrailer(text)) return@filter false
 
-                // ★ GENİŞLETİLMİŞ FİLTRE: Birçok URL formatını kabul et
                 val isEpisodeLink = href.contains("-bolum") ||
                                     href.contains("/bolum-") ||
                                     Regex("/\\d+/izle", RegexOption.IGNORE_CASE).containsMatchIn(href) ||
@@ -647,18 +677,16 @@ class Atv : MainAPI() {
                 href.endsWith("/izle") && isEpisodeLink
             }
 
-        Log.d("ATV", "Filtreden geçen: ${episodeLinks.size} bölüm linki")
-
         episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
             val href = fixUrlNull(element.attr("href")) ?: return@forEach
             if (isTrailer(href)) return@forEach
 
-            val epName = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
+            val rawEpName = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
                 ?.text()?.trim()?.takeIf { it.isNotEmpty() }
                 ?: element.text().trim().takeIf { it.isNotEmpty() }
                 ?: "Bölüm"
 
-            if (isTrailer(epName)) return@forEach
+            if (isTrailer(rawEpName)) return@forEach
 
             val epNum = extractEpisodeNumber(href)
 
@@ -667,8 +695,11 @@ class Atv : MainAPI() {
                 return@forEach
             }
 
+            // ★ Başlığı temizle
+            val cleanedName = cleanEpisodeTitle(rawEpName, epNum, slug)
+
             newEpisode(href) {
-                this.name = epName
+                this.name = cleanedName
                 this.episode = epNum
             }?.let { episodes.add(it) }
         }
