@@ -114,8 +114,8 @@ class DiziAsya : MainAPI() {
         val plot = res["plot"] as? String
         val year = (res["publish_year"] as? String)?.toIntOrNull()
         val poster = res["cover_image"] as? String
-        // ✅ FIX: rating -> score (Score? tipinde)
-        val score = (res["rate"] as? String)?.toIntOrNull()?.let { Score.fromInt(it) }
+        // ✅ FIX: Score.from() kullan (fromInt mevcut değil)
+        val score = (res["rate"] as? String)?.toIntOrNull()?.let { Score.from(it) }
 
         Log.d("DiziAsya", "Content type: $type, Title: $title, Slug: $slug")
 
@@ -171,7 +171,6 @@ class DiziAsya : MainAPI() {
                     this.posterUrl = posterUrl
                     this.plot = plot
                     this.year = year
-                    // ✅ FIX: Score? tipinde atanıyor
                     this.score = score
                     this.tags = tags
                     this.recommendations = recommendations
@@ -251,7 +250,6 @@ class DiziAsya : MainAPI() {
             this.posterUrl = posterUrl
             this.plot = plot
             this.year = year
-            // ✅ FIX: Score? tipinde atanıyor
             this.score = score
             this.tags = tags
             this.recommendations = recommendations
@@ -388,8 +386,6 @@ class DiziAsya : MainAPI() {
     /**
      * DiziAsya HLS proxy linklerini doğrudan callback'e gönderir.
      * Örnek: https://diziasya.uns.bio/hlsmod/.../master.m3u8?v=...
-     *
-     * ✅ FIX: suspend (newExtractorLink suspend)
      */
     private suspend fun addHlsLink(
         url: String,
