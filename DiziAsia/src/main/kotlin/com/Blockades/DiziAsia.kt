@@ -21,25 +21,22 @@ class DiziAsia : MainAPI() {
         "${mainUrl}" to "Yeni Bölümler",
         "${mainUrl}/diziler" to "Diziler",
         "${mainUrl}/filmler" to "Filmler",
-        
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-    val document = app.get("${request.data}?page=$page").document
-    val isMainPage = request.data == mainUrl 
+        val document = app.get("${request.data}?page=$page").document
+        val isMainPage = request.data == mainUrl 
 
-    val mainRow = document.select("div.row.row-cols-xxl-6.row-cols-md-4.row-cols-2").first()
-    val home = mainRow?.select("div.col-lg-2")?.mapNotNull { it.toMainPageResult(isMainPage) } ?: emptyList()
+        val mainRow = document.select("div.row.row-cols-xxl-6.row-cols-md-4.row-cols-2").first()
+        val home = mainRow?.select("div.col-lg-2")?.mapNotNull { it.toMainPageResult(isMainPage) } ?: emptyList()
 
-    return newHomePageResponse(request.name, home)
-}
-
+        return newHomePageResponse(request.name, home)
+    }
 
     private fun Element.toMainPageResult(isMainPage: Boolean = false): SearchResponse? {
         val title = this.selectFirst("h3.title")?.text()?.trim() ?: return null
         val subtitle = this.selectFirst("h4.title_sub")?.text()?.trim() ?: ""
         
-       
         val fullTitle = if (isMainPage && subtitle.isNotEmpty()) "$title - $subtitle" else title
         
         val originalHref = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
@@ -68,7 +65,6 @@ class DiziAsia : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst("h3.title")?.text()?.trim() ?: return null
-        
         
         val originalHref = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val href = cleanSeriesUrl(originalHref)
@@ -137,7 +133,6 @@ class DiziAsia : MainAPI() {
     private fun Element.toRecommendationResult(): SearchResponse? {
         val title = this.selectFirst("h3.title")?.text()?.trim() ?: return null
         
-        
         val originalHref = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
         val href = cleanSeriesUrl(originalHref)
         
@@ -189,7 +184,11 @@ class DiziAsia : MainAPI() {
 
                     if (iframe.isNullOrBlank()) continue
 
-                    if (iframe.contains("vidmoly.to")) {
+                    // VK Video desteği eklendi
+                    if (iframe.contains("vkvideo.ru") || iframe.contains("vk.com/video_ext")) {
+                        val vkResult = extractVkVideo(iframe, subtitleCallback, callback)
+                        if (vkResult) successCount++
+                    } else if (iframe.contains("vidmoly.to")) {
                         val vidmolyResult = extractVidmoly(iframe, callback)
                         if (vidmolyResult) successCount++
                     } else {
@@ -198,6 +197,7 @@ class DiziAsia : MainAPI() {
                     }
 
                 } catch (e: Exception) {
+                    Log.e("DiziAsia", "Kaynak işlenirken hata: ${e.message}")
                     continue
                 }
             }
@@ -205,7 +205,116 @@ class DiziAsia : MainAPI() {
             return successCount > 0
 
         } catch (e: Exception) {
+            Log.e("DiziAsia", "loadLinks hatası: ${e.message}")
             return false
+        }
+    }
+
+    /**
+     * VK Video (vkvideo.ru / vk.com) için extractor
+     * VK videoları doğrudan m3u8 veya mp4 linki vermez, iframe embed kullanır.
+     * Bu yüzden VK video embed URL'sini doğrudan ExtractorLink olarak döndürüyoruz.
+     * Cloudstream'ın built-in VK extractor'ı varsa loadExtractor ile de denenebilir.
+     */
+    private suspend fun extractVkVideo(
+        url: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        return try {
+            // VK video embed URL'sini al
+            val vkEmbedUrl = when {
+                url.contains("video_ext.php") -> url
+                url.contains("vkvideo.ru/video") -> {
+                    // https://vkvideo.ru/video624690269_456271643 -> embed formatına çevir
+                    val regex = Regex("""video(-?\d+)_(\d+)""")
+                    val match = regex.find(url)
+                    if (match != null) {
+                        val oid = match.groupValues[1]
+                        val id = match.groupValues[2]
+                        "https://vkvideo.ru/video_ext.php?oid=$oid&id=$id&hd=2"
+                    } else url
+                }
+                url.contains("vk.com/video") -> {
+                    val regex = Regex("""video(-?\d+)_(\d+)""")
+                    val match = regex.find(url)
+                    if (match != null) {
+                        val oid = match.groupValues[1]
+                        val id = match.groupValues[2]
+                        "https://vk.com/video_ext.php?oid=$oid&id=$id&hd=2"
+                    } else url
+                }
+                else -> url
+            }
+
+            // VK video sayfasından doğrudan video URL'sini çekmeyi dene
+            val headers = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+                "Referer" to "https://vkvideo.ru/"
+            )
+
+            val response = app.get(vkEmbedUrl, headers = headers)
+            val html = response.text
+
+            // VK video sayfasından m3u8 veya mp4 linklerini ara
+            val videoUrls = mutableListOf<String>()
+
+            // m3u8 linklerini ara
+            val m3u8Regex = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""")
+            m3u8Regex.findAll(html).forEach { match ->
+                videoUrls.add(match.groupValues[1].replace("\\/", "/"))
+            }
+
+            // mp4 linklerini ara (VK genellikle mp4 verir)
+            val mp4Regex = Regex(""""(https?://[^"]+\.mp4[^"]*)"""")
+            mp4Regex.findAll(html).forEach { match ->
+                videoUrls.add(match.groupValues[1].replace("\\/", "/"))
+            }
+
+            // VK'nın JSON formatındaki video URL'lerini ara
+            val vkUrlRegex = Regex(""""url(\d+)":"([^"]+)"""")
+            vkUrlRegex.findAll(html).forEach { match ->
+                val videoUrl = match.groupValues[2].replace("\\/", "/")
+                if (videoUrl.startsWith("http")) {
+                    videoUrls.add(videoUrl)
+                }
+            }
+
+            // Eğer doğrudan video URL'si bulunamazsa, iframe'i extractor olarak dene
+            if (videoUrls.isEmpty()) {
+                Log.d("DiziAsia", "VK video URL bulunamadı, loadExtractor deneniyor: $vkEmbedUrl")
+                return loadExtractor(vkEmbedUrl, "https://vkvideo.ru/", subtitleCallback, callback)
+            }
+
+            // Bulunan video URL'lerini callback'e gönder
+            videoUrls.distinct().forEach { videoUrl ->
+                val isM3u8 = videoUrl.contains(".m3u8")
+                callback(
+                    newExtractorLink(
+                        source = "VK Video",
+                        name = "VK Video",
+                        url = videoUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = "https://vkvideo.ru/"
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
+                            "Referer" to "https://vkvideo.ru/"
+                        )
+                    }
+                )
+            }
+
+            true
+        } catch (e: Exception) {
+            Log.e("DiziAsia", "VK video extract hatası: ${e.message}")
+            // Son çare olarak loadExtractor dene
+            try {
+                return loadExtractor(url, "https://vkvideo.ru/", subtitleCallback, callback)
+            } catch (e2: Exception) {
+                false
+            }
         }
     }
 
