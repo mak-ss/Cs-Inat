@@ -62,8 +62,8 @@ class Atv : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val results = mutableListOf<SearchResponse>()
-        // ★ Aynı sayfa içinde tekrar eden URL'leri engelle
-        val seenUrls = mutableSetOf<String>()
+        // ★ Normalize edilmiş path'ler üzerinden tekrar kontrolü
+        val seenPaths = mutableSetOf<String>()
 
         try {
             val listDoc = app.get(request.data).document
@@ -89,9 +89,12 @@ class Atv : MainAPI() {
                 } else {
                     element.toCardResult()
                 }
-                // ★ Sadece daha önce görülmemiş URL'leri ekle
-                if (result != null && seenUrls.add(result.url)) {
-                    results.add(result)
+                // ★ Path bazlı tekrar kontrolü
+                if (result != null) {
+                    val key = normalizeForCompare(result.url)
+                    if (key != null && seenPaths.add(key)) {
+                        results.add(result)
+                    }
                 }
             }
 
@@ -111,9 +114,11 @@ class Atv : MainAPI() {
             if (menuSelector.isNotEmpty()) {
                 mainDoc.select(menuSelector).forEach { element ->
                     val result = element.toMenuItemResult()
-                    // ★ Tekrar kontrolü
-                    if (result != null && seenUrls.add(result.url)) {
-                        results.add(result)
+                    if (result != null) {
+                        val key = normalizeForCompare(result.url)
+                        if (key != null && seenPaths.add(key)) {
+                            results.add(result)
+                        }
                     }
                 }
             }
@@ -126,6 +131,29 @@ class Atv : MainAPI() {
         return newHomePageResponse(
             listOf(HomePageList(request.name, results))
         )
+    }
+
+    /**
+     * ★ URL'yi karşılaştırma için normalize eder.
+     * Farklı formatları aynı stringe çevirir:
+     * - https://www.atv.com.tr/dizi → dizi
+     * - https://atv.com.tr/dizi/ → dizi
+     * - /dizi → dizi
+     */
+    private fun normalizeForCompare(url: String): String? {
+        return try {
+            var p = url.lowercase(Locale.getDefault())
+            p = p.replace("https://www.atv.com.tr/", "")
+            p = p.replace("https://atv.com.tr/", "")
+            p = p.replace("http://www.atv.com.tr/", "")
+            p = p.replace("http://atv.com.tr/", "")
+            p = p.removePrefix("/")
+            p = p.substringBefore("?").substringBefore("#")
+            p = p.trimEnd('/')
+            if (p.isEmpty()) null else p
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun isTrailer(text: String): Boolean {
@@ -248,8 +276,8 @@ class Atv : MainAPI() {
         }
 
         val allContent = mutableListOf<SearchResponse>()
-        // ★ Global tekrar önleme
-        val seenUrls = mutableSetOf<String>()
+        // ★ Path bazlı global tekrar önleme
+        val seenPaths = mutableSetOf<String>()
 
         val pagesToScan = listOf(
             "${mainUrl}/diziler",
@@ -277,9 +305,11 @@ class Atv : MainAPI() {
                     } else {
                         element.toCardResult()
                     }
-                    // ★ Tekrar kontrolü
-                    if (result != null && seenUrls.add(result.url)) {
-                        allContent.add(result)
+                    if (result != null) {
+                        val key = normalizeForCompare(result.url)
+                        if (key != null && seenPaths.add(key)) {
+                            allContent.add(result)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -292,8 +322,11 @@ class Atv : MainAPI() {
             mainDoc.select("div.series-drop .sub-menu-list li a[href], div.program-drop-menu .sub-menu-list li a[href]")
                 .forEach { element ->
                     val result = element.toMenuItemResult()
-                    if (result != null && seenUrls.add(result.url)) {
-                        allContent.add(result)
+                    if (result != null) {
+                        val key = normalizeForCompare(result.url)
+                        if (key != null && seenPaths.add(key)) {
+                            allContent.add(result)
+                        }
                     }
                 }
         } catch (e: Exception) {
