@@ -2,6 +2,7 @@
 package com.Blockades
 
 import android.util.Log
+import org.json.JSONObject
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -101,20 +102,29 @@ class BirAsyaDizi : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
+
         val title = document.selectFirst("div.dizi-bilgi h1")?.text()?.trim()
-            ?: document.selectFirst("h1")?.text()?.trim() ?: return null
+            ?: document.selectFirst("h1")?.text()?.trim()
+            ?: return null
+
         val poster = fixUrlNull(
             document.selectFirst("div.dizi-bilgi .afis img")?.attr("data-src")
                 ?: document.selectFirst("div.dizi-bilgi .afis img")?.attr("src")
         )
+
         val description = document.selectFirst("ol#t2 .aciklama")?.text()?.trim()
             ?: document.selectFirst("div.dizi-bilgi .aciklama")?.text()?.trim()
+
         val year = document.selectFirst("ol#t2 h2 span")?.text()?.trim()
             ?.let { Regex("""(19|20)\d{2}""").find(it)?.value?.toIntOrNull() }
+
         val tags = document.select("ol#t2 .alt b, div.dizi-bilgi .detay li span")
-            .map { it.text().trim() }.filter { it.isNotEmpty() }
+            .map { it.text().trim() }
+            .filter { it.isNotEmpty() }
+
         val rating = document.selectFirst("div.dizi-bilgi .puan b")?.text()?.trim()
             ?: document.selectFirst("ol#t2 .bilgi span i.fa-imdb")?.parent()?.text()?.trim()
+
         val recommendations = document.select("div.sag-vliste li").mapNotNull { it.toRecommendationResult() }
 
         val episodes = document.select("ol#s0 li[id^=eb]").mapNotNull { bolum ->
@@ -154,7 +164,8 @@ class BirAsyaDizi : MainAPI() {
     private fun Element.toRecommendationResult(): SearchResponse? {
         val a = this.selectFirst("a") ?: return null
         val title = a.attr("title").takeIf { it.isNotBlank() }
-            ?: this.selectFirst("span.baslik")?.text()?.trim() ?: return null
+            ?: this.selectFirst("span.baslik")?.text()?.trim()
+            ?: return null
         val href = fixUrlNull(a.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
             ?: fixUrlNull(this.selectFirst("img")?.attr("src"))
@@ -171,42 +182,125 @@ class BirAsyaDizi : MainAPI() {
         val document = app.get(data).document
         var found = false
 
-        // 1) Ana player iframe (id=Vidpplayera) — vdo-src attribute'unda gerçek kaynak
-        document.select("iframe#Vidpplayera, #vast iframe, iframe[vdo-src]").forEach { iframe ->
-            var link = fixUrlNull(
-                iframe.attr("vdo-src").takeIf { it.isNotBlank() }
-                    ?: iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" }
-                    ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
-            )
-            // Odnoklassniki embed'ini ok.ru formatına çevir (built-in Odnoklassniki extractor için)
-            if (link != null && link.contains("odnoklassniki.ru/videoembed/")) {
-                val videoId = link.substringAfterLast("/")
-                link = "https://ok.ru/videoembed/$videoId"
-            }
-            if (link != null) {
-                Log.d("kraptor_$name", "player iframe » $link")
-                if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+        val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
+
+        // ========== 1. ok.ru videoembed linkini doğrudan API ile çöz ==========
+        val iframeSrc = document.selectFirst("iframe#Vidpplayera")?.attr("vdo-src")?.takeIf { it.isNotBlank() }
+            ?: document.selectFirst("#vast iframe")?.attr("vdo-src")?.takeIf { it.isNotBlank() }
+            ?: document.selectFirst("iframe[vdo-src]")?.attr("vdo-src")?.takeIf { it.isNotBlank() }
+
+        if (iframeSrc != null) {
+            val fullUrl = fixUrlNull(iframeSrc)!!
+            Log.d("kraptor_$name", "okru embed url » $fullUrl")
+
+            val videoId = Regex("""/videoembed/(\d+)""").find(fullUrl)?.groupValues?.get(1)
+                ?: Regex("""/video/(\d+)""").find(fullUrl)?.groupValues?.get(1)
+
+            if (videoId != null) {
+                val apiUrl = "https://ok.ru/dk?cmd=videoPlayerMetadata&mid=$videoId"
+                try {
+                    val jsonText = app.get(
+                        apiUrl,
+                        referer = "https://ok.ru/videoembed/$videoId",
+                        headers = mapOf(
+                            "User-Agent" to ua,
+                            "Accept" to "application/json, text/plain, */*"
+                        )
+                    ).text
+
+                    Log.d("kraptor_$name", "okru api response » ${jsonText.take(300)}")
+
+                    // Cevap formatı: callbackFunc({...})  veya  {...}
+                    val cleanJson = jsonText
+                        .substringAfter("callbackFunc(", jsonText)
+                        .substringBeforeLast(")")
+
+                    val json = JSONObject(cleanJson)
+                    val videos = json.optJSONArray("videos")
+
+                    if (videos != null) {
+                        for (i in 0 until videos.length()) {
+                            val v = videos.getJSONObject(i)
+                            val vUrl = v.optString("url").takeIf { it.isNotBlank() } ?: continue
+                            val vName = v.optString("name").lowercase()
+
+                            val quality = when {
+                                vName.contains("1080") -> Qualities.P1080.value
+                                vName.contains("720")  -> Qualities.P720.value
+                                vName.contains("480")  -> Qualities.P480.value
+                                vName.contains("360")  -> Qualities.P360.value
+                                vName.contains("240")  -> Qualities.P240.value
+                                else -> Qualities.Unknown.value
+                            }
+
+                            val isM3u8 = vUrl.contains(".m3u8", ignoreCase = true)
+
+                            callback.invoke(
+                                newExtractorLink(
+                                    source = this.name,
+                                    name = this.name,
+                                    url = vUrl,
+                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                ) {
+                                    this.referer = "https://ok.ru/"
+                                    this.quality = quality
+                                    this.headers = mapOf(
+                                        "User-Agent" to ua,
+                                        "Referer" to "https://ok.ru/"
+                                    )
+                                }
+                            )
+                            Log.d("kraptor_$name", "okru link » $vUrl | q=$quality | m3u8=$isM3u8")
+                            found = true
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("kraptor_$name", "okru parse error: ${e.message}")
+                }
+            } else {
+                Log.w("kraptor_$name", "okru id bulunamadı, loadExtractor fallback")
+                if (loadExtractor(fullUrl, mainUrl, subtitleCallback, callback)) found = true
             }
         }
 
-        // 2) Diğer iframe'ler (fallback) — reklam linklerini atla
-        document.select("iframe").forEach { iframe ->
-            val link = fixUrlNull(
-                iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" && !it.startsWith("about:") }
-                    ?: iframe.attr("vdo-src").takeIf { it.isNotBlank() }
-                    ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
-            )
-            if (link != null && !link.contains("google.com/url") &&
-                !link.contains("googleads") && !link.contains("doubleclick")) {
-                Log.d("kraptor_$name", "fallback iframe » $link")
-                if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+        // ========== 2. okru başarısızsa genel iframe fallback ==========
+        if (!found) {
+            document.select("iframe").forEach { iframe ->
+                val link = fixUrlNull(
+                    iframe.attr("src").takeIf { it.isNotBlank() && it != "#!" && !it.startsWith("about:") }
+                        ?: iframe.attr("vdo-src").takeIf { it.isNotBlank() }
+                        ?: iframe.attr("data-src").takeIf { it.isNotBlank() }
+                )
+                if (link != null &&
+                    !link.contains("google.com/url") &&
+                    !link.contains("googleads") &&
+                    !link.contains("doubleclick")
+                ) {
+                    Log.d("kraptor_$name", "fallback iframe » $link")
+                    if (loadExtractor(link, mainUrl, subtitleCallback, callback)) found = true
+                }
             }
         }
 
-        // 3) Doğrudan m3u8 / mp4 arama
-        Regex("""https?://[^\s"'<>]+\.(m3u8|mp4)(\?[^\s"'<>]*)?""").findAll(document.html()).forEach { m ->
-            Log.d("kraptor_$name", "direct » ${m.value}")
-            if (loadExtractor(m.value, mainUrl, subtitleCallback, callback)) found = true
+        // ========== 3. Sayfada doğrudan m3u8 / mp4 var mı? ==========
+        if (!found) {
+            Regex("""https?://[^\s"'<>]+\.(m3u8|mp4)(\?[^\s"'<>]*)?""").findAll(document.html()).forEach { m ->
+                val directUrl = m.value
+                Log.d("kraptor_$name", "direct » $directUrl")
+                val isM3u8 = directUrl.contains(".m3u8", ignoreCase = true)
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = this.name,
+                        url = directUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = mainUrl
+                        this.headers = mapOf("User-Agent" to ua)
+                    }
+                )
+                found = true
+            }
         }
 
         if (!found) Log.w("kraptor_$name", "Hiçbir link bulunamadı!")
