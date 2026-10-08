@@ -38,6 +38,7 @@ class Atv : MainAPI() {
         "ozelvideo", "ozel-video", "ozel-video"
     )
 
+    // ★ Kart seçici fallback zinciri - eski diziler için de genişletildi
     private val cardSelectors = listOf(
         // Güncel diziler/programlar
         "div.diziler-list div.card",
@@ -46,7 +47,7 @@ class Atv : MainAPI() {
         "div.program-list div.card",
         "ul.dizi-list li",
         "ul.program-list li",
-        // Eski diziler için basit liste formatları
+        // ★ Eski diziler için basit liste formatları
         "div.eski-diziler a[href]",
         "ul.old-series-list li a[href]",
         "div[class*=eski] a[href]",
@@ -204,7 +205,7 @@ class Atv : MainAPI() {
         if (path.contains("/")) return null
         if (systemPages.contains(path)) return null
 
-        // Resim opsiyonel (bazı eski dizi linkleri resimsiz olabilir)
+        // Resim opsiyonel yapıldı (bazı eski dizi linkleri resimsiz olabilir)
         val img = this.selectFirst("img")
 
         val title = this.selectFirst("figcaption p, figcaption .title, h2, h3, .title, .caption")
@@ -365,7 +366,13 @@ class Atv : MainAPI() {
     }
 
     /**
-     * URL'den bölüm numarasını çıkarır.
+     * ★ URL'den bölüm numarasını çıkarır. ATV URL formatları:
+     * - /dizi-adi/1-bolum/izle         → 1
+     * - /dizi-adi/12-bolum/izle        → 12
+     * - /dizi-adi/bolum-1/izle         → 1
+     * - /dizi-adi/2-sezon-5-bolum/izle → 5
+     * - /dizi-adi/82/izle              → 82 (eski diziler)
+     * - /dizi-adi/1-bolum-1-fragman    → filtrelenir
      */
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
@@ -404,8 +411,9 @@ class Atv : MainAPI() {
     }
 
     /**
-     * Tüm bölümleri toplar. Eski diziler için /bolumler sayfası olmasa da
-     * detay sayfasındaki bölüm linklerini çeker.
+     * ★ Tüm bölümleri toplar ve DOĞRU SIRALAR.
+     * Eski dizilerde /bolumler sayfası olmayabilir, "TÜMÜ" butonu da olmayabilir.
+     * Bu yüzden çok katmanlı fallback zinciri kullanılır.
      */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
@@ -419,7 +427,7 @@ class Atv : MainAPI() {
             fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
         }
 
-        // 2. "TÜMÜ" / "Tüm Bölümler" butonları
+        // 2. "TÜMÜ" / "Tüm Bölümler" / "TÜM BÖLÜMLER" butonları
         document.select("a:contains(TÜMÜ), a:contains(Tümü), a:contains(TÜM BÖLÜMLER), a:contains(Tüm Bölümler), a:contains(TÜMÜNÜ GÖR)").forEach { el ->
             fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
         }
@@ -436,6 +444,10 @@ class Atv : MainAPI() {
         val slug = cleanBaseUrl.substringAfter(mainUrl).trim('/').substringBefore("/")
         allEpisodesUrls.add("$mainUrl/ajax/series/$slug/episodes")
         allEpisodesUrls.add("$mainUrl/ajax/$slug/episodes")
+
+        // 6. Pagination ile /bolumler sayfası denemesi (1, 2, 3...)
+        allEpisodesUrls.add("$cleanBaseUrl/bolumler?page=1")
+        allEpisodesUrls.add("$cleanBaseUrl/bolumler?sayfa=1")
 
         // Her URL'yi dene
         for (url in allEpisodesUrls.distinct()) {
@@ -461,7 +473,7 @@ class Atv : MainAPI() {
             }
         }
 
-        // Detay sayfasının kendisinden de bölüm çıkar (eski diziler için kritik)
+        // ★ Detay sayfasının kendisinden de bölüm çıkar (eski diziler için kritik)
         val staticFromDetail = extractEpisodesFromDoc(document)
         if (staticFromDetail.isNotEmpty()) {
             Log.d("ATV", "Detay sayfasından doğrudan ${staticFromDetail.size} bölüm bulundu")
@@ -490,17 +502,22 @@ class Atv : MainAPI() {
             Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
 
-        // Tekrarları temizle ve BÖLÜM NUMARASINA GÖRE sırala
+        // ★ KRİTİK: Tekrarları temizle ve BÖLÜM NUMARASINA GÖRE sırala
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
+        // Bölüm numarası olanları ayır
         val withNumber = uniqueByUrl.filter { it.episode != null && it.episode!! > 0 }
         val withoutNumber = uniqueByUrl.filter { it.episode == null || it.episode == 0 }
 
+        // Numaralıları bölüm numarasına göre sırala (küçükten büyüğe)
         val sortedWithNumber = withNumber.sortedBy { it.episode }
+
+        // Numarasızları URL'den sıralamaya çalış
         val sortedWithoutNumber = withoutNumber.sortedBy { extractEpisodeNumber(it.data) ?: Int.MAX_VALUE }
 
         val finalEpisodes = sortedWithNumber + sortedWithoutNumber
 
+        // Hâlâ numarasız kalan varsa sıralı index ata
         val result = finalEpisodes.mapIndexed { index, ep ->
             if (ep.episode == null || ep.episode == 0) {
                 ep.episode = index + 1
@@ -513,14 +530,13 @@ class Atv : MainAPI() {
     }
 
     /**
-     * Bir document içindeki tüm bölüm linklerini çıkarır.
-     * Eski diziler için "/izle" olmayan linkleri de kabul eder.
+     * ★ Bir document içindeki tüm bölüm linklerini çıkarır.
+     * Eski diziler için "-bolum" içermeyen URL'leri de kabul eder.
      */
     private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
-        // Hem /izle ile biten hem de /X-bolum formatındaki linkleri topla
-        val episodeLinks = document.select("a[href]")
+        val episodeLinks = document.select("a[href*='/izle']")
             .filter { element ->
                 val href = element.attr("href")
 
@@ -530,31 +546,19 @@ class Atv : MainAPI() {
                 val text = element.text()
                 if (isTrailer(text)) return@filter false
 
-                // Sadece atv.com.tr linkleri veya relative linkler
-                if (!href.contains("atv.com.tr") && !href.startsWith("/")) return@filter false
+                // ★ Esnek bölüm linki kontrolü:
+                // - "-bolum" içeriyorsa bölüm linki
+                // - VEYA "/sayi/izle" formatındaysa (eski diziler)
+                // - VEYA "/bolum-sayi" formatındaysa
+                val isEpisodeLink = href.contains("-bolum") ||
+                                    href.contains("/bolum-") ||
+                                    Regex("/\\d+/izle", RegexOption.IGNORE_CASE).containsMatchIn(href)
 
-                // İki tür bölüm linki kabul et:
-                // 1. /izle ile bitenler (güncel diziler)
-                // 2. /X-bolum veya /bolum-X içerenler (eski diziler, /izle olmayabilir)
-                val isIzleLink = href.endsWith("/izle") &&
-                                 (href.contains("-bolum") ||
-                                  href.contains("/bolum-") ||
-                                  Regex("/\\d+/izle", RegexOption.IGNORE_CASE).containsMatchIn(href))
-
-                val isBolumLink = !href.endsWith("/izle") &&
-                                  (href.contains("-bolum") || href.contains("/bolum-")) &&
-                                  !href.contains("bolumler") &&
-                                  !href.contains("fragman")
-
-                isIzleLink || isBolumLink
+                href.endsWith("/izle") && isEpisodeLink
             }
 
         episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
-            val hrefRaw = element.attr("href")
-            val href = fixUrlNull(hrefRaw) ?: return@forEach
-
-            // atv.com.tr kontrolü
-            if (!href.contains("atv.com.tr")) return@forEach
+            val href = fixUrlNull(element.attr("href")) ?: return@forEach
             if (isTrailer(href)) return@forEach
 
             val epName = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
@@ -564,6 +568,7 @@ class Atv : MainAPI() {
 
             if (isTrailer(epName)) return@forEach
 
+            // ★ Bölüm numarasını merkezi fonksiyonla çıkar
             val epNum = extractEpisodeNumber(href)
 
             newEpisode(href) {
