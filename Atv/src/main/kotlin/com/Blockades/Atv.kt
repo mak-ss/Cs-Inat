@@ -730,10 +730,11 @@ class Atv : MainAPI() {
                 return@forEach
             }
 
-            newEpisode(href) {
+            val ep = newEpisode(href) {
                 this.name = safeTitle
                 this.episode = epNum
-            }?.let { episodes.add(it) }
+            }
+            if (ep != null) episodes.add(ep)
         }
 
         Log.d("ATV", "extractEpisodesFromDoc sonuç: ${episodes.size} bölüm")
