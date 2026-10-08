@@ -1,6 +1,5 @@
-package com.Blockades
+package com.nikyokki
 
-import CryptoJS
 import android.util.Log
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.Episode
@@ -24,7 +23,6 @@ import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
-import com.lagradost.cloudstream3.toRatingInt
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -46,12 +44,10 @@ class YabanciDizi : MainAPI() {
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    // ! CloudFlare bypass
     override var sequentialMainPage = true
     override var sequentialMainPageDelay = 250L
     override var sequentialMainPageScrollDelay = 250L
 
-    // ! CloudFlare v2
     private val cloudflareKiller by lazy { CloudflareKiller() }
     private val interceptor by lazy { CloudflareInterceptor(cloudflareKiller) }
 
@@ -88,7 +84,7 @@ class YabanciDizi : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("${request.data}/${page}", interceptor = interceptor).document
+        val document = app.get("${request.data}/$page", interceptor = interceptor).document
         val home = document.select("div.mofy-movbox").mapNotNull { it.toSearchResult() }
 
         return newHomePageResponse(request.name, home)
@@ -114,20 +110,20 @@ class YabanciDizi : MainAPI() {
             interceptor = interceptor
         )
 
-        val parsedSafe = response.parsedSafe<JsonResponse>()
+        val parsedSafe: JsonResponse? = response.parsedSafe<JsonResponse>()
         val results = mutableListOf<SearchResponse>()
 
         if (parsedSafe?.success == 1) {
-            parsedSafe.data.result.forEach {
-                val title = it.s_name
-                val posterUrl = fixUrlNull("$mainUrl/uploads/series/${it.s_image}") ?: ""
-                if (it.s_type == "0") {
-                    val href = fixUrlNull("$mainUrl/dizi/${it.s_link}") ?: return@forEach
+            for (item in parsedSafe.data.result) {
+                val title = item.s_name
+                val posterUrl = fixUrlNull("$mainUrl/uploads/series/${item.s_image}") ?: ""
+                if (item.s_type == "0") {
+                    val href = fixUrlNull("$mainUrl/dizi/${item.s_link}") ?: continue
                     results.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                         this.posterUrl = posterUrl
                     })
-                } else if (it.s_type == "1") {
-                    val href = fixUrlNull("$mainUrl/film/${it.s_link}") ?: return@forEach
+                } else if (item.s_type == "1") {
+                    val href = fixUrlNull("$mainUrl/film/${item.s_link}") ?: continue
                     results.add(newMovieSearchResponse(title, href, TvType.Movie) {
                         this.posterUrl = posterUrl
                     })
@@ -190,7 +186,7 @@ class YabanciDizi : MainAPI() {
                 this.score = Score.from10(rating)
                 this.duration = duration
                 addActors(actors)
-                if (!trailer.isNullOrEmpty()) addTrailer("https://www.youtube.com/embed/${trailer}")
+                if (!trailer.isNullOrEmpty()) addTrailer("https://www.youtube.com/embed/$trailer")
             }
         } else {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
@@ -201,7 +197,7 @@ class YabanciDizi : MainAPI() {
                 this.score = Score.from10(rating)
                 this.duration = duration
                 addActors(actors)
-                if (!trailer.isNullOrEmpty()) addTrailer("https://www.youtube.com/embed/${trailer}")
+                if (!trailer.isNullOrEmpty()) addTrailer("https://www.youtube.com/embed/$trailer")
             }
         }
     }
@@ -219,19 +215,19 @@ class YabanciDizi : MainAPI() {
         val tabs = document.select("div#series-tabs a")
         Log.d("YBD", "Bulunan tab sayısı: ${tabs.size}")
 
-        tabs.forEachIndexed { index, tab ->
+        for (tab in tabs) {
             val dataEid = tab.attr("data-eid")
             val dataType = tab.attr("data-type")
-            Log.d("YBD", "Tab[$index] dataEid=$dataEid dataType=$dataType")
+            Log.d("YBD", "Tab dataEid=$dataEid dataType=$dataType")
 
             if (dataEid.isEmpty()) {
-                Log.d("YBD", "Tab[$index] dataEid boş, atlanıyor")
-                return@forEachIndexed
+                Log.d("YBD", "dataEid boş, atlanıyor")
+                continue
             }
 
             val dilAd = if (dataType == "2") "Dublaj" else "Altyazı"
 
-            val doc = try {
+            val doc: Series? = try {
                 app.post(
                     "$mainUrl/ajax/service",
                     referer = data,
@@ -255,27 +251,27 @@ class YabanciDizi : MainAPI() {
 
             if (doc?.success != 1 || doc.data.isNullOrEmpty()) {
                 Log.d("YBD", "API başarısız veya data boş: success=${doc?.success}")
-                return@forEachIndexed
+                continue
             }
 
             val doca = Jsoup.parse(doc.data)
             val items = doca.select("div.item")
             Log.d("YBD", "Bulunan kaynak sayısı: ${items.size}")
 
-            items.forEach { item ->
-                val name = item.text()
+            for (item in items) {
+                val itemName = item.text()
                 val dataLink = item.attr("data-link")
-                Log.d("YBD", "Kaynak: name='$name' dataLink='$dataLink'")
+                Log.d("YBD", "Kaynak: name='$itemName' dataLink='$dataLink'")
 
                 if (dataLink.isEmpty()) {
                     Log.d("YBD", "dataLink boş, atlanıyor")
-                    return@forEach
+                    continue
                 }
 
                 val linkPath = dataLink.replace("/", "_").replace("+", "-")
 
                 when {
-                    name.contains("Mac", ignoreCase = true) -> {
+                    itemName.contains("Mac", ignoreCase = true) -> {
                         try {
                             val mac = app.get(
                                 "$mainUrl/api/drive/$linkPath",
@@ -292,7 +288,6 @@ class YabanciDizi : MainAPI() {
 
                             if (subFrame.isEmpty()) {
                                 val ts = System.currentTimeMillis() / 1000
-                                Log.d("YBD", "Drive boş, drives endpoint deneniyor ts=$ts")
                                 val drives = app.get(
                                     "$mainUrl/api/drives/$linkPath?t=$ts",
                                     referer = "$mainUrl/api/drives/$linkPath",
@@ -307,7 +302,7 @@ class YabanciDizi : MainAPI() {
                             }
 
                             if (subFrame.isNotEmpty()) {
-                                loadMac(subFrame, callback, dilAd, name)
+                                loadMac(subFrame, callback, dilAd, itemName)
                             } else {
                                 Log.d("YBD", "Mac subFrame tamamen boş")
                             }
@@ -316,7 +311,7 @@ class YabanciDizi : MainAPI() {
                         }
                     }
 
-                    name.contains("VidMoly", ignoreCase = true) -> {
+                    itemName.contains("VidMoly", ignoreCase = true) -> {
                         try {
                             val vdm = app.get(
                                 "$mainUrl/api/moly/$linkPath",
@@ -351,7 +346,7 @@ class YabanciDizi : MainAPI() {
                         }
                     }
 
-                    name.contains("Okru", ignoreCase = true) -> {
+                    itemName.contains("Okru", ignoreCase = true) -> {
                         try {
                             val okr = app.get(
                                 "$mainUrl/api/ruplay/$linkPath",
@@ -386,9 +381,7 @@ class YabanciDizi : MainAPI() {
                         }
                     }
 
-                    else -> {
-                        Log.d("YBD", "Bilinmeyen kaynak tipi: $name")
-                    }
+                    else -> Log.d("YBD", "Bilinmeyen kaynak tipi: $itemName")
                 }
             }
         }
@@ -400,7 +393,7 @@ class YabanciDizi : MainAPI() {
         subFrame: String,
         callback: (ExtractorLink) -> Unit,
         dilAd: String,
-        name: String
+        itemName: String
     ) {
         Log.d("YBD", "loadMac subFrame -> $subFrame")
 
@@ -447,8 +440,8 @@ class YabanciDizi : MainAPI() {
 
         callback.invoke(
             newExtractorLink(
-                source = "$dilAd - $name",
-                name = "$dilAd - $name",
+                source = "$dilAd - $itemName",
+                name = "$dilAd - $itemName",
                 url = vidUrl,
                 ExtractorLinkType.M3U8
             ) {
@@ -461,7 +454,6 @@ class YabanciDizi : MainAPI() {
             }
         )
 
-        // M3U8'den kalite listesini çek
         val m3u8Body = try {
             app.get(
                 vidUrl,
@@ -483,8 +475,8 @@ class YabanciDizi : MainAPI() {
             Log.d("YBD", "Kalite: ${sonUrl.resolution} -> ${sonUrl.link}")
             callback.invoke(
                 newExtractorLink(
-                    source = "$dilAd - $name - ${sonUrl.resolution}",
-                    name = "$dilAd - $name - ${sonUrl.resolution}",
+                    source = "$dilAd - $itemName - ${sonUrl.resolution}",
+                    name = "$dilAd - $itemName - ${sonUrl.resolution}",
                     url = sonUrl.link,
                     ExtractorLinkType.M3U8
                 ) {
@@ -499,10 +491,6 @@ class YabanciDizi : MainAPI() {
         }
     }
 
-    /**
-     * M3U8 içeriğinden #EXT-X-STREAM-INF bloklarını ve ardından gelen URL'leri çıkarır.
-     * Regex tabanlı değil, satır bazlı parser kullanır çünkü URL genelde bir sonraki satırdadır.
-     */
     private fun extractStreamInfoWithRegex(m3uString: String): List<StreamInfo> {
         val result = mutableListOf<StreamInfo>()
         var currentResolution: String? = null
