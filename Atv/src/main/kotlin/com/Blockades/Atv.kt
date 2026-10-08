@@ -626,7 +626,7 @@ class Atv : MainAPI() {
         val dateMap = mutableMapOf<Int, Calendar>()
         episodes.forEach { ep ->
             val num = ep.episode ?: return@forEach
-            val date = parseDate(ep.name)
+            val date = parseDate(ep.name ?: "")
             if (date != null) dateMap[num] = date
         }
 
@@ -715,26 +715,25 @@ class Atv : MainAPI() {
             }
 
         episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
-            val rawHref = element.attr("href")
-            if (rawHref.isBlank() || isTrailer(rawHref)) return@forEach
+            val href: String = fixUrlNull(element.attr("href")) ?: return@forEach
+            if (isTrailer(href)) return@forEach
 
             val safeTitle: String = extractBestTitle(element)
 
-            if (safeTitle.isBlank() || isTrailer(safeTitle)) return@forEach
+            if (safeTitle.isBlank()) return@forEach
+            if (isTrailer(safeTitle)) return@forEach
 
-            val epNum = extractEpisodeNumber(rawHref)
+            val epNum = extractEpisodeNumber(href)
 
             if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
-                Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $rawHref")
+                Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $href")
                 return@forEach
             }
 
-            fixUrlNull(rawHref)?.let { validUrl ->
-                newEpisode(validUrl) {
-                    this.name = safeTitle
-                    this.episode = epNum
-                }?.let { episodes.add(it) }
-            }
+            newEpisode(href) {
+                this.name = safeTitle
+                this.episode = epNum
+            }?.let { episodes.add(it) }
         }
 
         Log.d("ATV", "extractEpisodesFromDoc sonuç: ${episodes.size} bölüm")
