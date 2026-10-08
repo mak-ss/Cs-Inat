@@ -8,7 +8,6 @@ import android.content.Context
 @CloudstreamPlugin
 class BirAsyaDiziPlugin: Plugin() {
     override fun load(context: Context) {
-        // Sadece ana API'yi kaydet. Extractor'lar loadExtractor tarafından otomatik eşlenir.
         registerMainAPI(BirAsyaDizi())
     }
 }
