@@ -718,11 +718,10 @@ class Atv : MainAPI() {
             val href = fixUrlNull(element.attr("href")) ?: return@forEach
             if (isTrailer(href)) return@forEach
 
-            val rawTitle = extractBestTitle(element)
+            // ★ extractBestTitle artık non-null String döner
+            val safeTitle: String = extractBestTitle(element)
 
-            // ★ null güvenliği
-            val safeTitle: String = if (rawTitle.isNullOrBlank()) "Bölüm" else rawTitle
-
+            if (safeTitle.isBlank()) return@forEach
             if (isTrailer(safeTitle)) return@forEach
 
             val epNum = extractEpisodeNumber(href)
@@ -743,14 +742,23 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ En iyi başlığı seç.
+     * ★ En iyi başlığı seç. Dönüş tipi her zaman non-null String.
+     * Öncelik sırası:
+     * 1. Element içindeki tarih
+     * 2. Kardeş/üst elementlerdeki tarih
+     * 3. Klasik başlık elementleri (.title, h3 vs.)
+     * 4. Element text
+     * 5. "Bölüm" (fallback)
      */
-    private fun extractBestTitle(element: Element): String? {
+    private fun extractBestTitle(element: Element): String {
         val ownText = element.text().trim()
+
+        // 1. Element kendi metninde tarih
         dateRegex.find(ownText)?.let {
             return buildTitleWithDate(element, it.value)
         }
 
+        // 2. Child elementlerde tarih
         element.select("*").forEach { child ->
             val childText = child.text().trim()
             dateRegex.find(childText)?.let {
@@ -758,6 +766,7 @@ class Atv : MainAPI() {
             }
         }
 
+        // 3. Parent ve kardeşlerde tarih
         val parent = element.parent()
         if (parent != null) {
             val parentText = parent.text().trim()
@@ -773,6 +782,7 @@ class Atv : MainAPI() {
             }
         }
 
+        // 4. Grand parent'ta tarih
         val grandParent = element.parent()?.parent()
         if (grandParent != null) {
             val gpText = grandParent.text().trim()
@@ -781,12 +791,16 @@ class Atv : MainAPI() {
             }
         }
 
-        element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
-            ?.text()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        // 5. Klasik başlık elementleri
+        val fromSelector = element.selectFirst(".style-01, .style-02, h3, .title, .date, span")
+            ?.text()?.trim()
+        if (!fromSelector.isNullOrEmpty()) return fromSelector
 
-        ownText.takeIf { it.isNotEmpty() }?.let { return it }
+        // 6. Element kendi metni
+        if (ownText.isNotEmpty()) return ownText
 
-        return null
+        // 7. Fallback
+        return "Bölüm"
     }
 
     /**
@@ -811,7 +825,7 @@ class Atv : MainAPI() {
     }
 
     /**
-     * ★ Tarih metnini normalize eder.
+     * ★ Tarih metnini normalize eder. Gün adını Türkçe'ye çevirir.
      */
     private fun normalizeDateText(dateText: String): String {
         val m = dateRegex.find(dateText) ?: return dateText
