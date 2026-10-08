@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import java.io.InputStream
 
 class NeonSpor : MainAPI() {
-    override var mainUrl              = "https://raw.githubusercontent.com/LarcivertSports/omercan/refs/heads/main/DeaTHLesS_MAC_29.m3u"
+    override var mainUrl              = "https://raw.githubusercontent.com/lyqaswqasw-cpu/bein1_auto.m3u8/refs/heads/main/bein1_auto.m3u8"
     override var name                 = "LarcivertSports"
     override val hasMainPage          = true
     override var lang                 = "tr"
