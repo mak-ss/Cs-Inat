@@ -491,23 +491,32 @@ class Atv : MainAPI() {
         }
     }
 
+    /**
+     * ATV bölüm URL'sinden gerçek bölüm numarasını çıkarır.
+     *
+     * Desteklenen gerçek ATV yapıları:
+     *   /dizi-adi/1-bolum/izle
+     *   /dizi-adi/bolum-1/izle
+     *
+     * Daha önce kullanılan /123/izle fallback'i kaldırıldı.
+     * Çünkü bu değer bölüm numarası değil, içerik/record ID olabiliyor.
+     */
     private fun extractEpisodeNumber(url: String): Int? {
-        val lowerUrl = url.lowercase(Locale.getDefault())
+        val cleanUrl = url
+            .substringBefore("?")
+            .substringBefore("#")
+            .lowercase(Locale.getDefault())
 
-        Regex("(\\d+)-bolum(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
-            .find(lowerUrl)?.let {
-                it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
-            }
+        val patterns = listOf(
+            Regex("/(\\d+)-bolum/izle(?:/|$)", RegexOption.IGNORE_CASE),
+            Regex("/bolum-(\\d+)/izle(?:/|$)", RegexOption.IGNORE_CASE)
+        )
 
-        Regex("bolum-(\\d+)(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
-            .find(lowerUrl)?.let {
-                it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
-            }
-
-        Regex("/(\\d+)/izle", RegexOption.IGNORE_CASE)
-            .find(lowerUrl)?.let {
-                it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
-            }
+        for (pattern in patterns) {
+            val match = pattern.find(cleanUrl)
+            val number = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (number != null && number > 0) return number
+        }
 
         return null
     }
@@ -523,17 +532,23 @@ class Atv : MainAPI() {
         document.select("a[href*='/bolumler']").forEach { el ->
             fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
         }
-        document.select("a:contains(TÜMÜ), a:contains(Tümü), a:contains(Tüm Bölümler)").forEach { el ->
-            fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
-        }
 
+        document.select("a:contains(TÜMÜ), a:contains(Tümü), a:contains(Tüm Bölümler)")
+            .forEach { el ->
+                fixUrlNull(el.attr("href"))?.let { allEpisodesUrls.add(it) }
+            }
+
+        // Öncelik: ATV'nin resmi bölüm listesi.
         allEpisodesUrls.add("$cleanBaseUrl/bolumler")
+
+        // AJAX uç noktaları yedek kaynak olarak kullanılır.
         allEpisodesUrls.add("$mainUrl/ajax/series/$slug/episodes")
         allEpisodesUrls.add("$mainUrl/ajax/$slug/episodes")
 
         for (url in allEpisodesUrls.distinct()) {
             try {
                 Log.d("ATV", "Bölüm listesi deneniyor: $url")
+
                 val doc = app.get(
                     url,
                     headers = mapOf(
@@ -542,7 +557,8 @@ class Atv : MainAPI() {
                     )
                 ).document
 
-                val found = extractEpisodesFromDoc(doc)
+                val found = extractEpisodesFromDoc(doc, slug)
+
                 if (found.isNotEmpty()) {
                     Log.d("ATV", "✓ $url -> ${found.size} bölüm bulundu")
                     allEpisodes.addAll(found)
@@ -554,19 +570,23 @@ class Atv : MainAPI() {
             }
         }
 
-        val staticFromDetail = extractEpisodesFromDoc(document)
+        // Detay sayfasındaki bölüm linklerini de al,
+        // fakat sadece mevcut dizinin slug'ına ait olanları kabul et.
+        val staticFromDetail = extractEpisodesFromDoc(document, slug)
         Log.d("ATV", "Detay sayfasından doğrudan ${staticFromDetail.size} bölüm")
         allEpisodes.addAll(staticFromDetail)
 
         try {
-            val sezonLinks = document.select("a[href*='sezon'], a[href*='sezonlar'], a[href*='season']")
+            val sezonLinks = document
+                .select("a[href*='sezon'], a[href*='sezonlar'], a[href*='season']")
                 .mapNotNull { fixUrlNull(it.attr("href")) }
                 .distinct()
 
             for (sezonUrl in sezonLinks) {
                 try {
                     val doc = app.get(sezonUrl).document
-                    val found = extractEpisodesFromDoc(doc)
+                    val found = extractEpisodesFromDoc(doc, slug)
+
                     if (found.isNotEmpty()) {
                         Log.d("ATV", "Sezon sayfası: $sezonUrl -> ${found.size} bölüm")
                         allEpisodes.addAll(found)
@@ -579,26 +599,38 @@ class Atv : MainAPI() {
             Log.e("ATV", "Sezon tarama hatası: ${e.message}")
         }
 
-        val uniqueByUrl = allEpisodes.distinctBy { it.data }
+        /*
+         * Aynı bölüm farklı kaynaklardan gelebilir.
+         * Önce gerçek URL'ye göre, sonra bölüm numarasına göre tekilleştiriyoruz.
+         */
+        val uniqueByEpisode = allEpisodes
+            .filter { episode ->
+                val number = episode.episode
+                number == null || !excludedEpisodeNumbers.contains(number)
+            }
+            .distinctBy { episode ->
+                episode.episode?.let { "episode:$it" } ?: "url:${episode.data}"
+            }
 
-        val filtered = uniqueByUrl.filter { ep ->
-            val num = ep.episode
-            num == null || !excludedEpisodeNumbers.contains(num)
-        }
+        // CloudStream'e 1,2,3,... şeklinde gerçek bölüm sırası ver.
+        // Bölüm numarası bulunamayanlar listenin sonuna bırakılır.
+        val sortedEpisodes = uniqueByEpisode.sortedWith(
+            compareBy<Episode> {
+                it.episode ?: Int.MAX_VALUE
+            }.thenBy {
+                it.data
+            }
+        )
 
-        val withNumber = filtered.filter { it.episode != null && it.episode!! > 0 }
-        val withoutNumber = filtered.filter { it.episode == null || it.episode == 0 }
-
-        val sortedWithNumber = withNumber.sortedBy { it.episode }
-        val sortedWithoutNumber = withoutNumber.sortedBy { extractEpisodeNumber(it.data) ?: Int.MAX_VALUE }
-
-        val combined = sortedWithNumber + sortedWithoutNumber
-
-        val result = fillMissingDates(combined)
+        val result = fillMissingDates(sortedEpisodes)
 
         Log.d("ATV", "Toplam ${result.size} benzersiz bölüm")
-        result.take(15).forEach { ep ->
-            Log.d("ATV", "  ${ep.episode}. Bölüm -> ${ep.name}")
+
+        result.take(20).forEach { ep ->
+            Log.d(
+                "ATV",
+                "  ${ep.episode ?: "?"}. Bölüm -> ${ep.name} -> ${ep.data}"
+            )
         }
 
         return result
@@ -691,53 +723,138 @@ class Atv : MainAPI() {
         return result
     }
 
-    private fun extractEpisodesFromDoc(document: org.jsoup.nodes.Document): List<Episode> {
+    /**
+     * Sadece gerçek bölüm linklerini çıkarır.
+     *
+     * seriesSlug verilirse başka dizilerin "Bunları da izle" linkleri
+     * kesinlikle bölüm listesine karışmaz.
+     */
+    private fun extractEpisodesFromDoc(
+        document: org.jsoup.nodes.Document,
+        seriesSlug: String? = null
+    ): List<Episode> {
         val episodes = mutableListOf<Episode>()
 
         val allIzleLinks = document.select("a[href*='/izle']")
-        Log.d("ATV", "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki ===")
+        Log.d(
+            "ATV",
+            "=== extractEpisodesFromDoc: ${allIzleLinks.size} adet /izle linki ==="
+        )
 
-        val episodeLinks = allIzleLinks
-            .filter { element ->
-                val href = element.attr("href")
+        val normalizedSlug = seriesSlug
+            ?.trim('/')
+            ?.lowercase(Locale.getDefault())
+            ?.takeIf { it.isNotBlank() }
 
-                if (isTrailer(href)) return@filter false
+        val episodeLinks = allIzleLinks.filter { element ->
+            val href = fixUrlNull(element.attr("href")) ?: return@filter false
+            val lowerHref = href.lowercase(Locale.getDefault())
 
-                val text = element.text()
-                if (isTrailer(text)) return@filter false
+            if (isTrailer(href)) return@filter false
+            if (isTrailer(element.text())) return@filter false
 
-                val isEpisodeLink = href.contains("-bolum") ||
-                                    href.contains("/bolum-") ||
-                                    Regex("/\\d+/izle", RegexOption.IGNORE_CASE).containsMatchIn(href) ||
-                                    Regex("/\\d+-bolum", RegexOption.IGNORE_CASE).containsMatchIn(href)
+            /*
+             * Aynı detay sayfasında başka dizilerin /izle linkleri olabilir.
+             * Örn. "Bunları da izle". Bunları mevcut dizinin slug'ı ile sınırla.
+             */
+            if (normalizedSlug != null) {
+                val normalizedPath = normalizePath(href)?.lowercase(Locale.getDefault())
+                    ?: return@filter false
 
-                href.endsWith("/izle") && isEpisodeLink
+                if (!normalizedPath.startsWith("$normalizedSlug/")) {
+                    return@filter false
+                }
             }
 
-        episodeLinks.distinctBy { it.attr("href") }.forEach { element ->
-            val href: String = fixUrlNull(element.attr("href")) ?: return@forEach
-            if (isTrailer(href)) return@forEach
+            /*
+             * Yalnızca gerçek ATV bölüm URL formatları.
+             * /123/izle artık kabul edilmiyor; o değer içerik ID'si olabilir.
+             */
+            val isEpisodeLink =
+                Regex(
+                    "/\\d+-bolum/izle(?:/|$)",
+                    RegexOption.IGNORE_CASE
+                ).containsMatchIn(lowerHref) ||
+                Regex(
+                    "/bolum-\\d+/izle(?:/|$)",
+                    RegexOption.IGNORE_CASE
+                ).containsMatchIn(lowerHref)
 
-            val safeTitle: String = extractBestTitle(element)
-
-            if (safeTitle.isBlank()) return@forEach
-            if (isTrailer(safeTitle)) return@forEach
-
-            val epNum = extractEpisodeNumber(href)
-
-            if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
-                Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $href")
-                return@forEach
-            }
-
-            newEpisode(href) {
-                this.name = safeTitle
-                this.episode = epNum
-            }?.let { episodes.add(it) }
+            isEpisodeLink
         }
 
-        Log.d("ATV", "extractEpisodesFromDoc sonuç: ${episodes.size} bölüm")
-        return episodes
+        /*
+         * Önce URL ile tekilleştir.
+         */
+        episodeLinks
+            .distinctBy { fixUrlNull(it.attr("href")) ?: it.attr("href") }
+            .forEach { element ->
+
+                val href: String = fixUrlNull(element.attr("href"))
+                    ?: return@forEach
+
+                if (isTrailer(href)) return@forEach
+
+                val safeTitle: String = extractBestTitle(element)
+
+                if (safeTitle.isBlank()) return@forEach
+                if (isTrailer(safeTitle)) return@forEach
+
+                /*
+                 * Önce URL'den gerçek bölüm numarasını al.
+                 * URL'de bulunamazsa başlıktaki "12. Bölüm" bilgisini kullan.
+                 */
+                val epNumFromUrl = extractEpisodeNumber(href)
+
+                val epNumFromTitle =
+                    Regex(
+                        "(\\d+)\\s*\\.\\s*(?:bölüm|bolum)\\b",
+                        RegexOption.IGNORE_CASE
+                    )
+                        .find(safeTitle)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+
+                val epNum = epNumFromUrl ?: epNumFromTitle
+
+                if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
+                    Log.d(
+                        "ATV",
+                        "Hariç tutulan bölüm: $epNum -> $href"
+                    )
+                    return@forEach
+                }
+
+                newEpisode(href) {
+                    this.name = safeTitle
+                    this.episode = epNum
+                }?.let { episodes.add(it) }
+            }
+
+        /*
+         * Aynı bölüm numarası birden fazla HTML kaynağından gelirse
+         * yalnızca ilk doğru linki bırak.
+         */
+        val uniqueEpisodes = episodes
+            .filter { it.episode == null || it.episode!! > 0 }
+            .distinctBy { episode ->
+                episode.episode?.let { "episode:$it" } ?: "url:${episode.data}"
+            }
+            .sortedWith(
+                compareBy<Episode> {
+                    it.episode ?: Int.MAX_VALUE
+                }.thenBy {
+                    it.data
+                }
+            )
+
+        Log.d(
+            "ATV",
+            "extractEpisodesFromDoc sonuç: ${uniqueEpisodes.size} bölüm"
+        )
+
+        return uniqueEpisodes
     }
 
     /**
