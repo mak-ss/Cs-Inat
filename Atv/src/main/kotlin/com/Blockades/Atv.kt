@@ -37,6 +37,11 @@ class Atv : MainAPI() {
         "teaser", "trailer", "ozet", "özet", "promo", "kamera-arkasi"
     )
 
+    // ★ Belirli bölüm numaralarını hariç tut (anormal değerler)
+    private val excludedEpisodeNumbers = setOf(
+        1392, 2384, 2390, 3817, 10333
+    )
+
     private val cardSelectors = listOf(
         "div.diziler-list div.card",
         "div.series-list div.card",
@@ -439,6 +444,12 @@ class Atv : MainAPI() {
 
             val epNum = extractEpisodeNumber(url)
 
+            // ★ Hariç tutulan bölüm numaralarını atla
+            if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
+                Log.d("ATV", "Hariç tutulan bölüm numarası: $epNum")
+                return null
+            }
+
             val episode = newEpisode(url) {
                 this.name = title
                 this.episode = epNum
@@ -495,19 +506,16 @@ class Atv : MainAPI() {
     private fun extractEpisodeNumber(url: String): Int? {
         val lowerUrl = url.lowercase(Locale.getDefault())
 
-        // 1. "X-bolum" → X (EN ÖNEMLİ)
         Regex("(\\d+)-bolum(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
             }
 
-        // 2. "bolum-X" → X
         Regex("bolum-(\\d+)(?:[/\\-]|$)", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
             }
 
-        // 3. Sadece /izle öncesindeki son sayı (eski diziler)
         Regex("/(\\d+)/izle", RegexOption.IGNORE_CASE)
             .find(lowerUrl)?.let {
                 it.groupValues[1].toIntOrNull()?.let { n -> if (n > 0) return n }
@@ -518,6 +526,7 @@ class Atv : MainAPI() {
 
     /**
      * Tüm bölümleri toplar ve 1'den başlayarak sıralar.
+     * Belirli bölüm numaraları (anormal değerler) hariç tutulur.
      */
     private suspend fun getAllEpisodes(document: org.jsoup.nodes.Document, baseUrl: String): List<Episode> {
         val allEpisodes = mutableListOf<Episode>()
@@ -589,9 +598,14 @@ class Atv : MainAPI() {
         // Tekrarları temizle
         val uniqueByUrl = allEpisodes.distinctBy { it.data }
 
-        // Bölüm numarasına göre sırala
-        val withNumber = uniqueByUrl.filter { it.episode != null && it.episode!! > 0 }
-        val withoutNumber = uniqueByUrl.filter { it.episode == null || it.episode == 0 }
+        // ★ Hariç tutulan bölüm numaralarını filtrele
+        val filtered = uniqueByUrl.filter { ep ->
+            val num = ep.episode
+            num == null || !excludedEpisodeNumbers.contains(num)
+        }
+
+        val withNumber = filtered.filter { it.episode != null && it.episode!! > 0 }
+        val withoutNumber = filtered.filter { it.episode == null || it.episode == 0 }
 
         val sortedWithNumber = withNumber.sortedBy { it.episode }
         val sortedWithoutNumber = withoutNumber.sortedBy { extractEpisodeNumber(it.data) ?: Int.MAX_VALUE }
@@ -636,6 +650,12 @@ class Atv : MainAPI() {
             if (isTrailer(epName)) return@forEach
 
             val epNum = extractEpisodeNumber(href)
+
+            // ★ Hariç tutulan bölüm numaralarını burada da atla
+            if (epNum != null && excludedEpisodeNumbers.contains(epNum)) {
+                Log.d("ATV", "Hariç tutulan bölüm: $epNum -> $href")
+                return@forEach
+            }
 
             newEpisode(href) {
                 this.name = epName
