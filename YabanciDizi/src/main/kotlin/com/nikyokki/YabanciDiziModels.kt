@@ -112,7 +112,6 @@ data class TVSeason(
     val episode: List<TVEpisode>
 )
 
-
 data class TVEpisode(
     @JsonProperty("@type") val type: String,
     val episodeNumber: String,
