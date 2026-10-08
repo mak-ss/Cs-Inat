@@ -1,5 +1,3 @@
-
-
 package com.nikyokki
 
 import android.util.Base64
@@ -28,26 +26,19 @@ object CryptoJS {
     private const val APPEND      = "Salted__"
 
     /**
-     * Encrypt
-     * @param password passphrase
-     * @param plainText plain string
-     */
-
-
-    /**
      * Decrypt
      * Thanks Artjom B. for this: http://stackoverflow.com/a/29152379/4405051
      * @param password passphrase
      * @param cipherText encrypted string
      */
-    fun decrypt(password: String, cipherText: String, iv: String, s:String): String {
+    fun decrypt(password: String, cipherText: String, iv: String, s: String): String {
         val ctBytes         = Base64.decode(cipherText.toByteArray(), Base64.DEFAULT)
         val saltBytes       = hexToBytes2(s)
         println(saltBytes.size)
         //val cipherTextBytes = Arrays.copyOfRange(ctBytes, 16, ctBytes.size)
 
         val key = ByteArray(KEY_SIZE / 8)
-        val ivb  = hexToBytes2(iv)
+        val ivb = hexToBytes2(iv)
         //val pass = hexToBytes2(password)
         evpkdf(password.toByteArray(), KEY_SIZE, IV_SIZE, saltBytes, key, ivb)
 
@@ -71,7 +62,6 @@ object CryptoJS {
         val cipher = Cipher.getInstance(HASH_CIPHER)
         val keyS   = SecretKeySpec(key, AES)
         cipher.init(Cipher.DECRYPT_MODE, keyS, IvParameterSpec(iv))
-
         val plainText = cipher.doFinal(cipherTextBytes)
         return String(plainText)
     }
