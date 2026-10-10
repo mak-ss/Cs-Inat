@@ -151,33 +151,35 @@ class FilmIzyon : MainAPI() {
         Log.d("kraptor_${this.name}", "data = $data")
         val document = app.get(data).document
 
-        // 1) Sayfadaki iframe'i bul (src veya data-src)
+        // 1) Sayfadaki iframe'i bul — önce src, sonra data-src
         val iframe = document
             .selectFirst("iframe")
             ?.let { el ->
-                val src = el.attr("src")
-                if (src.isNotBlank()) src else el.attr("data-src")
+                val src = el.attr("src").trim()
+                if (src.isNotBlank() && src != "about:blank") src
+                else el.attr("data-src").trim()
             }
             .orEmpty()
-        Log.d("kraptor_${this.name}", "iframe = $iframe")
 
+        Log.d("kraptor_${this.name}", "iframe = $iframe")
         if (iframe.isBlank()) return false
 
         val fixedIframe = fixUrlNull(iframe) ?: return false
         Log.d("kraptor_${this.name}", "fixedIframe = $fixedIframe")
 
-        // 2) İframe host'una göre ilgili extractor'ı çağır
+        // 2) Host'a göre uygun extractor'ı çağır
         when {
+            fixedIframe.contains("vidmoly", true) -> {
+                extractVidmoly(fixedIframe, subtitleCallback, callback)
+            }
             fixedIframe.contains("vmpx.online", true) ||
             fixedIframe.contains("vmeas.cloud", true) ||
             fixedIframe.contains("vmnow.online", true) ||
             fixedIframe.contains("vmshow.", true) ||
-            fixedIframe.contains("vmwesa.", true) ||
-            fixedIframe.contains("vidsrc.", true) -> {
+            fixedIframe.contains("vmwesa.", true) -> {
                 extractVmpx(fixedIframe, subtitleCallback, callback)
             }
             else -> {
-                // Bilinmeyen host → Cloudstream'in bilinen extractor'larına bırak
                 loadExtractor(fixedIframe, "${mainUrl}/", subtitleCallback, callback)
             }
         }
@@ -186,7 +188,7 @@ class FilmIzyon : MainAPI() {
     }
 
     // ------------------------------------------------------------------
-    // VMPX EXTRACTOR (vmpx / vmeas / vmnow / vidsrc altyapısı)
+    // VMPX EXTRACTOR (vmpx / vmeas / vmnow altyapısı)
     // ------------------------------------------------------------------
     private suspend fun extractVmpx(
         iframeUrl: String,
@@ -213,43 +215,33 @@ class FilmIzyon : MainAPI() {
         val html = playerDoc.html()
         Log.d("kraptor_vmpx", "player html length = ${html.length}")
 
-        // --- 1) Doğrudan m3u8 linki ara ---
         val m3u8Regex = Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""")
         val found = mutableSetOf<String>()
 
+        // 1) Doğrudan m3u8
         m3u8Regex.findAll(html).forEach { m ->
-            val cleaned = m.value
-                .replace("\\/", "/")
-                .replace("&amp;", "&")
-            found.add(cleaned)
+            found.add(m.value.replace("\\/", "/").replace("&amp;", "&"))
         }
 
-        // --- 2) `file:"..."` / `source:"..."` şeklinde gömülü link ara ---
+        // 2) file:"..." / source:"..." gömülü link
         val fileRegex = Regex("""(?:file|source|src)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']""")
         fileRegex.findAll(html).forEach { m ->
-            val cleaned = m.groupValues[1]
-                .replace("\\/", "/")
-                .replace("&amp;", "&")
-            found.add(cleaned)
+            found.add(m.groupValues[1].replace("\\/", "/").replace("&amp;", "&"))
         }
 
-        // --- 3) Base64 ile şifrelenmiş linkleri ara ---
+        // 3) Base64 şifreli
         val base64Regex = Regex("""(?:file|source|src)\s*[:=]\s*["']([A-Za-z0-9+/=]{40,})["']""")
         base64Regex.findAll(html).forEach { m ->
             try {
                 val decoded = String(Base64.decode(m.groupValues[1], Base64.DEFAULT))
                 if (decoded.contains(".m3u8")) {
-                    val cleaned = decoded
-                        .replace("\\/", "/")
-                        .replace("&amp;", "&")
-                    found.add(cleaned)
+                    found.add(decoded.replace("\\/", "/").replace("&amp;", "&"))
                 }
             } catch (_: Exception) {}
         }
 
-        // --- 4) Bulunanları callback'e gönder, bulunamadıysa loadExtractor'a düş ---
         if (found.isEmpty()) {
-            Log.w("kraptor_vmpx", "m3u8 bulunamadı, fallback loadExtractor deneniyor")
+            Log.w("kraptor_vmpx", "m3u8 bulunamadı, fallback loadExtractor")
             loadExtractor(iframeUrl, "${mainUrl}/", subtitleCallback, callback)
             return
         }
@@ -279,6 +271,99 @@ class FilmIzyon : MainAPI() {
                                 "AppleWebKit/537.36 (KHTML, like Gecko) " +
                                 "Chrome/120.0.0.0 Safari/537.36",
                         "Referer"    to iframeUrl
+                    )
+                }
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // VIDMOLY EXTRACTOR (vidmoly.net / vidmoly.to / vidmoly.biz)
+    // ------------------------------------------------------------------
+    private suspend fun extractVidmoly(
+        iframeUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        Log.d("kraptor_vidmoly", "extractVidmoly -> $iframeUrl")
+
+        val playerDoc = try {
+            app.get(
+                iframeUrl,
+                referer = "${mainUrl}/",
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                            "Chrome/120.0.0.0 Safari/537.36"
+                )
+            ).document
+        } catch (e: Exception) {
+            Log.e("kraptor_vidmoly", "iframe alınamadı: ${e.message}")
+            return
+        }
+
+        val html = playerDoc.html()
+        Log.d("kraptor_vidmoly", "player html length = ${html.length}")
+
+        val found = mutableSetOf<String>()
+
+        // 1) jwplayer / plyr / videojs tipik sources JSON'u
+        val sourcesRegex = Regex("""["']?file["']?\s*:\s*["']([^"']+?\.m3u8[^"']*)["']""")
+        sourcesRegex.findAll(html).forEach { m ->
+            found.add(m.groupValues[1].replace("\\/", "/").replace("&amp;", "&"))
+        }
+
+        // 2) Genel m3u8 regex
+        val m3u8Regex = Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""")
+        m3u8Regex.findAll(html).forEach { m ->
+            found.add(m.value.replace("\\/", "/").replace("&amp;", "&"))
+        }
+
+        // 3) Base64 ile şifrelenmiş kaynak
+        val b64Regex = Regex("""["']([A-Za-z0-9+/=]{60,})["']""")
+        b64Regex.findAll(html).forEach { m ->
+            try {
+                val decoded = String(Base64.decode(m.groupValues[1], Base64.DEFAULT))
+                if (decoded.contains(".m3u8")) {
+                    m3u8Regex.findAll(decoded).forEach { mm ->
+                        found.add(mm.value.replace("\\/", "/").replace("&amp;", "&"))
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        if (found.isEmpty()) {
+            Log.w("kraptor_vidmoly", "m3u8 bulunamadı, fallback loadExtractor")
+            loadExtractor(iframeUrl, "${mainUrl}/", subtitleCallback, callback)
+            return
+        }
+
+        found.forEachIndexed { index, m3u8 ->
+            Log.d("kraptor_vidmoly", "m3u8[$index] = $m3u8")
+
+            val quality = when {
+                m3u8.contains("1080") -> Qualities.P1080.value
+                m3u8.contains("720")  -> Qualities.P720.value
+                m3u8.contains("480")  -> Qualities.P480.value
+                m3u8.contains("360")  -> Qualities.P360.value
+                else                  -> Qualities.Unknown.value
+            }
+
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name   = "${this.name} [${index + 1}]",
+                    url    = m3u8,
+                    type   = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = iframeUrl
+                    this.quality = quality
+                    this.headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                                "Chrome/120.0.0.0 Safari/537.36",
+                        "Referer"    to iframeUrl,
+                        "Origin"     to "https://vidmoly.net"
                     )
                 }
             )
