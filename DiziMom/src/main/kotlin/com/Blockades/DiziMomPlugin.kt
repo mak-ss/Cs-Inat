@@ -10,5 +10,6 @@ class DiziMomPlugin: Plugin() {
         registerMainAPI(DiziMom())
         registerExtractorAPI(HdPlayerExtractor())
         registerExtractorAPI(PeacemakerExtractor())
+        registerExtractorAPI(FirePlayer())
     }
 }
