@@ -1,0 +1,1073 @@
+[
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AniArsiv.cs3",
+        "status": 1,
+        "version": 6,
+        "name": "AniArsiv",
+        "internalName": "AniArsiv",
+        "authors": [
+            "ulgenzade"
+        ],
+        "description": "AniAr\u015fiv \u2014 T\u00fcrkiye'nin En B\u00fcy\u00fck Anime \u0130zleme Ar\u015fivi (6.000+ Anime, 70.000+ B\u00f6l\u00fcm, Ultra HD)",
+        "fileSize": 22171,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-22e7d36726011c092a1c521b20ae91c03f4d5d6d492c9fe4e6f767eea0096986"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AnimeAV.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AnimeAV",
+        "internalName": "AnimeAV",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Disfruta de los \u00faltimos episodios y animes agregados en HD y Sub Espa\u00f1ol. Miles de series, pel\u00edculas y OVAs disponibles para ver online totalmente gratis.",
+        "fileSize": 27727,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?sz=64&domain=animeav1.com",
+        "apiVersion": 1,
+        "fileHash": "sha256-c35fb26bacc80b1b526b4e678180a2eb256724b13820b85075f09bb39e7053a6"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AnimeciX.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AnimeciX",
+        "internalName": "AnimeciX",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "AnimeciX, animeleri ke\u015ffedebilece\u011finiz ve animeler hakk\u0131nda her \u015feyi \u00f6\u011frenebilece\u011finiz bir payla\u015f\u0131m platformudur.",
+        "fileSize": 26231,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://pbs.twimg.com/profile_images/1510442441589075970/Td-tOVU4_400x400.jpg",
+        "apiVersion": 1,
+        "fileHash": "sha256-6cc5e82091fe24c03a5f2d2d7fcf04e050c86d2352f31e8f767a7704992abff7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AnimeWorld.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AnimeWorld",
+        "internalName": "AnimeWorld",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Scopri il nostro Archivio di Anime in Streaming Sub ITA e ITA. Guarda in Streaming o effettua il Download di migliaia di serie animate sempre aggiornate e in alta qualit\u00e0, disponibili su PC, console, tablet, smartphone ed altri dispositivi.",
+        "fileSize": 16891,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "it",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://www.animeworld.ac&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-886f57d7496f3e39de75325a27847302ab9a15e344f750188cbf24a98805c406"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AnimeYTX.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AnimeYTX",
+        "internalName": "AnimeYTX",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "\u00danete a la familia de AnimeYT.es y disfruta del anime online gratis. Disfruta con tus amigos del contenido m\u00e1s popular de la animaci\u00f3n japonesa.",
+        "fileSize": 57888,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "mx",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://animeyt.cc&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-0c68aeda9fb9adebb6b7e5b2cd534c4cfdc77a79a58c9bb36cc0a6478d75a0a0"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Anizium.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Anizium",
+        "internalName": "Anizium",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "T\u00fcrk\u00e7e Altyaz\u0131l\u0131 Anime \u0130zle.",
+        "fileSize": 44770,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://img.utdstc.com/icon/f09/fe1/f09fe1b07c8cbb89291ebb2aeaf82ac0895befabeb8c93024a434d9dd1159358:600",
+        "apiVersion": 1,
+        "fileHash": "sha256-ed04cd121975e27e9140410b2ccd2b13ee6cba063f9881d78ce5642636b4323b"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Anizm.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Anizm",
+        "internalName": "Anizm",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "T\u00fcrk\u00e7e Altyaz\u0131l\u0131 Anime \u0130zle.",
+        "fileSize": 65227,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSQLGJxL_3l-lZofrxkC-vpKFzHzyKW-Z0lYg&s",
+        "apiVersion": 1,
+        "fileHash": "sha256-21327a3535f894862541459bd9c9a8d0e738f4726d0ac089fd671c173bf1439d"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AsyaAnimeleri.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AsyaAnimeleri",
+        "internalName": "AsyaAnimeleri",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Asya Animeleri - Anime izle, Donghua izle, T\u00fcrk\u00e7e Altyaz\u0131l\u0131 Anime izle.",
+        "fileSize": 13804,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=asyaanimeleri.top&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-f52c6f0beb8fa32a4353d480eb72327abd62ffdb1dde6ad58ff7a1352060f6b5"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/AsyaWatch.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AsyaWatch",
+        "internalName": "AsyaWatch",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Asyawatch.",
+        "fileSize": 31646,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=asyawatch.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-f6e7a5e6549e2bff8f2e1456a2f8d697fc8a35bf97361fcd931b95ce686f3708"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Atv.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Atv",
+        "internalName": "Atv",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "ATV'nin sevilen dizileri (A\u015fk ve Taht, Alt\u0131 \u00dcst\u00fc \u0130stanbul) ve programlar\u0131 (M\u00fcge Anl\u0131, Esra Erol) izleyin.",
+        "fileSize": 45096,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=www.atv.com.tr&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-8550dc3f30d2c089e252640207a6944b48cee57ff9471c7ce25e8338323a57b0"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/BelgeselX.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "BelgeselX",
+        "internalName": "BelgeselX",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "En yeni belgeseller, t\u00fcrk\u00e7e altyaz\u0131l\u0131 yada dublaj olarak 1080p kalitesinde HD belgesel izle..",
+        "fileSize": 31616,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Documentary"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=belgeselx.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-5269f4d222c237211b3ac6c56db9e4d9f9b0785aabe5d4e5ef51f0e66671ecb8"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/CanliTV.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "CanliTV",
+        "internalName": "CanliTV",
+        "authors": [
+            "mebularts"
+        ],
+        "description": "Canl\u0131 TV",
+        "fileSize": 18385,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=tr.canlitv.team&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-f2d1ef3d6bb1a8c76c520a30d0cdec1687f98f9190ef45168122156484ca99fc"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DDizi.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "DDizi",
+        "internalName": "DDizi",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "DDizi.im i\u00e7in Cloudstream eklentisi.",
+        "fileSize": 20049,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.ddizi.im/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-454e8fd18fdb297eabd971bfff3836ef9789bb3858da942c4cc3fafe927986e5"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziBal.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DiziBal",
+        "internalName": "DiziBal",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "En pop\u00fcler yabanc\u0131 dizileri yeni b\u00f6l\u00fcmleriyle takip edin. HBO, Netflix, Apple TV+ yap\u0131mlar\u0131 T\u00fcrk\u00e7e altyaz\u0131l\u0131 olarak dizibaL'da!",
+        "fileSize": 24081,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=dizibal.org&sz=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-7aa30ccd8b7ab698b36a41288e07908b7fbe52d98417ead024fef8b6b8fef903"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziBol.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DiziBol",
+        "internalName": "DiziBol",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "En pop\u00fcler yabanc\u0131 dizileri yeni b\u00f6l\u00fcmleriyle takip edin. HBO, Netflix, Apple TV+ yap\u0131mlar\u0131 T\u00fcrk\u00e7e altyaz\u0131l\u0131 olarak diziboL'da!",
+        "fileSize": 24107,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=dizibol.org&sz=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-90d870c15f6a8d6053156e0e837366093c0d6f36819da0381910f7cc757fa80c"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziFilm.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DiziFilm",
+        "internalName": "DiziFilm",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "dizifilmizle.to - Turkish movies & series",
+        "fileSize": 33922,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://dizifilmizle.to/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-b928309aa8556e09414c0fd0f46485dd7730ab438f88defc3a94f376838e3761"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziKorea.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DiziKorea",
+        "internalName": "DiziKorea",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "En G\u00fcncel Kore Dizileri izleme Sitesi",
+        "fileSize": 23509,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "AsianDrama"
+        ],
+        "iconUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQe9XtnuaqCr0OCszI6jobXYusX45xclhR9YrLMZCiVBkHTW5jVBPimy84&s=10",
+        "apiVersion": 1,
+        "fileHash": "sha256-e4943e381d3d4f7b5d8e90e9cadbdc73d33122450851aab394c3703636faa82b"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziLife.cs3",
+        "status": 0,
+        "version": 3,
+        "name": "DiziLife",
+        "internalName": "DiziLife",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Dizi.life T\u00fcrk\u00e7e dizi/film izleme platformu \u2014 yabanc\u0131 diziler, yeni filmler, son b\u00f6l\u00fcmler.",
+        "fileSize": 17045,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=https://dizi73.life&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-d572b0a549d0a92051193d815b9630e6e9d26b40b384d5d10915b44db67a2bb4"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Dizilla.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Dizilla",
+        "internalName": "Dizilla",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Dizilla t\u00fcm yabanc\u0131 dizileri \u00fccretsiz olarak T\u00fcrk\u00e7e Dublaj ve altyaz\u0131l\u0131 se\u00e7enekleri ile 1080P kalite izleyebilece\u011finiz yeni nesil yabanc\u0131 dizi izleme siteniz.",
+        "fileSize": 36531,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=dizilla.club&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-4108de8721c1cc4258b724771aa8a49f079bd72e6775f9ec93ac77c27c731904"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziMom.cs3",
+        "status": 1,
+        "version": 5,
+        "name": "DiziMom",
+        "internalName": "DiziMom",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Binlerce yerli yabanc\u0131 dizi ar\u015fivi, t\u00fcm sezonlar, kesintisiz b\u00f6l\u00fcmler. Sadece dizi izle, Dizimom heryerde seninle",
+        "fileSize": 34114,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=https://www.dizimom.surf&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-02441c301bd08a1bf6e1026aab9cb420c6f3a2a1ff19ea61279c68c55fc29aea"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziPal.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "DiziPal",
+        "internalName": "DiziPal",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "DiziPal  en yeni dizileri g\u00fcvenli ve h\u0131zl\u0131 \u015fekilde sunar.",
+        "fileSize": 28490,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://img.sur.ly/favicons/d/dizipal1.com.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-9546dcffea61bbc3ff70fb07a9479031ccc5a2b3281d8216f5c2459418f7671f"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziPal2.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "DiziPal2",
+        "internalName": "DiziPal2",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "DiziPal2  en yeni dizileri g\u00fcvenli ve h\u0131zl\u0131 \u015fekilde sunar.",
+        "fileSize": 27689,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://img.sur.ly/favicons/d/dizipal1.com.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-3814645b3727b3e00b3f4140292450e5ad6d94a00f67ea1c10b0e33ed9676e87"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziPalOrijinal.cs3",
+        "status": 1,
+        "version": 6,
+        "name": "DiziPalOrijinal",
+        "internalName": "DiziPalOrijinal",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "DiziPal Orijinal.",
+        "fileSize": 48295,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://dizipal1582.com&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-b50e324a3bc1376ae1ff0893a1fa015e4d2a1585860cff10544cc985db5772dd"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziPod.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DiziPod",
+        "internalName": "DiziPod",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Yabanc\u0131 dizi ve film izleme platformu. Altyaz\u0131l\u0131 yabanc\u0131 dizi ve film izle.",
+        "fileSize": 23441,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=dizipod.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-df1d659485c20c6a631817a8171a6dc8b7cbf0437ca66a31f93edf68abac484e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DiziYou.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DiziYou",
+        "internalName": "DiziYou",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Diziyou en kaliteli T\u00fcrk\u00e7e dublaj ve altyaz\u0131l\u0131 yabanc\u0131 dizi izleme sitesidir. G\u00fcncel ve efsanevi dizileri 1080p Full HD kalitede izlemek i\u00e7in hemen t\u0131kla!",
+        "fileSize": 17167,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://cdn.diziyou.one/wp-content/uploads/2020/04/diziyou-favicon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-3f64a63682fe1a96717ff5ee47f9274c2af96c054735d43bfa91b46d433c7f7e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DMax.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DMax",
+        "internalName": "DMax",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "DMAX dizi ve programlar\u0131n\u0131 takip etmek i\u00e7in ziyaret edin. DMAX dizi ve programlar\u0131n\u0131 tek par\u00e7a ve hd kalitesiyle izleyin.",
+        "fileSize": 14426,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.dmax.com.tr/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-14c50d4e401c0581ce7349fcd7088ebe0eecf3ea10f966807c0b728b97e81e2d"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DocumentaryArea.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DocumentaryArea",
+        "internalName": "DocumentaryArea",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Watch the best online documentary films.Stunning collection of awesome, eyeopening, interesting, just released, full documentaries",
+        "fileSize": 15662,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Documentary"
+        ],
+        "iconUrl": "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://documentaryarea.com&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-4f3104db95d99e96897a14429f8d5502524fc6f0ec3b7e8693cecf494a758342"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/DramaDizilerim.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "DramaDizilerim",
+        "internalName": "DramaDizilerim",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "En pop\u00fcler NetShort, DramaBox, ReelShort ve FreeReels k\u0131sa dizilerini T\u00fcrk\u00e7e dublaj ve altyaz\u0131 se\u00e7enekleriyle Full HD kalitede \u00fccretsiz ve reklams\u0131z izleyin.",
+        "fileSize": 15572,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=https://dramadizilerim.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-d39cecd38cd1ee6a692392177e9881c89024e46b83a442c45ce2f6008a800c91"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/FilmEkseni.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "FilmEkseni",
+        "internalName": "FilmEkseni",
+        "authors": [
+            "blackhope01"
+        ],
+        "description": "Film Ekseni Vizyonda ki, en g\u00fcncel ve en yeni filmleri full hd kalitesinde t\u00fcrk\u00e7e dublaj ve altyaz\u0131 se\u00e7enekleriyle 1080p olarak izleyebilece\u011finiz adresiniz.",
+        "fileSize": 39464,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT4qXkHyRVv3yot4iTXvTPBM8p0jLg69ko1Z8Z8UBmStg&s",
+        "apiVersion": 1,
+        "fileHash": "sha256-e74883e72d720e557fc46823855f73d13b59e5e5b0edd59cf1f810dafaf869f7"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/FilmIzyon.cs3",
+        "status": 1,
+        "version": 5,
+        "name": "FilmIzyon",
+        "internalName": "FilmIzyon",
+        "authors": [
+            "kraptor"
+        ],
+        "description": "Yerli ve yabanc\u0131 \u00f6d\u00fcll\u00fc t\u00fcm filmleri T\u00fcrk\u00e7e Dublaj veya Orjinal dilde izleyebilece\u011finiz T\u00fcrkiye'nin en kaliteli film izleme platformuna ho\u015fgeldiniz.",
+        "fileSize": 22667,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://www.filmizyon.com/&size=64",
+        "apiVersion": 1,
+        "fileHash": "sha256-1e8d41acc6bf92cce715c2c00b9a1310c3060d521dada30c9fb9aa9ec7fd6968"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/FilmModu.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "FilmModu",
+        "internalName": "FilmModu",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Film modun geldiyse y\u00fcksek kalitede en yeni filmleri izle, 1080p izleyebilece\u011finiz reklamsiz film sitesi.",
+        "fileSize": 19126,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=www.filmmodu17.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-305ce8ae3371ac8a439e154601d3932d6151db8affa9729ae111a7a92b22d0ab"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/FilmModu2.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "FilmModu2",
+        "internalName": "FilmModu2",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Film modun geldiyse y\u00fcksek kalitede en yeni filmleri izle, 1080p izleyebilece\u011finiz reklamsiz film sitesi.",
+        "fileSize": 23201,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=www.filmmodu17.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-d7434ae26b28ac056feee6ebe7a7876b8ee64f09d0b866aa8111d2302907e667"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/HDFilmCehennemi.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "HDFilmCehennemi",
+        "internalName": "HDFilmCehennemi",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "T\u00fcrkiye'nin en h\u0131zl\u0131 hd film izleme sitesi",
+        "fileSize": 32149,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=hdfilmcehennemi.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-b672aad36c423b0d248e6b6ce0e0491bc037f3b384b52017c9851aaffa524124"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/HDFilmCehennemi2.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "HDFilmCehennemi2",
+        "internalName": "HDFilmCehennemi2",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Full hd film izleme keyfini hdfilmcehennemi2 ile ya\u015fay\u0131n",
+        "fileSize": 30720,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=hdfilmcehennemi2.biz&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-1abc8454df94e8d2b1913d38eba5ab153cc4937069324f1ff65664a1333b3fe6"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/InatBox.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "InatBox",
+        "internalName": "InatBox",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "\u0130natBox - Film, dizi ve canl\u0131 yay\u0131n kanallar\u0131",
+        "fileSize": 43058,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Live"
+        ],
+        "iconUrl": "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEh3vCp6N1K4bECoYRQD-cisJF2_6V_Hk01ZhDmoPR2JuM8O5qr4MqrPO1munM9cRlleBBSK6odYhLtDBWv4E3vhPhynlmS5hVVtJZShHoGA5REQ8_3v8SIlccTEqzVQu2UJyNYQdJNrKIfWy66RQeT0D-CcmFCbHPz5023H6p2v5fv4NVloZ5Rqo_yGrIY/s320/iNat-Box-App.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-227eb948027274b131500ca1356577c1bad36e2d5ad47017419cfaa6174b03b6"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/KanalD.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "KanalD",
+        "internalName": "KanalD",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Kanal D icin haz\u0131rlanan eklentide diziler programlar ve Mazi Diziler mevcut",
+        "fileSize": 19580,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://w1.pngwing.com/pngs/291/105/png-transparent-cartoon-network-logo-kanal-d-television-television-channel-kanal-7-serial-live-television-blue-thumbnail.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-5fa65c84153fa9e9a0669b527f0de652f1eac8f4308dcb5a60c89bb58fc947c0"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/KultFilmler.cs3",
+        "status": 1,
+        "version": 16,
+        "name": "KultFilmler",
+        "internalName": "KultFilmler",
+        "authors": [
+            "UmayTrade"
+        ],
+        "description": "K\u00fclt Filmler \u00f6zenle en iyi filmleri derler ve iyi bir altyaz\u0131l\u0131 film izleme deneyimi sunmay\u0131 ama\u00e7lar",
+        "fileSize": 27165,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=kultfilmler.net&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-105acd11459dd37b621e266206b4dad3bec41f3d9d2aa5ee5d196113ddd3325e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/OpenAnimeProvider.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "OpenAnimeProvider",
+        "internalName": "OpenAnimeProvider",
+        "authors": [
+            "ulgenzade"
+        ],
+        "description": "OpenAnime - A\u00e7\u0131k Kaynak Anime Platformu",
+        "fileSize": 37627,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Anime"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-540b684f4d7358a8b1122cb1111b1bf1648306bed12a758f2ab590a2647437cd"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Puhutv.cs3",
+        "status": 1,
+        "version": 14,
+        "name": "Puhutv",
+        "internalName": "Puhutv",
+        "authors": [
+            "keyiflerolsun"
+        ],
+        "description": "PuhuTV - Yerli Dizi ve Film \u0130zleme Platformu",
+        "fileSize": 35691,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries",
+            "Movie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=puhutv.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-15f19f466111023e8db16f522ae11d5a39dd47fb4a854c3d55688fca1497a4d9"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/RetroD.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "RetroD",
+        "internalName": "RetroD",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Kanal D icin haz\u0131rlanan eklentide diziler programlar ve Mazi Diziler mevcut",
+        "fileSize": 18857,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://i1.sndcdn.com/avatars-000662168717-4uz14u-t1080x1080.jpg",
+        "apiVersion": 1,
+        "fileHash": "sha256-5abbd8fbd8276555d172758fe3bef576db4da7aded891f0f36605c6b314c7b91"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/SezonlukDizi.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "SezonlukDizi",
+        "internalName": "SezonlukDizi",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "sezonlukdizi.cc - Turkish series with subtitles and dubbed",
+        "fileSize": 35890,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://sezonlukdizi.cc/i/logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-9ef9ec8448fd3687280639b6fd34418d90eac52b6eb2449c018ce28534b74039"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Showtv.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Showtv",
+        "internalName": "Showtv",
+        "authors": [
+            "Blockades"
+        ],
+        "description": "Show TV canl\u0131 yay\u0131n\u0131, dizileri, e\u011flence programlar\u0131, oyuncular ve daha fazlas\u0131 sayfalar\u0131m\u0131zda. Hayat T\u00fcrkiye'nin kanal\u0131 Show'la g\u00fczel! \u015eimdi Show TV canl\u0131 yay\u0131n izle.",
+        "fileSize": 27791,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries",
+            "Live"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=www.showtv.com.tr&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-72fde4fcf5513139b113d0d5c40b48b9133414f6a4e03c1211bb7971f97c5bd0"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Sinefy.cs3",
+        "status": 1,
+        "version": 14,
+        "name": "Sinefy",
+        "internalName": "Sinefy",
+        "authors": [
+            "kraptor"
+        ],
+        "description": "Yabanc\u0131 film izle olarak vizyondaki en yeni yabanc\u0131 filmleri t\u00fcrk\u00e7e dublaj ve altyaz\u0131l\u0131 olarak en h\u0131zl\u0131 \u015fekilde full hd olarak sizlere sunuyoruz.",
+        "fileSize": 21434,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://sinefy3.com/&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-cc072244f9ba1c0718f26e3ee68d3cf1704ca4685ccac42c9efc617c0492159f"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/SineWix.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "SineWix",
+        "internalName": "SineWix",
+        "authors": [
+            "UmayTrade"
+        ],
+        "description": "SineWix | Film - Dizi - Anime \u0130zleme Uygulamas\u0131",
+        "fileSize": 29570,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=https://www.sinewix.com/&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-9b4459511efa5d505d7ed933c4ec79c52cd823d0a2d7a8462f773410aac23442"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Sinezy.cs3",
+        "status": 1,
+        "version": 10,
+        "name": "Sinezy",
+        "internalName": "Sinezy",
+        "authors": [
+            "kraptor"
+        ],
+        "description": "Yerli ve yabanc\u0131 film izle! T\u00fcrk\u00e7e Dublaj ve Alt Yaz\u0131l\u0131 Se\u00e7enekleriyle full hd film izlemek i\u00e7in En \u00e7ok tercih edilen adres!",
+        "fileSize": 22484,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://sinezy.org/&size=48",
+        "apiVersion": 1,
+        "fileHash": "sha256-00f764520727f4e2d5b601b5399e3a6abda627f172bfa34873b62ef119ebd17c"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Streamed.cs3",
+        "status": 1,
+        "version": 28,
+        "name": "Streamed",
+        "internalName": "Streamed",
+        "authors": [
+            "kraptor"
+        ],
+        "description": "Streamed ile Canl\u0131 Spor Yay\u0131nlar\u0131n\u0131 \u0130zleyebilirsiniz.",
+        "fileSize": 33334,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "en",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://streamed.pk/&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-a7d82f03e05e8081ef1a2fa9ade23863a2c45a8a8abaea2ef31655de74829b3c"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Tv8.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Tv8",
+        "internalName": "Tv8",
+        "authors": [
+            "kerimmkirac"
+        ],
+        "description": "TV8'in e\u011flenceli programlar\u0131, yar\u0131\u015fmalar\u0131 ve dizileri ile keyifle TV izle. Survivor, O Ses T\u00fcrkiye, Jet Sosyete, K\u0131z\u0131m, Yemekteyiz ve Masterchef i\u00e7in TV8 izle.",
+        "fileSize": 19673,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=www.tv8.com.tr&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-8ed089db0da2e8fbba15d46d4d01b4c8d69128df5f900e6402ef69824a5ebc8c"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Watch2Movies.cs3",
+        "status": 1,
+        "version": 6,
+        "name": "Watch2Movies",
+        "internalName": "Watch2Movies",
+        "authors": [
+            "keyiflerolsun"
+        ],
+        "description": "Movies2Watch is a Free Movies streaming site with zero ads. We let you watch movies online without having to register or paying, with over 10000 movies and TV-Series.",
+        "fileSize": 24801,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=movies2watch.watch&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-3e84867575244008bfec2406f84949944509ea2383bd1b0f60f3078554e4339e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/WebdramaTurkey2.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "WebdramaTurkey2",
+        "internalName": "WebdramaTurkey2",
+        "authors": [
+            "patr0n"
+        ],
+        "description": "WebdramaTurkey2 \u0130\u00e7erikleri",
+        "fileSize": 48209,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "AsianDrama",
+            "Movie",
+            "Anime",
+            "Others"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=https://webdramaturkey2.com&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-2316331863403ad2cc6a66ff71a68191f38dd98c6680acc1d2f13e00c07da674"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/Webteizle.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "Webteizle",
+        "internalName": "Webteizle",
+        "authors": [
+            "UmayTrade"
+        ],
+        "description": "Her t\u00fcrl\u00fc filmi ister dublaj ister altyaz\u0131l\u0131, en kaliteli bir \u015fekilde izleyebilece\u011finiz ar\u015fivi en geni\u015f ger\u00e7ek film izleme siteniz.",
+        "fileSize": 28818,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=https://webteizle3.xyz&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-85049256a470e8f0dd0ef6c4d02b79a1c70d1ccbb9b227a2aa6df142c9c32ca9"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/YabanciDizi.cs3",
+        "status": 1,
+        "version": 9,
+        "name": "YabanciDizi",
+        "internalName": "YabanciDizi",
+        "authors": [
+            "nikyokki"
+        ],
+        "description": "Son \u00e7\u0131kan yabanc\u0131 dizi ve filmleri yabancidizi' de izle. En yeni yabanc\u0131 film ve diziler, t\u00fcrk\u00e7e altyaz\u0131l\u0131 yada dublaj olarak 1080p kalitesinde hd izle.",
+        "fileSize": 55293,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "TvSeries"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?domain=yabancidizi.news&sz=%size%",
+        "apiVersion": 1,
+        "fileHash": "sha256-8cd54332967f2680987dceb9d4d09812fb9b07799bae6da183b9439aebd9d367"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/mak-ss/Cs-Inat/builds/YesilCamTv.cs3",
+        "status": 1,
+        "version": 11,
+        "name": "YesilCamTv",
+        "internalName": "YesilCamTv",
+        "authors": [
+            "CloudStreamTR",
+            "kraptor"
+        ],
+        "description": "Ye\u015fil\u00e7am klasik T\u00fcrk sinemas\u0131 filmleri ve ar\u015fiv",
+        "fileSize": 28695,
+        "repositoryUrl": "https://github.com/mak-ss/Cs-Inat",
+        "language": "tr",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://www.google.com/s2/favicons?sz=128&domain=yesilcamtv.com.tr",
+        "apiVersion": 1,
+        "fileHash": "sha256-958e0df1412a56949b0bd681fe123fa0dc7d62c37f0642d476fafbe1dd95b843"
+    }
+]
