@@ -16,8 +16,8 @@ class FirePlayer : ExtractorApi() {
     companion object {
         fun isFirePlayer(url: String): Boolean {
             return url.contains("fireplayer", ignoreCase = true) ||
-                   url.contains("fireplay", ignoreCase = true) ||
-                   url.contains("fplayer", ignoreCase = true)
+                   url.contains("fplayer", ignoreCase = true) ||
+                   url.contains("fireplay", ignoreCase = true)
         }
     }
 
@@ -29,54 +29,57 @@ class FirePlayer : ExtractorApi() {
     ) {
         val document = app.get(url, referer = referer).document
 
-        // 1) iframe içindeki gerçek player linkini bul
-        val iframeSrc = document.selectFirst("iframe")?.attr("src")
-        val targetUrl = if (!iframeSrc.isNullOrBlank()) {
-            if (iframeSrc.startsWith("//")) "https:$iframeSrc"
-            else if (iframeSrc.startsWith("/")) {
-                val base = url.substringBefore("/", "").let { "" } // mainUrl kullan
-                "$mainUrl$iframeSrc"
-            } else iframeSrc
-        } else url
+        // FirePlayer iframe içinde "data-id" veya "data-hash" taşır
+        // Genelde /player/index.php?data=XXX&do=getVideo POST isteği ile video linki döner
+        val dataId = document.selectFirst("[data-id]")?.attr("data-id")
+            ?: document.selectFirst("[data-hash]")?.attr("data-hash")
+            ?: url.substringAfter("data=", "").substringBefore("&").ifBlank { null }
 
-        val pageDoc = if (targetUrl != url) {
-            app.get(targetUrl, referer = referer).document
-        } else document
+        if (dataId != null) {
+            val apiUrl = "$mainUrl/player/index.php?data=$dataId&do=getVideo"
+            val response = app.post(
+                apiUrl,
+                headers = mapOf(
+                    "Referer" to url,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+                )
+            ).text
 
-        // 2) Script içinden m3u8 / mp4 linklerini çek
-        val scripts = pageDoc.select("script").mapNotNull { it.data() }.joinToString("\n")
+            // JSON içinden videoUrl / securedLink al
+            val videoRegex = Regex(""""videoUrl"\s*:\s*"([^"]+)"""")
+            val securedRegex = Regex(""""securedLink"\s*:\s*"([^"]+)"""")
 
-        val patterns = listOf(
-            Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']"""),
-            Regex("""["'](https?://[^"']+\.mp4[^"']*)["']"""),
-            Regex("""file\s*:\s*["']([^"']+)["']"""),
-            Regex("""source\s*:\s*["']([^"']+)["']"""),
-            Regex("""src\s*:\s*["']([^"']+)["']""")
-        )
+            val videoUrl = videoRegex.find(response)?.groupValues?.get(1)
+                ?: securedRegex.find(response)?.groupValues?.get(1)
 
-        val found = mutableSetOf<String>()
-        patterns.forEach { regex ->
-            regex.findAll(scripts).forEach { match ->
-                found.add(match.groupValues[1])
+            if (!videoUrl.isNullOrBlank()) {
+                val fixedUrl = if (videoUrl.startsWith("//")) "https:$videoUrl" else videoUrl
+                callback.invoke(
+                    newExtractorLink(
+                        source = this.name,
+                        name = this.name,
+                        url = fixedUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.quality = Qualities.Unknown.value
+                        this.referer = referer ?: ""
+                    }
+                )
+                return
             }
         }
 
-        found.forEach { videoUrl ->
-            val fixedUrl = when {
-                videoUrl.startsWith("//") -> "https:$videoUrl"
-                else -> videoUrl
-            }
-
+        // Fallback: script içinden m3u8 ara
+        val scripts = document.select("script").mapNotNull { it.data() }.joinToString("\n")
+        val regex = Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']""")
+        regex.findAll(scripts).forEach { match ->
             callback.invoke(
                 newExtractorLink(
                     source = this.name,
                     name = this.name,
-                    url = fixedUrl,
-                    type = if (fixedUrl.contains(".m3u8")) {
-                        ExtractorLinkType.M3U8
-                    } else {
-                        ExtractorLinkType.VIDEO
-                    }
+                    url = match.groupValues[1],
+                    type = ExtractorLinkType.M3U8
                 ) {
                     this.quality = Qualities.Unknown.value
                     this.referer = referer ?: ""
