@@ -2,12 +2,11 @@ package com.Blockades
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.extractors.ExtractorApi
-import com.lagradost.cloudstream3.extractors.helper.AesHelper
+import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.loadExtractor
-import org.jsoup.nodes.Document
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class FirePlayer : ExtractorApi() {
     override var name = "FirePlayer"
@@ -17,7 +16,8 @@ class FirePlayer : ExtractorApi() {
     companion object {
         fun isFirePlayer(url: String): Boolean {
             return url.contains("fireplayer", ignoreCase = true) ||
-                   url.contains("fireplay", ignoreCase = true)
+                   url.contains("fireplay", ignoreCase = true) ||
+                   url.contains("fplayer", ignoreCase = true)
         }
     }
 
@@ -28,24 +28,54 @@ class FirePlayer : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         val document = app.get(url, referer = referer).document
-        // Extract the actual video source from the FirePlayer page
-        // This depends on the player's structure. Common approach:
-        val script = document.selectFirst("script:containsData(sources)")?.data()
-            ?: document.selectFirst("script:containsData(file)")?.data()
-            ?: return
 
-        val regex = Regex("""(?:file|src|source)\s*[:=]\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']""")
-        regex.findAll(script).forEach { match ->
-            val videoUrl = match.groupValues[1]
-            callback(
+        // 1) iframe içindeki gerçek player linkini bul
+        val iframeSrc = document.selectFirst("iframe")?.attr("src")
+        val targetUrl = if (!iframeSrc.isNullOrBlank()) {
+            if (iframeSrc.startsWith("//")) "https:$iframeSrc"
+            else if (iframeSrc.startsWith("/")) {
+                val base = url.substringBefore("/", "").let { "" } // mainUrl kullan
+                "$mainUrl$iframeSrc"
+            } else iframeSrc
+        } else url
+
+        val pageDoc = if (targetUrl != url) {
+            app.get(targetUrl, referer = referer).document
+        } else document
+
+        // 2) Script içinden m3u8 / mp4 linklerini çek
+        val scripts = pageDoc.select("script").mapNotNull { it.data() }.joinToString("\n")
+
+        val patterns = listOf(
+            Regex("""["'](https?://[^"']+\.m3u8[^"']*)["']"""),
+            Regex("""["'](https?://[^"']+\.mp4[^"']*)["']"""),
+            Regex("""file\s*:\s*["']([^"']+)["']"""),
+            Regex("""source\s*:\s*["']([^"']+)["']"""),
+            Regex("""src\s*:\s*["']([^"']+)["']""")
+        )
+
+        val found = mutableSetOf<String>()
+        patterns.forEach { regex ->
+            regex.findAll(scripts).forEach { match ->
+                found.add(match.groupValues[1])
+            }
+        }
+
+        found.forEach { videoUrl ->
+            val fixedUrl = when {
+                videoUrl.startsWith("//") -> "https:$videoUrl"
+                else -> videoUrl
+            }
+
+            callback.invoke(
                 newExtractorLink(
                     source = this.name,
                     name = this.name,
-                    url = videoUrl,
-                    type = if (videoUrl.contains(".m3u8")) {
-                        com.lagradost.cloudstream3.utils.ExtractorLinkType.M3U8
+                    url = fixedUrl,
+                    type = if (fixedUrl.contains(".m3u8")) {
+                        ExtractorLinkType.M3U8
                     } else {
-                        com.lagradost.cloudstream3.utils.ExtractorLinkType.VIDEO
+                        ExtractorLinkType.VIDEO
                     }
                 ) {
                     this.quality = Qualities.Unknown.value
