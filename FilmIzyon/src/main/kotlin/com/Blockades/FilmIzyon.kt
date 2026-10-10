@@ -88,10 +88,20 @@ class FilmIzyon : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     // ------------------------------------------------------------------
-    // LOAD
+    // LOAD (TEST LOGLU)
     // ------------------------------------------------------------------
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url).document
+        Log.e("kraptor_TEST", "========== load() BAŞLADI ==========")
+        Log.e("kraptor_TEST", "load url = $url")
+
+        val document = try {
+            app.get(url).document
+        } catch (e: Exception) {
+            Log.e("kraptor_TEST", "app.get(url) HATA: ${e.message}")
+            return null
+        }
+
+        Log.e("kraptor_TEST", "html length = ${document.html().length}")
 
         val title       = document.selectFirst("h1.page-title")?.text()?.trim() ?: return null
         val poster      = fixUrlNull(document.selectFirst("picture img")?.attr("src"))
@@ -106,18 +116,34 @@ class FilmIzyon : MainAPI() {
             .selectFirst("div.table-responsive table > tbody:nth-child(1) > tr:nth-child(1) > td:nth-child(2) > div:nth-child(1) > strong")
             ?.text()?.split(" ")?.first()?.trim()?.toIntOrNull()
 
+        Log.e("kraptor_TEST", "title = $title")
+        Log.e("kraptor_TEST", "poster = $poster")
+
+        // Sayfadaki iframe'leri önceden logla
+        val iframes = document.select("iframe")
+        Log.e("kraptor_TEST", "load() içinde iframe sayısı = ${iframes.size}")
+        iframes.forEachIndexed { i, el ->
+            Log.e("kraptor_TEST", "load iframe[$i] src='${el.attr("src")}' data-src='${el.attr("data-src")}'")
+        }
+
         val fragmanElement = document
             .select("div.filmsayfala a")
             .firstOrNull { it.text().equals("fragman", ignoreCase = true) }
         val fragmanHref: String? = fragmanElement?.attr("href")
-        Log.d("kraptor_", "fragmanHref = $fragmanHref")
+        Log.e("kraptor_TEST", "fragmanHref = $fragmanHref")
 
         var trailer: String? = null
         if (!fragmanHref.isNullOrBlank()) {
-            val fragmancek = app.get(fragmanHref).document
-            trailer = fragmancek.selectFirst("iframe")?.attr("src")
-            Log.d("kraptor_", "trailer = $trailer")
+            try {
+                val fragmancek = app.get(fragmanHref).document
+                trailer = fragmancek.selectFirst("iframe")?.attr("src")
+                Log.e("kraptor_TEST", "trailer = $trailer")
+            } catch (e: Exception) {
+                Log.e("kraptor_TEST", "trailer HATA: ${e.message}")
+            }
         }
+
+        Log.e("kraptor_TEST", "========== load() BİTTİ, data=$url ==========")
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = poster
@@ -140,7 +166,7 @@ class FilmIzyon : MainAPI() {
     }
 
     // ------------------------------------------------------------------
-    // LOAD LINKS
+    // LOAD LINKS (TEST LOGLU)
     // ------------------------------------------------------------------
     override suspend fun loadLinks(
         data: String,
@@ -148,10 +174,39 @@ class FilmIzyon : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("kraptor_${this.name}", "data = $data")
-        val document = app.get(data).document
+        Log.e("kraptor_TEST", "========== loadLinks BAŞLADI ==========")
+        Log.e("kraptor_TEST", "data = $data")
+        Log.e("kraptor_TEST", "isCasting = $isCasting")
 
-        // 1) Sayfadaki iframe'i bul — önce src, sonra data-src
+        val document = try {
+            app.get(data).document
+        } catch (e: Exception) {
+            Log.e("kraptor_TEST", "app.get(data) HATA: ${e.message}")
+            return false
+        }
+
+        Log.e("kraptor_TEST", "loadLinks html length = ${document.html().length}")
+
+        // Tüm iframe'leri listele
+        val allIframes = document.select("iframe")
+        Log.e("kraptor_TEST", "Toplam iframe sayısı = ${allIframes.size}")
+        allIframes.forEachIndexed { i, el ->
+            Log.e("kraptor_TEST", "iframe[$i] src = '${el.attr("src")}' data-src = '${el.attr("data-src")}' class = '${el.className()}'")
+        }
+
+        // Tüm video/source/embed etiketlerini de kontrol et
+        val allSources = document.select("video, source, embed")
+        Log.e("kraptor_TEST", "Toplam video/source/embed = ${allSources.size}")
+        allSources.forEachIndexed { i, el ->
+            Log.e("kraptor_TEST", "$i tag = ${el.tagName()} src = '${el.attr("src")}' data-src = '${el.attr("data-src")}'")
+        }
+
+        // Sayfa HTML'inde .m3u8 geçiyor mu?
+        val html = document.html()
+        val m3u8Sayisi = Regex("""\.m3u8""").findAll(html).count()
+        Log.e("kraptor_TEST", "HTML içinde .m3u8 geçiş sayısı = $m3u8Sayisi")
+
+        // İframe URL'sini al (src öncelikli, sonra data-src)
         val iframe = document
             .selectFirst("iframe")
             ?.let { el ->
@@ -161,15 +216,26 @@ class FilmIzyon : MainAPI() {
             }
             .orEmpty()
 
-        Log.d("kraptor_${this.name}", "iframe = $iframe")
-        if (iframe.isBlank()) return false
+        Log.e("kraptor_TEST", "seçilen iframe = '$iframe'")
 
-        val fixedIframe = fixUrlNull(iframe) ?: return false
-        Log.d("kraptor_${this.name}", "fixedIframe = $fixedIframe")
+        if (iframe.isBlank()) {
+            Log.e("kraptor_TEST", "iframe BOŞ, çıkılıyor")
+            Log.e("kraptor_TEST", "========== loadLinks BİTTİ (false) ==========")
+            return false
+        }
 
-        // 2) Host'a göre uygun extractor'ı çağır
+        val fixedIframe = fixUrlNull(iframe)
+        Log.e("kraptor_TEST", "fixedIframe = '$fixedIframe'")
+
+        if (fixedIframe.isNullOrBlank()) {
+            Log.e("kraptor_TEST", "fixedIframe BOŞ")
+            return false
+        }
+
+        // Host'a göre extractor
         when {
             fixedIframe.contains("vidmoly", true) -> {
+                Log.e("kraptor_TEST", "→ extractVidmoly çağrılıyor")
                 extractVidmoly(fixedIframe, subtitleCallback, callback)
             }
             fixedIframe.contains("vmpx.online", true) ||
@@ -177,25 +243,28 @@ class FilmIzyon : MainAPI() {
             fixedIframe.contains("vmnow.online", true) ||
             fixedIframe.contains("vmshow.", true) ||
             fixedIframe.contains("vmwesa.", true) -> {
+                Log.e("kraptor_TEST", "→ extractVmpx çağrılıyor")
                 extractVmpx(fixedIframe, subtitleCallback, callback)
             }
             else -> {
+                Log.e("kraptor_TEST", "→ bilinmeyen host, loadExtractor çağrılıyor")
                 loadExtractor(fixedIframe, "${mainUrl}/", subtitleCallback, callback)
             }
         }
 
+        Log.e("kraptor_TEST", "========== loadLinks BİTTİ (true) ==========")
         return true
     }
 
     // ------------------------------------------------------------------
-    // VMPX EXTRACTOR (vmpx / vmeas / vmnow altyapısı)
+    // VMPX EXTRACTOR
     // ------------------------------------------------------------------
     private suspend fun extractVmpx(
         iframeUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.d("kraptor_vmpx", "extractVmpx -> $iframeUrl")
+        Log.e("kraptor_vmpx", "extractVmpx -> $iframeUrl")
 
         val playerDoc = try {
             app.get(
@@ -213,23 +282,20 @@ class FilmIzyon : MainAPI() {
         }
 
         val html = playerDoc.html()
-        Log.d("kraptor_vmpx", "player html length = ${html.length}")
+        Log.e("kraptor_vmpx", "player html length = ${html.length}")
 
         val m3u8Regex = Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""")
         val found = mutableSetOf<String>()
 
-        // 1) Doğrudan m3u8
         m3u8Regex.findAll(html).forEach { m ->
             found.add(m.value.replace("\\/", "/").replace("&amp;", "&"))
         }
 
-        // 2) file:"..." / source:"..." gömülü link
         val fileRegex = Regex("""(?:file|source|src)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']""")
         fileRegex.findAll(html).forEach { m ->
             found.add(m.groupValues[1].replace("\\/", "/").replace("&amp;", "&"))
         }
 
-        // 3) Base64 şifreli
         val base64Regex = Regex("""(?:file|source|src)\s*[:=]\s*["']([A-Za-z0-9+/=]{40,})["']""")
         base64Regex.findAll(html).forEach { m ->
             try {
@@ -241,13 +307,13 @@ class FilmIzyon : MainAPI() {
         }
 
         if (found.isEmpty()) {
-            Log.w("kraptor_vmpx", "m3u8 bulunamadı, fallback loadExtractor")
+            Log.e("kraptor_vmpx", "m3u8 bulunamadı, fallback loadExtractor")
             loadExtractor(iframeUrl, "${mainUrl}/", subtitleCallback, callback)
             return
         }
 
         found.forEachIndexed { index, m3u8 ->
-            Log.d("kraptor_vmpx", "m3u8[$index] = $m3u8")
+            Log.e("kraptor_vmpx", "m3u8[$index] = $m3u8")
 
             val quality = when {
                 m3u8.contains("1080") -> Qualities.P1080.value
@@ -278,14 +344,14 @@ class FilmIzyon : MainAPI() {
     }
 
     // ------------------------------------------------------------------
-    // VIDMOLY EXTRACTOR (vidmoly.net / vidmoly.to / vidmoly.biz)
+    // VIDMOLY EXTRACTOR
     // ------------------------------------------------------------------
     private suspend fun extractVidmoly(
         iframeUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.d("kraptor_vidmoly", "extractVidmoly -> $iframeUrl")
+        Log.e("kraptor_vidmoly", "extractVidmoly -> $iframeUrl")
 
         val playerDoc = try {
             app.get(
@@ -303,23 +369,21 @@ class FilmIzyon : MainAPI() {
         }
 
         val html = playerDoc.html()
-        Log.d("kraptor_vidmoly", "player html length = ${html.length}")
+        Log.e("kraptor_vidmoly", "player html length = ${html.length}")
+        Log.e("kraptor_vidmoly", "html ilk 500 karakter = ${html.take(500)}")
 
         val found = mutableSetOf<String>()
 
-        // 1) jwplayer / plyr / videojs tipik sources JSON'u
         val sourcesRegex = Regex("""["']?file["']?\s*:\s*["']([^"']+?\.m3u8[^"']*)["']""")
         sourcesRegex.findAll(html).forEach { m ->
             found.add(m.groupValues[1].replace("\\/", "/").replace("&amp;", "&"))
         }
 
-        // 2) Genel m3u8 regex
         val m3u8Regex = Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""")
         m3u8Regex.findAll(html).forEach { m ->
             found.add(m.value.replace("\\/", "/").replace("&amp;", "&"))
         }
 
-        // 3) Base64 ile şifrelenmiş kaynak
         val b64Regex = Regex("""["']([A-Za-z0-9+/=]{60,})["']""")
         b64Regex.findAll(html).forEach { m ->
             try {
@@ -332,14 +396,16 @@ class FilmIzyon : MainAPI() {
             } catch (_: Exception) {}
         }
 
+        Log.e("kraptor_vidmoly", "bulunan m3u8 sayısı = ${found.size}")
+
         if (found.isEmpty()) {
-            Log.w("kraptor_vidmoly", "m3u8 bulunamadı, fallback loadExtractor")
+            Log.e("kraptor_vidmoly", "m3u8 bulunamadı, fallback loadExtractor")
             loadExtractor(iframeUrl, "${mainUrl}/", subtitleCallback, callback)
             return
         }
 
         found.forEachIndexed { index, m3u8 ->
-            Log.d("kraptor_vidmoly", "m3u8[$index] = $m3u8")
+            Log.e("kraptor_vidmoly", "m3u8[$index] = $m3u8")
 
             val quality = when {
                 m3u8.contains("1080") -> Qualities.P1080.value
