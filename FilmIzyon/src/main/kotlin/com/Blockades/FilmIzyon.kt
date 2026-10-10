@@ -1,4 +1,4 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır. Krapotor'ın kodu gelistiriliyor
 package com.Blockades
 
 import android.util.Log
@@ -51,7 +51,9 @@ class FilmIzyon : MainAPI() {
     private fun Element.toMainPageResult(): SearchResponse? {
         val title     = this.selectFirst("h2")?.text() ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
+            ?: fixUrlNull(this.selectFirst("source")?.attr("data-srcset"))
+            ?: fixUrlNull(this.selectFirst("img")?.attr("data-src"))
 
         return newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
     }
@@ -65,7 +67,9 @@ class FilmIzyon : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title     = this.selectFirst("h2")?.text() ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
+            ?: fixUrlNull(this.selectFirst("source")?.attr("data-srcset"))
+            ?: fixUrlNull(this.selectFirst("img")?.attr("data-src"))
 
         return newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
     }
@@ -77,6 +81,9 @@ class FilmIzyon : MainAPI() {
 
         val title           = document.selectFirst("h1.page-title")?.text()?.trim() ?: return null
         val poster          = fixUrlNull(document.selectFirst("picture img")?.attr("src"))
+            ?: fixUrlNull(document.selectFirst("picture source")?.attr("data-srcset"))
+            ?: fixUrlNull(document.selectFirst("picture img")?.attr("data-src"))
+            ?: fixUrlNull(document.selectFirst("img")?.attr("src"))
         val description     = document.selectFirst("article.text-white")?.text()?.trim()
         val year            = document.selectFirst("div.d-flex.flex-column.text-nowrap a")?.text()?.trim()?.toIntOrNull()
         val tags            = document.select("div.pb-0 a.btn-warning").map { it.text() }
@@ -88,10 +95,12 @@ class FilmIzyon : MainAPI() {
         val fragmanHref: String? = fragmanElement?.attr("href")
         Log.d("kraptor_","fragmanHref = $fragmanHref")
 
-        val fragmancek = app.get(fragmanHref.toString()).document
-
-        val trailer         = fragmancek.selectFirst("iframe")?.attr("src")
-        Log.d("kraptor_","trailer = $trailer")
+        var trailer: String? = null
+        if (!fragmanHref.isNullOrBlank()) {
+            val fragmancek = app.get(fragmanHref).document
+            trailer = fragmancek.selectFirst("iframe")?.attr("src")
+            Log.d("kraptor_","trailer = $trailer")
+        }
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl       = poster
@@ -107,25 +116,64 @@ class FilmIzyon : MainAPI() {
     private fun Element.toRecommendationResult(): SearchResponse? {
         val title     = this.selectFirst("a img")?.attr("alt") ?: return null
         val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(this.selectFirst("a img")?.attr("data-src"))
+        val posterUrl = fixUrlNull(this.selectFirst("a img")?.attr("src"))
+            ?: fixUrlNull(this.selectFirst("a img")?.attr("data-src"))
 
         return newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        Log.d("kraptor_${this.name}", "data = ${data}")
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        Log.d("kraptor_${this.name}", "data = $data")
         val document = app.get(data).document
 
+        // ============================================================
+        // 1) Sayfadaki iframe'i bul (src veya data-src)
+        // ============================================================
         val iframe = document
             .selectFirst("iframe")
             ?.let { el ->
-                // Önce src dene, yoksa data-src
                 val src = el.attr("src")
                 if (src.isNotBlank()) src else el.attr("data-src")
             }
-            .orEmpty()   // null gelirse boş string
-        Log.d("kraptor_${this.name}", "iframe = ${iframe}")
-         loadExtractor(iframe, "${mainUrl}/", subtitleCallback, callback)
+            .orEmpty()
+        Log.d("kraptor_${this.name}", "iframe = $iframe")
+
+        // ============================================================
+        // 2) İframe varsa extractor'a gönder (m3u8 buradan çıkar)
+        // ============================================================
+        if (iframe.isNotBlank() && iframe.startsWith("http")) {
+            loadExtractor(iframe, "${mainUrl}/", subtitleCallback, callback)
+        }
+
+        // ============================================================
+        // 3) Sayfa HTML'inin içinde doğrudan m3u8 linki var mı?
+        //    (JSON / script / data-* içinde gömülü olabilir)
+        // ============================================================
+        val m3u8Regex = Regex("""https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*""")
+        val html = document.html()
+        m3u8Regex.findAll(html).forEach { match ->
+            val m3u8 = match.value
+                .replace("\\/", "/")
+                .replace("&amp;", "&")
+            Log.d("kraptor_${this.name}", "m3u8 bulundu = $m3u8")
+
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name = this.name,
+                    url = m3u8,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "${mainUrl}/"
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+        }
 
         return true
     }
