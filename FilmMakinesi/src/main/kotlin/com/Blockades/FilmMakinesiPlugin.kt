@@ -1,6 +1,6 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 
-package com.Blockadess
+package com.Blockades
 
 import com.lagradost.cloudstream3.plugins.BasePlugin
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
