@@ -1,7 +1,9 @@
-version = 20
+
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+version = 1
 
 cloudstream {
-    authors     = listOf("keyiflerolsun", "usdogu", "nikyokki", "kraptor")
+    authors     = listOf("Blockades")
     language    = "tr"
     description = "Film Makinesi, en yeni ve en güncel filmleri sitemizde full HD kalite farkı ile izleyebilirsiniz. HD film izle denildiğinde akla gelen en kaliteli film izleme sitesi."
 
@@ -12,7 +14,7 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
     **/
-    status  = 1 // will be 3 if unspecified
+    status  = 1
     tvTypes = listOf("Movie")
     iconUrl = "https://www.google.com/s2/favicons?domain=filmmakinesi.film&sz=%size%"
 }
