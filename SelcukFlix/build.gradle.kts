@@ -1,8 +1,8 @@
-// ! Bu araç @SAKLImavi tarafından | @UmayTrade için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 version = 1
 
 cloudstream {
-    authors     = listOf("UmayTrade")
+    authors     = listOf("Blockades")
     language    = "tr"
     description = "Selcukflix'te her türden en yeni ve en popüler dizi ve filmleri izlemenin keyfini çıkarın. Aksiyondan romantiğe, bilim kurgudan dramaya, geniş kütüphanemizde herkes için bir şey var"
 
