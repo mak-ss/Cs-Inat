@@ -1,9 +1,13 @@
-package com.safakstream
+package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.fasterxml.jackson.annotation.JsonProperty
+import okhttp3.FormBody
+import org.jsoup.nodes.Element
+import java.util.UUID
 
 data class NetMirrorPlaylistResponse(
     @JsonProperty("sources") val sources: List<NetMirrorSource>?,
@@ -23,6 +27,12 @@ data class NetMirrorTrack(
     @JsonProperty("language") val language: String?
 )
 
+// /play.php yanıtı (HTML'e göre)
+data class NetMirrorPlayResponse(
+    @JsonProperty("h") val h: String?,
+    @JsonProperty("id") val id: String?
+)
+
 class NetMirrorAPI : MainAPI() {
     override var mainUrl = "https://net52.cc"
     override var name = "NetMirror"
@@ -30,115 +40,283 @@ class NetMirrorAPI : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    private val cloudflareKiller by lazy { CloudflareKiller() }
+
+    @Volatile private var cookieValue: String = ""
+    @Volatile private var cookieTime: Long = 0L
+    @Volatile private var dataHash: String = ""
+    @Volatile private var dataTime: String = ""
+    private val cookieTtl = 10 * 60 * 1000L
+
+    private val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    private fun isCookieValid(): Boolean =
+        cookieValue.isNotEmpty() && (System.currentTimeMillis() - cookieTime) < cookieTtl
+
+    private suspend fun bypass(): String {
+        if (isCookieValid()) return cookieValue
+
+        println("NetMirror DEBUG: bypass()")
+
+        try {
+            val headers = mapOf(
+                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language" to "en-US,en;q=0.9",
+                "Content-Type" to "application/x-www-form-urlencoded",
+                "Origin" to mainUrl,
+                "Referer" to "$mainUrl/verify2",
+                "User-Agent" to ua
+            )
+
+            val body = FormBody.Builder()
+                .add("g-recaptcha-response", UUID.randomUUID().toString())
+                .build()
+
+            val response = app.post(
+                "$mainUrl/verify.php",
+                requestBody = body,
+                headers = headers,
+                interceptor = cloudflareKiller,
+                timeout = 30L
+            )
+
+            val setCookie = response.headers["Set-Cookie"] ?: ""
+            val match = Regex("t_hash_t=([^;]+)").find(setCookie)
+            cookieValue = match?.groupValues?.get(1) ?: ""
+            cookieTime = System.currentTimeMillis()
+            return cookieValue
+        } catch (e: Exception) {
+            return ""
+        }
+    }
+
+    /** HTML'deki body[data-hash] ve body[data-time] değerlerini çek */
+    private fun parseBodyAttrs(doc: org.jsoup.nodes.Document) {
+        doc.body()?.let { body ->
+            val h = body.attr("data-hash")
+            val t = body.attr("data-time")
+            if (h.isNotBlank()) dataHash = h
+            if (t.isNotBlank()) dataTime = t
+            println("NetMirror DEBUG: data-hash=$dataHash data-time=$dataTime")
+        }
+    }
+
+    private fun authHeaders(): Map<String, String> = mapOf(
+        "Cookie" to "t_hash_t=$cookieValue; hd=on; ott=nf",
+        "Referer" to "$mainUrl/home",
+        "User-Agent" to ua
+    )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        println("NetMirror DEBUG: getMainPage basladi")
+        bypass()
+        if (cookieValue.isEmpty()) return null
 
-        val headers = mapOf(
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language" to "en-IN,en-US;q=0.9,en;q=0.8",
-            "Cache-Control" to "max-age=0",
-            "Connection" to "keep-alive",
-            "Sec-Fetch-Dest" to "document",
-            "Sec-Fetch-Mode" to "navigate",
-            "Sec-Fetch-Site" to "same-origin",
-            "Sec-Fetch-User" to "?1",
-            "Upgrade-Insecure-Requests" to "1",
-            "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/144.0.7559.132 Safari/537.36 /OS.Gatu v3.0",
-            "X-Requested-With" to "XMLHttpRequest"
+        val response = app.get(
+            "$mainUrl/home",
+            headers = authHeaders(),
+            interceptor = cloudflareKiller,
+            timeout = 30L
         )
-
-        // net52.cc'ye istek at, yönlendirmeyi takip et
-        val response = app.get(mainUrl, headers = headers, allowRedirects = true)
-        println("NetMirror DEBUG: Status Code = ${response.code}")
-        println("NetMirror DEBUG: Final URL = ${response.url}")
-
         val document = response.document
-        val items = document.select("div.slider-item")
-        println("NetMirror DEBUG: Bulunan slider-item sayisi = ${items.size}")
+        parseBodyAttrs(document)
 
         val homePageLists = mutableListOf<HomePageList>()
 
-        if (items.isNotEmpty()) {
-            val movies = items.mapNotNull { element ->
-                val id = element.attr("data-post")
-                val title = element.selectFirst("a[aria-label]")?.attr("aria-label")
-                    ?: return@mapNotNull null
-                val posterUrl = element.selectFirst("img")?.attr("src")
-                    ?: element.selectFirst("img")?.attr("data-src")
+        // HTML'de her kart: <div class="slider-item ..." data-post="ID">
+        //   <a aria-label="Title">
+        //     <img data-src="https://imgcdn.kim/poster/341/ID.jpg">
+        document.select("div.lolomoRow").forEach { row ->
+            val rowTitle = row.selectFirst("h2 .row-header-title")?.text()?.trim() ?: "NetMirror"
+            val items = row.select("div.slider-item[data-post]")
+            if (items.isEmpty()) return@forEach
 
-                newMovieSearchResponse(title, id, TvType.Movie) {
-                    this.posterUrl = posterUrl
-                    this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
-                }
+            val list = items.mapNotNull { el ->
+                buildSearchResponse(el)
             }
-            println("NetMirror DEBUG: Olusturulan film sayisi = ${movies.size}")
-
-            if (movies.isNotEmpty()) {
-                homePageLists.add(HomePageList("NetMirror", movies))
+            if (list.isNotEmpty()) {
+                homePageLists.add(HomePageList(rowTitle, list))
             }
         }
 
         return newHomePageResponse(homePageLists)
     }
 
-    override suspend fun search(query: String): List<SearchResponse>? {
-        return null
-    }
+    /** HTML'e göre poster URL'lerini doğru şekilde çıkar */
+    private fun buildSearchResponse(el: Element): SearchResponse? {
+        val id = el.attr("data-post").takeIf { it.isNotBlank() } ?: return null
 
-    override suspend fun load(url: String): LoadResponse? {
-        val id = url
-        return newMovieLoadResponse(
-            "NetMirror Movie",
-            id,
-            TvType.Movie,
-            id
-        ) {
-            this.posterUrl = "https://imgcdn.kim/poster/v/$id.jpg"
+        // Başlık: a[aria-label] veya fallback-text
+        val title = el.selectFirst("a[aria-label]")?.attr("aria-label")?.takeIf { it.isNotBlank() }
+            ?: el.selectFirst("img.boxart-image")?.attr("alt")?.takeIf { it.isNotBlank() }
+            ?: el.selectFirst("p.fallback-text")?.text()?.takeIf { it.isNotBlank() }
+            ?: return null
+
+        // Poster: data-src veya src — HTML'de her ikisi de olabilir
+        val posterUrl = el.selectFirst("img.boxart-image")?.let { img ->
+            img.attr("data-src").takeIf { it.isNotBlank() }
+                ?: img.attr("src").takeIf { it.isNotBlank() }
+        }
+
+        // TV mi film mi? - Top 10 / episode varsa TV olabilir, şimdilik Movie
+        val type = TvType.Movie
+
+        return newMovieSearchResponse(title, id, type) {
+            this.posterUrl = posterUrl
             this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
         }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val id = data
-        val playlistUrl = "https://net52.cc/playlist.php?id=$id"
-        val response = app.get(playlistUrl).text
-        val playlist = tryParseJson<NetMirrorPlaylistResponse>(response)
+    override suspend fun search(query: String): List<SearchResponse>? {
+        bypass()
+        val t = dataTime.ifBlank { (System.currentTimeMillis() / 1000).toString() }
+        val response = app.get(
+            "$mainUrl/search.php?s=${query}&t=$t",
+            headers = authHeaders(),
+            interceptor = cloudflareKiller,
+            timeout = 30L
+        )
+        // HTML'e göre: search.php JSON döner -> { head, searchResult: [{id,t}, ...] }
+        val doc = response.document
+        parseBodyAttrs(doc)
 
-        playlist?.sources?.forEach { source ->
-            val videoUrl = if (source.file?.startsWith("/") == true) {
-                "https://net52.cc${source.file}"
-            } else {
-                source.file ?: return@forEach
+        // JSON yanıtını da parse etmeyi dene
+        return try {
+            val json = response.text
+            val root = tryParseJson<Map<String, Any>>(json)
+            val arr = root?.get("searchResult") as? List<*>
+            arr?.mapNotNull { item ->
+                val m = item as? Map<*, *> ?: return@mapNotNull null
+                val id = m["id"]?.toString() ?: return@mapNotNull null
+                val title = m["t"]?.toString() ?: id
+                newMovieSearchResponse(title, id, TvType.Movie) {
+                    this.posterUrl = "https://imgcdn.kim/poster/341/$id.jpg"
+                }
             }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
 
+    override suspend fun load(url: String): LoadResponse? {
+        val id = url
+        return newMovieLoadResponse("NetMirror", id, TvType.Movie, id) {
+            this.posterUrl = "https://imgcdn.kim/poster/341/$id.jpg"
+            this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val id = data
+        bypass()
+        if (cookieValue.isEmpty()) return false
+
+        // HTML'deki player akışına göre:
+        // 1. POST /play.php {id: VideoID} → { h: "hash" }
+        // 2. iframe src: https://net52.cc/play.php?id=ID&<h>
+        val playHeaders = authHeaders() + mapOf(
+            "Content-Type" to "application/x-www-form-urlencoded",
+            "X-Requested-With" to "XMLHttpRequest"
+        )
+
+        val playBody = FormBody.Builder()
+            .add("id", id)
+            .build()
+
+        val playResp = try {
+            app.post(
+                "$mainUrl/play.php",
+                requestBody = playBody,
+                headers = playHeaders,
+                interceptor = cloudflareKiller,
+                timeout = 30L
+            )
+        } catch (e: Exception) {
+            println("NetMirror DEBUG: play.php HATA: ${e.message}")
+            return false
+        }
+
+        val playJson = playResp.text
+        println("NetMirror DEBUG: play.php yanit: $playJson")
+
+        val h = tryParseJson<Map<String, Any>>(playJson)?.get("h")?.toString()
+            ?: Regex("\"h\"\\s*:\\s*\"([^\"]+)\"").find(playJson)?.groupValues?.get(1)
+
+        if (h.isNullOrBlank()) {
+            println("NetMirror DEBUG: h bulunamadi")
+            return false
+        }
+
+        // Gerçek video sayfası
+        val playerUrl = "$mainUrl/play.php?id=$id&$h"
+        println("NetMirror DEBUG: playerUrl=$playerUrl")
+
+        val playerResp = app.get(
+            playerUrl,
+            headers = authHeaders() + mapOf("Referer" to "$mainUrl/"),
+            interceptor = cloudflareKiller,
+            timeout = 30L
+        )
+
+        val playerHtml = playerResp.text
+
+        // Eğer playlist JSON doğrudan geliyorsa
+        parsePlaylist(playerHtml, subtitleCallback, callback)
+            .let { if (it) return true }
+
+        // HTML içinden m3u8 / playlist linki ara
+        val m3u8Regex = Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
+        val m3u8List = m3u8Regex.findAll(playerHtml).map { it.value }.distinct()
+        m3u8List.forEach { url ->
             callback.invoke(
-                newExtractorLink(
-                    source = this.name,
-                    name = source.label ?: "NetMirror",
-                    url = videoUrl,
-                    type = ExtractorLinkType.M3U8
-                ) {
+                newExtractorLink(this.name, "NetMirror", url, ExtractorLinkType.M3U8) {
+                    this.referer = "$mainUrl/"
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+        }
+
+        return true
+    }
+
+    private fun parsePlaylist(
+        text: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val playlist = tryParseJson<NetMirrorPlaylistResponse>(text) ?: return false
+        if (playlist.sources.isNullOrEmpty()) return false
+
+        playlist.sources.forEach { source ->
+            val file = source.file ?: return@forEach
+            val videoUrl = when {
+                file.startsWith("//") -> "https:$file"
+                file.startsWith("/")  -> "$mainUrl$file"
+                else -> file
+            }
+            callback.invoke(
+                newExtractorLink(this.name, source.label ?: "NetMirror", videoUrl, ExtractorLinkType.M3U8) {
+                    this.referer = "$mainUrl/"
                     this.quality = getQualityFromName(source.label)
                 }
             )
         }
 
-        playlist?.tracks?.forEach { track ->
+        playlist.tracks?.forEach { track ->
             if (track.kind == "captions" && track.file != null) {
-                val subUrl = if (track.file.startsWith("//")) {
-                    "https:${track.file}"
-                } else {
-                    track.file
+                val subUrl = when {
+                    track.file.startsWith("//") -> "https:${track.file}"
+                    track.file.startsWith("/")  -> "$mainUrl${track.file}"
+                    else -> track.file
                 }
-                subtitleCallback.invoke(
-                    newSubtitleFile(
-                        lang = track.language ?: "en",
-                        url = subUrl
-                    )
-                )
+                subtitleCallback.invoke(newSubtitleFile(track.language ?: "en", subUrl))
             }
         }
-
         return true
     }
 }
