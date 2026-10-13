@@ -1,12 +1,9 @@
-package com.Blockades
+package com.safakstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.fasterxml.jackson.annotation.JsonProperty
-import okhttp3.FormBody
-import java.util.UUID
 
 data class NetMirrorPlaylistResponse(
     @JsonProperty("sources") val sources: List<NetMirrorSource>?,
@@ -27,99 +24,43 @@ data class NetMirrorTrack(
 )
 
 class NetMirrorAPI : MainAPI() {
-    override var mainUrl = "https://net52.cc"   // ⬅️ isteklerle aynı domain
+    override var mainUrl = "https://net52.cc"
     override var name = "NetMirror"
     override var lang = "tr"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    private val cloudflareKiller by lazy { CloudflareKiller() }
-
-    // Cookie cache + süre kontrolü
-    @Volatile private var cookieValue: String = ""
-    @Volatile private var cookieTime: Long = 0L
-    private val cookieTtl = 10 * 60 * 1000L // 10 dk
-
-    private val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    private fun isCookieValid(): Boolean =
-        cookieValue.isNotEmpty() && (System.currentTimeMillis() - cookieTime) < cookieTtl
-
-    private suspend fun bypass(): String {
-        if (isCookieValid()) return cookieValue
-
-        println("NetMirror DEBUG: bypass() - Yeni cookie aliniyor...")
-
-        try {
-            val headers = mapOf(
-                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language" to "en-US,en;q=0.9",
-                "Content-Type" to "application/x-www-form-urlencoded",
-                "Origin" to mainUrl,
-                "Referer" to "$mainUrl/verify2",
-                "User-Agent" to ua
-            )
-
-            val body = FormBody.Builder()
-                .add("g-recaptcha-response", UUID.randomUUID().toString())
-                .build()
-
-            val response = app.post(
-                "$mainUrl/verify.php",
-                requestBody = body,
-                headers = headers,
-                interceptor = cloudflareKiller,
-                timeout = 30L   // ⬅️ explicit timeout
-            )
-
-            println("NetMirror DEBUG: bypass() status=${response.code}")
-
-            val setCookie = response.headers["Set-Cookie"] ?: ""
-            val match = Regex("t_hash_t=([^;]+)").find(setCookie)
-            cookieValue = match?.groupValues?.get(1) ?: ""
-            cookieTime = System.currentTimeMillis()
-
-            println("NetMirror DEBUG: cookie='$cookieValue'")
-            return cookieValue
-        } catch (e: Exception) {
-            println("NetMirror DEBUG: bypass HATA: ${e.message}")
-            return ""
-        }
-    }
-
-    private fun authHeaders(): Map<String, String> = mapOf(
-        "Cookie" to "t_hash_t=$cookieValue; hd=on; ott=nf",
-        "Referer" to "$mainUrl/home",
-        "User-Agent" to ua
-    )
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        println("NetMirror DEBUG: getMainPage")
+        println("NetMirror DEBUG: getMainPage basladi")
 
-        bypass()
-        if (cookieValue.isEmpty()) {
-            println("NetMirror DEBUG: cookie alinamadi, cikiliyor")
-            return null
-        }
-
-        val response = app.get(
-            "$mainUrl/home",
-            headers = authHeaders(),
-            interceptor = cloudflareKiller,
-            timeout = 30L
+        val headers = mapOf(
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language" to "en-IN,en-US;q=0.9,en;q=0.8",
+            "Cache-Control" to "max-age=0",
+            "Connection" to "keep-alive",
+            "Sec-Fetch-Dest" to "document",
+            "Sec-Fetch-Mode" to "navigate",
+            "Sec-Fetch-Site" to "same-origin",
+            "Sec-Fetch-User" to "?1",
+            "Upgrade-Insecure-Requests" to "1",
+            "User-Agent" to "Mozilla/5.0 (Linux; Android 13; Pixel 5 Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/144.0.7559.132 Safari/537.36 /OS.Gatu v3.0",
+            "X-Requested-With" to "XMLHttpRequest"
         )
-        println("NetMirror DEBUG: status=${response.code}")
+
+        // net52.cc'ye istek at, yönlendirmeyi takip et
+        val response = app.get(mainUrl, headers = headers, allowRedirects = true)
+        println("NetMirror DEBUG: Status Code = ${response.code}")
+        println("NetMirror DEBUG: Final URL = ${response.url}")
 
         val document = response.document
         val items = document.select("div.slider-item")
-        println("NetMirror DEBUG: slider-item=${items.size}")
+        println("NetMirror DEBUG: Bulunan slider-item sayisi = ${items.size}")
 
         val homePageLists = mutableListOf<HomePageList>()
 
         if (items.isNotEmpty()) {
             val movies = items.mapNotNull { element ->
-                val id = element.attr("data-post").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val id = element.attr("data-post")
                 val title = element.selectFirst("a[aria-label]")?.attr("aria-label")
                     ?: return@mapNotNull null
                 val posterUrl = element.selectFirst("img")?.attr("src")
@@ -130,6 +71,8 @@ class NetMirrorAPI : MainAPI() {
                     this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
                 }
             }
+            println("NetMirror DEBUG: Olusturulan film sayisi = ${movies.size}")
+
             if (movies.isNotEmpty()) {
                 homePageLists.add(HomePageList("NetMirror", movies))
             }
@@ -138,47 +81,35 @@ class NetMirrorAPI : MainAPI() {
         return newHomePageResponse(homePageLists)
     }
 
-    override suspend fun search(query: String): List<SearchResponse>? = null
+    override suspend fun search(query: String): List<SearchResponse>? {
+        return null
+    }
 
     override suspend fun load(url: String): LoadResponse? {
         val id = url
-        return newMovieLoadResponse("NetMirror Movie", id, TvType.Movie, id) {
+        return newMovieLoadResponse(
+            "NetMirror Movie",
+            id,
+            TvType.Movie,
+            id
+        ) {
             this.posterUrl = "https://imgcdn.kim/poster/v/$id.jpg"
             this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
         }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         val id = data
-        bypass()
-
-        val playlistUrl = "$mainUrl/playlist.php?id=$id"
-        println("NetMirror DEBUG: playlist=$playlistUrl")
-
-        // ⬇️ Header + cookie + timeout eklendi
-        val response = app.get(
-            playlistUrl,
-            headers = authHeaders(),
-            interceptor = cloudflareKiller,
-            timeout = 30L
-        ).text
-
+        val playlistUrl = "https://net52.cc/playlist.php?id=$id"
+        val response = app.get(playlistUrl).text
         val playlist = tryParseJson<NetMirrorPlaylistResponse>(response)
-        if (playlist == null) {
-            println("NetMirror DEBUG: playlist parse edilemedi: $response")
-            return false
-        }
 
-        playlist.sources?.forEach { source ->
-            val file = source.file ?: return@forEach
-            val videoUrl = if (file.startsWith("/")) "$mainUrl$file"
-                           else if (file.startsWith("//")) "https:$file"
-                           else file
+        playlist?.sources?.forEach { source ->
+            val videoUrl = if (source.file?.startsWith("/") == true) {
+                "https://net52.cc${source.file}"
+            } else {
+                source.file ?: return@forEach
+            }
 
             callback.invoke(
                 newExtractorLink(
@@ -188,20 +119,22 @@ class NetMirrorAPI : MainAPI() {
                     type = ExtractorLinkType.M3U8
                 ) {
                     this.quality = getQualityFromName(source.label)
-                    this.referer = "$mainUrl/"
                 }
             )
         }
 
-        playlist.tracks?.forEach { track ->
+        playlist?.tracks?.forEach { track ->
             if (track.kind == "captions" && track.file != null) {
-                val subUrl = when {
-                    track.file.startsWith("//") -> "https:${track.file}"
-                    track.file.startsWith("/")  -> "$mainUrl${track.file}"
-                    else -> track.file
+                val subUrl = if (track.file.startsWith("//")) {
+                    "https:${track.file}"
+                } else {
+                    track.file
                 }
                 subtitleCallback.invoke(
-                    newSubtitleFile(track.language ?: "en", subUrl)
+                    newSubtitleFile(
+                        lang = track.language ?: "en",
+                        url = subUrl
+                    )
                 )
             }
         }
