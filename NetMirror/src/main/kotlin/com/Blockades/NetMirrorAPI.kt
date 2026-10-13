@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.fasterxml.jackson.annotation.JsonProperty
 import okhttp3.FormBody
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.UUID
 
@@ -27,14 +28,8 @@ data class NetMirrorTrack(
     @JsonProperty("language") val language: String?
 )
 
-// /play.php yanıtı (HTML'e göre)
-data class NetMirrorPlayResponse(
-    @JsonProperty("h") val h: String?,
-    @JsonProperty("id") val id: String?
-)
-
 class NetMirrorAPI : MainAPI() {
-    override var mainUrl = "https://net77.cc"
+    override var mainUrl = "https://net52.cc"
     override var name = "NetMirror"
     override var lang = "tr"
     override val hasMainPage = true
@@ -57,7 +52,7 @@ class NetMirrorAPI : MainAPI() {
     private suspend fun bypass(): String {
         if (isCookieValid()) return cookieValue
 
-        println("NetMirror DEBUG: bypass()")
+        println("NetMirror DEBUG: bypass() - yeni cookie aliniyor")
 
         try {
             val headers = mapOf(
@@ -81,18 +76,23 @@ class NetMirrorAPI : MainAPI() {
                 timeout = 30L
             )
 
+            println("NetMirror DEBUG: bypass() status=${response.code}")
+
             val setCookie = response.headers["Set-Cookie"] ?: ""
             val match = Regex("t_hash_t=([^;]+)").find(setCookie)
             cookieValue = match?.groupValues?.get(1) ?: ""
             cookieTime = System.currentTimeMillis()
+
+            println("NetMirror DEBUG: cookie='$cookieValue'")
             return cookieValue
         } catch (e: Exception) {
+            println("NetMirror DEBUG: bypass HATA: ${e.message}")
             return ""
         }
     }
 
     /** HTML'deki body[data-hash] ve body[data-time] değerlerini çek */
-    private fun parseBodyAttrs(doc: org.jsoup.nodes.Document) {
+    private fun parseBodyAttrs(doc: Document) {
         doc.body()?.let { body ->
             val h = body.attr("data-hash")
             val t = body.attr("data-time")
@@ -109,8 +109,13 @@ class NetMirrorAPI : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        println("NetMirror DEBUG: getMainPage")
+
         bypass()
-        if (cookieValue.isEmpty()) return null
+        if (cookieValue.isEmpty()) {
+            println("NetMirror DEBUG: cookie alinamadi")
+            return null
+        }
 
         val response = app.get(
             "$mainUrl/home",
@@ -118,6 +123,8 @@ class NetMirrorAPI : MainAPI() {
             interceptor = cloudflareKiller,
             timeout = 30L
         )
+        println("NetMirror DEBUG: status=${response.code}")
+
         val document = response.document
         parseBodyAttrs(document)
 
@@ -127,17 +134,19 @@ class NetMirrorAPI : MainAPI() {
         //   <a aria-label="Title">
         //     <img data-src="https://imgcdn.kim/poster/341/ID.jpg">
         document.select("div.lolomoRow").forEach { row ->
-            val rowTitle = row.selectFirst("h2 .row-header-title")?.text()?.trim() ?: "NetMirror"
+            val rowTitle = row.selectFirst("h2 .row-header-title")?.text()?.trim()
+                ?.takeIf { it.isNotBlank() } ?: "NetMirror"
+
             val items = row.select("div.slider-item[data-post]")
             if (items.isEmpty()) return@forEach
 
-            val list = items.mapNotNull { el ->
-                buildSearchResponse(el)
-            }
+            val list = items.mapNotNull { el -> buildSearchResponse(el) }
             if (list.isNotEmpty()) {
                 homePageLists.add(HomePageList(rowTitle, list))
             }
         }
+
+        println("NetMirror DEBUG: toplam kategori=${homePageLists.size}")
 
         return newHomePageResponse(homePageLists)
     }
@@ -152,16 +161,13 @@ class NetMirrorAPI : MainAPI() {
             ?: el.selectFirst("p.fallback-text")?.text()?.takeIf { it.isNotBlank() }
             ?: return null
 
-        // Poster: data-src veya src — HTML'de her ikisi de olabilir
+        // Poster: data-src veya src
         val posterUrl = el.selectFirst("img.boxart-image")?.let { img ->
             img.attr("data-src").takeIf { it.isNotBlank() }
                 ?: img.attr("src").takeIf { it.isNotBlank() }
         }
 
-        // TV mi film mi? - Top 10 / episode varsa TV olabilir, şimdilik Movie
-        val type = TvType.Movie
-
-        return newMovieSearchResponse(title, id, type) {
+        return newMovieSearchResponse(title, id, TvType.Movie) {
             this.posterUrl = posterUrl
             this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
         }
@@ -169,6 +175,8 @@ class NetMirrorAPI : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse>? {
         bypass()
+        if (cookieValue.isEmpty()) return null
+
         val t = dataTime.ifBlank { (System.currentTimeMillis() / 1000).toString() }
         val response = app.get(
             "$mainUrl/search.php?s=${query}&t=$t",
@@ -176,14 +184,12 @@ class NetMirrorAPI : MainAPI() {
             interceptor = cloudflareKiller,
             timeout = 30L
         )
-        // HTML'e göre: search.php JSON döner -> { head, searchResult: [{id,t}, ...] }
-        val doc = response.document
-        parseBodyAttrs(doc)
 
-        // JSON yanıtını da parse etmeyi dene
+        val text = response.text
+        parseBodyAttrs(response.document)
+
         return try {
-            val json = response.text
-            val root = tryParseJson<Map<String, Any>>(json)
+            val root = tryParseJson<Map<String, Any>>(text)
             val arr = root?.get("searchResult") as? List<*>
             arr?.mapNotNull { item ->
                 val m = item as? Map<*, *> ?: return@mapNotNull null
@@ -191,9 +197,11 @@ class NetMirrorAPI : MainAPI() {
                 val title = m["t"]?.toString() ?: id
                 newMovieSearchResponse(title, id, TvType.Movie) {
                     this.posterUrl = "https://imgcdn.kim/poster/341/$id.jpg"
+                    this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
                 }
             }
         } catch (e: Exception) {
+            println("NetMirror DEBUG: search parse HATA: ${e.message}")
             emptyList()
         }
     }
@@ -214,9 +222,12 @@ class NetMirrorAPI : MainAPI() {
     ): Boolean {
         val id = data
         bypass()
-        if (cookieValue.isEmpty()) return false
+        if (cookieValue.isEmpty()) {
+            println("NetMirror DEBUG: loadLinks - cookie yok")
+            return false
+        }
 
-        // HTML'deki player akışına göre:
+        // HTML'deki player akışı:
         // 1. POST /play.php {id: VideoID} → { h: "hash" }
         // 2. iframe src: https://net52.cc/play.php?id=ID&<h>
         val playHeaders = authHeaders() + mapOf(
@@ -265,26 +276,32 @@ class NetMirrorAPI : MainAPI() {
 
         val playerHtml = playerResp.text
 
-        // Eğer playlist JSON doğrudan geliyorsa
-        parsePlaylist(playerHtml, subtitleCallback, callback)
-            .let { if (it) return true }
-
-        // HTML içinden m3u8 / playlist linki ara
-        val m3u8Regex = Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
-        val m3u8List = m3u8Regex.findAll(playerHtml).map { it.value }.distinct()
-        m3u8List.forEach { url ->
-            callback.invoke(
-                newExtractorLink(this.name, "NetMirror", url, ExtractorLinkType.M3U8) {
-                    this.referer = "$mainUrl/"
-                    this.quality = Qualities.Unknown.value
-                }
-            )
+        // 1) Direkt playlist JSON geldiyse parse et
+        if (parsePlaylist(playerHtml, subtitleCallback, callback)) {
+            return true
         }
 
-        return true
+        // 2) HTML içinden m3u8 linklerini yakala
+        val m3u8Regex = Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
+        val m3u8List = m3u8Regex.findAll(playerHtml).map { it.value }.distinct().toList()
+        if (m3u8List.isNotEmpty()) {
+            m3u8List.forEach { url ->
+                callback.invoke(
+                    newExtractorLink(this.name, "NetMirror", url, ExtractorLinkType.M3U8) {
+                        this.referer = "$mainUrl/"
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+            }
+            return true
+        }
+
+        println("NetMirror DEBUG: link bulunamadi")
+        return false
     }
 
-    private fun parsePlaylist(
+    /** Suspend — çünkü içinde newExtractorLink ve newSubtitleFile çağrılıyor */
+    private suspend fun parsePlaylist(
         text: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
@@ -300,7 +317,12 @@ class NetMirrorAPI : MainAPI() {
                 else -> file
             }
             callback.invoke(
-                newExtractorLink(this.name, source.label ?: "NetMirror", videoUrl, ExtractorLinkType.M3U8) {
+                newExtractorLink(
+                    this.name,
+                    source.label ?: "NetMirror",
+                    videoUrl,
+                    ExtractorLinkType.M3U8
+                ) {
                     this.referer = "$mainUrl/"
                     this.quality = getQualityFromName(source.label)
                 }
@@ -314,7 +336,9 @@ class NetMirrorAPI : MainAPI() {
                     track.file.startsWith("/")  -> "$mainUrl${track.file}"
                     else -> track.file
                 }
-                subtitleCallback.invoke(newSubtitleFile(track.language ?: "en", subUrl))
+                subtitleCallback.invoke(
+                    newSubtitleFile(track.language ?: "en", subUrl)
+                )
             }
         }
         return true
