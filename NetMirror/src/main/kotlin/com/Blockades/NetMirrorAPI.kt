@@ -1,217 +1,200 @@
 package com.Blockades
 
+import android.content.Context
+import com.horis.cncverse.entities.SearchResult
+import com.horis.cncverse.entities.Season
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
-import com.lagradost.cloudstream3.network.CloudflareKiller
-import com.fasterxml.jackson.annotation.JsonProperty
-import okhttp3.FormBody
-import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
-import java.util.UUID
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import java.net.URLEncoder
 
-data class NetMirrorPlaylistResponse(
-    @JsonProperty("sources") val sources: List<NetMirrorSource>?,
-    @JsonProperty("tracks") val tracks: List<NetMirrorTrack>?
-)
+class NetflixMirrorProvider : MainAPI() {
+    companion object {
+        var context: Context? = null
+    }
 
-data class NetMirrorSource(
-    @JsonProperty("file") val file: String?,
-    @JsonProperty("label") val label: String?,
-    @JsonProperty("type") val type: String?
-)
-
-data class NetMirrorTrack(
-    @JsonProperty("file") val file: String?,
-    @JsonProperty("label") val label: String?,
-    @JsonProperty("kind") val kind: String?,
-    @JsonProperty("language") val language: String?
-)
-
-class NetMirrorAPI : MainAPI() {
-    override var mainUrl = "https://net52.cc"
-    override var name = "NetMirror"
-    override var lang = "tr"
-    override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override var lang = "hi"
+    override var mainUrl = "https://net52.cc"
+    override var name = "Netflix"
+    override val hasMainPage = true
 
-    private val cloudflareKiller by lazy { CloudflareKiller() }
+    private val ott = "nf"
 
-    @Volatile private var cookieValue: String = ""
-    @Volatile private var cookieTime: Long = 0L
-    @Volatile private var dataHash: String = ""
-    @Volatile private var dataTime: String = ""
-    private val cookieTtl = 10 * 60 * 1000L
-
-    private val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    private fun isCookieValid(): Boolean =
-        cookieValue.isNotEmpty() && (System.currentTimeMillis() - cookieTime) < cookieTtl
-
-    private suspend fun bypass(): String {
-        if (isCookieValid()) return cookieValue
-
-        println("NetMirror DEBUG: bypass() - yeni cookie aliniyor")
-
-        try {
-            val headers = mapOf(
-                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language" to "en-US,en;q=0.9",
-                "Content-Type" to "application/x-www-form-urlencoded",
-                "Origin" to mainUrl,
-                "Referer" to "$mainUrl/verify2",
-                "User-Agent" to ua
-            )
-
-            val body = FormBody.Builder()
-                .add("g-recaptcha-response", UUID.randomUUID().toString())
-                .build()
-
-            val response = app.post(
-                "$mainUrl/verify.php",
-                requestBody = body,
-                headers = headers,
-                interceptor = cloudflareKiller,
-                timeout = 30L
-            )
-
-            println("NetMirror DEBUG: bypass() status=${response.code}")
-
-            val setCookie = response.headers["Set-Cookie"] ?: ""
-            val match = Regex("t_hash_t=([^;]+)").find(setCookie)
-            cookieValue = match?.groupValues?.get(1) ?: ""
-            cookieTime = System.currentTimeMillis()
-
-            println("NetMirror DEBUG: cookie='$cookieValue'")
-            return cookieValue
-        } catch (e: Exception) {
-            println("NetMirror DEBUG: bypass HATA: ${e.message}")
-            return ""
+    private fun buildPosterUrl(template: String?, id: String): String? {
+        if (template.isNullOrBlank()) return null
+        return if (template.contains("------------------")) {
+            template.replace("------------------", id)
+        } else {
+            "${template.trimEnd('/')}/$id.jpg"
         }
     }
-
-    /** HTML'deki body[data-hash] ve body[data-time] değerlerini çek */
-    private fun parseBodyAttrs(doc: Document) {
-        doc.body()?.let { body ->
-            val h = body.attr("data-hash")
-            val t = body.attr("data-time")
-            if (h.isNotBlank()) dataHash = h
-            if (t.isNotBlank()) dataTime = t
-            println("NetMirror DEBUG: data-hash=$dataHash data-time=$dataTime")
-        }
-    }
-
-    private fun authHeaders(): Map<String, String> = mapOf(
-        "Cookie" to "t_hash_t=$cookieValue; hd=on; ott=nf",
-        "Referer" to "$mainUrl/home",
-        "User-Agent" to ua
-    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        println("NetMirror DEBUG: getMainPage")
-
-        bypass()
-        if (cookieValue.isEmpty()) {
-            println("NetMirror DEBUG: cookie alinamadi")
-            return null
-        }
-
+        val apiBase = resolveApiUrl()
         val response = app.get(
-            "$mainUrl/home",
-            headers = authHeaders(),
-            interceptor = cloudflareKiller,
-            timeout = 30L
-        )
-        println("NetMirror DEBUG: status=${response.code}")
+            "$apiBase/newtv/main.php",
+            headers = buildNewTvHeaders(
+                ott,
+                mapOf("Page" to "all", "Recentplay" to "", "Watchlist" to "", "Usertoken" to "")
+            )
+        ).parsed<NewTvMainResponse>()
 
-        val document = response.document
-        parseBodyAttrs(document)
-
-        val homePageLists = mutableListOf<HomePageList>()
-
-        // HTML'de her kart: <div class="slider-item ..." data-post="ID">
-        //   <a aria-label="Title">
-        //     <img data-src="https://imgcdn.kim/poster/341/ID.jpg">
-        document.select("div.lolomoRow").forEach { row ->
-            val rowTitle = row.selectFirst("h2 .row-header-title")?.text()?.trim()
-                ?.takeIf { it.isNotBlank() } ?: "NetMirror"
-
-            val items = row.select("div.slider-item[data-post]")
-            if (items.isEmpty()) return@forEach
-
-            val list = items.mapNotNull { el -> buildSearchResponse(el) }
-            if (list.isNotEmpty()) {
-                homePageLists.add(HomePageList(rowTitle, list))
+        val referer = response.img_referer ?: apiBase
+        val items = response.post.orEmpty().map { category ->
+            val ids = category.ids.orEmpty()
+                .split(",")
+                .map(String::trim)
+                .filter(String::isNotEmpty)
+            val horizontal = category.row == "h"
+            val template = if (horizontal) {
+                response.imgcdn_h ?: response.imgcdn_v
+            } else {
+                response.imgcdn_v ?: response.imgcdn_h
             }
-        }
-
-        println("NetMirror DEBUG: toplam kategori=${homePageLists.size}")
-
-        return newHomePageResponse(homePageLists)
-    }
-
-    /** HTML'e göre poster URL'lerini doğru şekilde çıkar */
-    private fun buildSearchResponse(el: Element): SearchResponse? {
-        val id = el.attr("data-post").takeIf { it.isNotBlank() } ?: return null
-
-        // Başlık: a[aria-label] veya fallback-text
-        val title = el.selectFirst("a[aria-label]")?.attr("aria-label")?.takeIf { it.isNotBlank() }
-            ?: el.selectFirst("img.boxart-image")?.attr("alt")?.takeIf { it.isNotBlank() }
-            ?: el.selectFirst("p.fallback-text")?.text()?.takeIf { it.isNotBlank() }
-            ?: return null
-
-        // Poster: data-src veya src
-        val posterUrl = el.selectFirst("img.boxart-image")?.let { img ->
-            img.attr("data-src").takeIf { it.isNotBlank() }
-                ?: img.attr("src").takeIf { it.isNotBlank() }
-        }
-
-        return newMovieSearchResponse(title, id, TvType.Movie) {
-            this.posterUrl = posterUrl
-            this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
-        }
-    }
-
-    override suspend fun search(query: String): List<SearchResponse>? {
-        bypass()
-        if (cookieValue.isEmpty()) return null
-
-        val t = dataTime.ifBlank { (System.currentTimeMillis() / 1000).toString() }
-        val response = app.get(
-            "$mainUrl/search.php?s=${query}&t=$t",
-            headers = authHeaders(),
-            interceptor = cloudflareKiller,
-            timeout = 30L
-        )
-
-        val text = response.text
-        parseBodyAttrs(response.document)
-
-        return try {
-            val root = tryParseJson<Map<String, Any>>(text)
-            val arr = root?.get("searchResult") as? List<*>
-            arr?.mapNotNull { item ->
-                val m = item as? Map<*, *> ?: return@mapNotNull null
-                val id = m["id"]?.toString() ?: return@mapNotNull null
-                val title = m["t"]?.toString() ?: id
-                newMovieSearchResponse(title, id, TvType.Movie) {
-                    this.posterUrl = "https://imgcdn.kim/poster/341/$id.jpg"
-                    this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
+            val results = ids.map { id ->
+                newAnimeSearchResponse("", NewTvId(id).toJson()) {
+                    posterUrl = buildPosterUrl(template, id)
+                    posterHeaders = mapOf("Referer" to referer)
                 }
             }
-        } catch (e: Exception) {
-            println("NetMirror DEBUG: search parse HATA: ${e.message}")
-            emptyList()
+            HomePageList(category.cate.orEmpty(), results, isHorizontalImages = horizontal)
+        }
+        return newHomePageResponse(items, hasNext = items.isNotEmpty())
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val apiBase = resolveApiUrl()
+        val data = app.get(
+            "$apiBase/newtv/search.php?s=${URLEncoder.encode(query, "UTF-8")}",
+            headers = buildNewTvHeaders(ott)
+        ).parsed<NewTvSearchResponse>()
+        val referer = data.img_referer ?: apiBase
+        val template = data.detailsimgcdn ?: data.imgcdn
+
+        return data.searchResult.orEmpty().map { item ->
+            newAnimeSearchResponse(item.t, NewTvId(item.id).toJson()) {
+                posterUrl = buildPosterUrl(template, item.id)
+                posterHeaders = mapOf("Referer" to referer)
+            }
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val id = url
-        return newMovieLoadResponse("NetMirror", id, TvType.Movie, id) {
-            this.posterUrl = "https://imgcdn.kim/poster/341/$id.jpg"
-            this.posterHeaders = mapOf("Referer" to "$mainUrl/home")
+        val apiBase = resolveApiUrl()
+        val id = parseJson<NewTvId>(url).id
+        val data = app.get(
+            "$apiBase/newtv/post.php?id=$id",
+            headers = buildNewTvHeaders(ott, mapOf("Lastep" to "", "Usertoken" to ""))
+        ).parsed<NewTvPostResponse>()
+
+        val title = data.title ?: id
+        val playbackId = data.main_id ?: id
+        val cast = data.cast.orEmpty().split(",").map(String::trim)
+            .filter(String::isNotEmpty).map { ActorData(Actor(it)) }
+        val genre = data.genre?.split(",")?.map(String::trim)?.filter(String::isNotEmpty)
+        val rating = data.match?.replace("IMDb ", "")
+        val duration = convertRuntimeToMinutes(data.runtime.orEmpty())
+        val recommendations = data.suggest?.map {
+            newAnimeSearchResponse("", NewTvId(it.id).toJson()) {
+                posterUrl = buildPosterUrl(data.morelike_poster, it.id)
+                posterHeaders = mapOf("Referer" to apiBase)
+            }
         }
+        val isSeries = data.type == "t" || data.episodes?.any { it != null } == true
+
+        if (!isSeries) {
+            return newMovieLoadResponse(
+                title, url, TvType.Movie, NewTvLoadData(title, playbackId).toJson()
+            ) {
+                posterUrl = buildPosterUrl(data.main_poster, id)
+                backgroundPosterUrl = buildPosterUrl(data.main_poster, id)
+                posterHeaders = mapOf("Referer" to apiBase)
+                plot = data.desc
+                year = data.year?.toIntOrNull()
+                tags = genre
+                actors = cast
+                score = Score.from10(rating)
+                this.duration = duration
+                this.recommendations = recommendations
+            }
+        }
+
+        val episodes = arrayListOf<Episode>()
+        if (data.episodes.isNullOrEmpty()) {
+            if (data.type != "t") {
+                episodes.add(newEpisode(NewTvLoadData(title, playbackId)) { name = title })
+            }
+        } else {
+            val selectedSeason = data.season?.indexOfFirst { it.sele == "1" }?.takeIf { it >= 0 }
+            val selectedSeasonId = selectedSeason?.let { data.season?.getOrNull(it)?.id }
+                ?: data.nextPageSeason
+            val selectedSeasonNumber = selectedSeason?.plus(1)
+
+            data.episodes.filterNotNull().mapTo(episodes) {
+                newEpisode(NewTvLoadData(title, it.id)) {
+                    name = it.t
+                    episode = it.ep.replace("E", "").toIntOrNull()
+                    season = selectedSeasonNumber ?: it.s.replace("S", "").toIntOrNull()
+                    posterUrl = buildPosterUrl(data.ep_poster, it.id)
+                    runTime = it.time.replace("m", "").toIntOrNull()
+                }
+            }
+
+            if (data.nextPageShow == 1 && !selectedSeasonId.isNullOrBlank()) {
+                episodes.addAll(
+                    getEpisodes(title, selectedSeasonId, 2, data.ep_poster, selectedSeasonNumber)
+                )
+            }
+            data.season?.forEachIndexed { index, season ->
+                if (season.id != selectedSeasonId && season.id.isNotBlank()) {
+                    episodes.addAll(getEpisodes(title, season.id, 1, data.ep_poster, index + 1))
+                }
+            }
+        }
+
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            posterUrl = buildPosterUrl(data.main_poster, id)
+            backgroundPosterUrl = buildPosterUrl(data.main_poster, id)
+            posterHeaders = mapOf("Referer" to apiBase)
+            plot = data.desc
+            year = data.year?.toIntOrNull()
+            tags = genre
+            actors = cast
+            score = Score.from10(rating)
+            this.duration = duration
+            this.recommendations = recommendations
+        }
+    }
+
+    private suspend fun getEpisodes(
+        title: String,
+        seasonId: String,
+        page: Int,
+        posterTemplate: String?,
+        seasonNumber: Int?
+    ): List<Episode> {
+        val apiBase = resolveApiUrl()
+        val episodes = arrayListOf<Episode>()
+        var currentPage = page
+        while (true) {
+            val data = app.get(
+                "$apiBase/newtv/episodes.php?id=$seasonId&page=$currentPage",
+                headers = buildNewTvHeaders(ott)
+            ).parsed<NewTvEpisodesResponse>()
+            data.episodes.orEmpty().mapTo(episodes) {
+                newEpisode(NewTvLoadData(title, it.id)) {
+                    name = it.t
+                    episode = it.ep.replace("E", "").toIntOrNull()
+                    season = seasonNumber ?: it.s.replace("S", "").toIntOrNull()
+                    posterUrl = buildPosterUrl(posterTemplate, it.id)
+                    runTime = it.time.replace("m", "").toIntOrNull()
+                }
+            }
+            if (data.nextPageShow != 1) break
+            currentPage++
+        }
+        return episodes
     }
 
     override suspend fun loadLinks(
@@ -220,127 +203,68 @@ class NetMirrorAPI : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val id = data
-        bypass()
-        if (cookieValue.isEmpty()) {
-            println("NetMirror DEBUG: loadLinks - cookie yok")
-            return false
-        }
+        val apiBase = resolveApiUrl()
+        val id = parseJson<NewTvLoadData>(data).id
+        val response = app.get(
+            "$apiBase/newtv/player.php?id=$id",
+            headers = buildNewTvHeaders(ott, mapOf("Usertoken" to ""))
+        ).parsed<NewTvPlayerResponse>()
 
-        // HTML'deki player akışı:
-        // 1. POST /play.php {id: VideoID} → { h: "hash" }
-        // 2. iframe src: https://net52.cc/play.php?id=ID&<h>
-        val playHeaders = authHeaders() + mapOf(
-            "Content-Type" to "application/x-www-form-urlencoded",
-            "X-Requested-With" to "XMLHttpRequest"
-        )
-
-        val playBody = FormBody.Builder()
-            .add("id", id)
-            .build()
-
-        val playResp = try {
-            app.post(
-                "$mainUrl/play.php",
-                requestBody = playBody,
-                headers = playHeaders,
-                interceptor = cloudflareKiller,
-                timeout = 30L
-            )
-        } catch (e: Exception) {
-            println("NetMirror DEBUG: play.php HATA: ${e.message}")
-            return false
-        }
-
-        val playJson = playResp.text
-        println("NetMirror DEBUG: play.php yanit: $playJson")
-
-        val h = tryParseJson<Map<String, Any>>(playJson)?.get("h")?.toString()
-            ?: Regex("\"h\"\\s*:\\s*\"([^\"]+)\"").find(playJson)?.groupValues?.get(1)
-
-        if (h.isNullOrBlank()) {
-            println("NetMirror DEBUG: h bulunamadi")
-            return false
-        }
-
-        // Gerçek video sayfası
-        val playerUrl = "$mainUrl/play.php?id=$id&$h"
-        println("NetMirror DEBUG: playerUrl=$playerUrl")
-
-        val playerResp = app.get(
-            playerUrl,
-            headers = authHeaders() + mapOf("Referer" to "$mainUrl/"),
-            interceptor = cloudflareKiller,
-            timeout = 30L
-        )
-
-        val playerHtml = playerResp.text
-
-        // 1) Direkt playlist JSON geldiyse parse et
-        if (parsePlaylist(playerHtml, subtitleCallback, callback)) {
-            return true
-        }
-
-        // 2) HTML içinden m3u8 linklerini yakala
-        val m3u8Regex = Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
-        val m3u8List = m3u8Regex.findAll(playerHtml).map { it.value }.distinct().toList()
-        if (m3u8List.isNotEmpty()) {
-            m3u8List.forEach { url ->
-                callback.invoke(
-                    newExtractorLink(this.name, "NetMirror", url, ExtractorLinkType.M3U8) {
-                        this.referer = "$mainUrl/"
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-            }
-            return true
-        }
-
-        println("NetMirror DEBUG: link bulunamadi")
-        return false
-    }
-
-    /** Suspend — çünkü içinde newExtractorLink ve newSubtitleFile çağrılıyor */
-    private suspend fun parsePlaylist(
-        text: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val playlist = tryParseJson<NetMirrorPlaylistResponse>(text) ?: return false
-        if (playlist.sources.isNullOrEmpty()) return false
-
-        playlist.sources.forEach { source ->
-            val file = source.file ?: return@forEach
-            val videoUrl = when {
-                file.startsWith("//") -> "https:$file"
-                file.startsWith("/")  -> "$mainUrl$file"
-                else -> file
-            }
-            callback.invoke(
-                newExtractorLink(
-                    this.name,
-                    source.label ?: "NetMirror",
-                    videoUrl,
-                    ExtractorLinkType.M3U8
-                ) {
-                    this.referer = "$mainUrl/"
-                    this.quality = getQualityFromName(source.label)
-                }
-            )
-        }
-
-        playlist.tracks?.forEach { track ->
-            if (track.kind == "captions" && track.file != null) {
-                val subUrl = when {
-                    track.file.startsWith("//") -> "https:${track.file}"
-                    track.file.startsWith("/")  -> "$mainUrl${track.file}"
-                    else -> track.file
-                }
-                subtitleCallback.invoke(
-                    newSubtitleFile(track.language ?: "en", subUrl)
-                )
-            }
-        }
+        if (response.status != "ok" || response.video_link.isNullOrBlank()) return false
+        callback(newExtractorLink(name, name, response.video_link, type = ExtractorLinkType.M3U8) {
+            referer = response.referer ?: apiBase
+        })
         return true
     }
+
+    private data class NewTvId(val id: String)
+    private data class NewTvLoadData(val title: String, val id: String)
+    private data class Suggest(val id: String)
+    private data class NewTvMainResponse(
+        val post: List<NewTvPostCategory>? = null,
+        val imgcdn_h: String? = null,
+        val imgcdn_v: String? = null,
+        val img_referer: String? = null
+    )
+    private data class NewTvPostCategory(
+        val ids: String? = null,
+        val cate: String? = null,
+        val row: String? = null
+    )
+    private data class NewTvSearchResponse(
+        val searchResult: List<SearchResult>? = null,
+        val detailsimgcdn: String? = null,
+        val imgcdn: String? = null,
+        val img_referer: String? = null
+    )
+    private data class NewTvPostResponse(
+        val title: String? = null,
+        val main_id: String? = null,
+        val desc: String? = null,
+        val year: String? = null,
+        val genre: String? = null,
+        val cast: String? = null,
+        val match: String? = null,
+        val runtime: String? = null,
+        val episodes: List<NewTvEpisode?>? = null,
+        val season: List<Season>? = null,
+        val nextPageSeason: String? = null,
+        val nextPageShow: Int? = null,
+        val type: String? = null,
+        val main_poster: String? = null,
+        val morelike_poster: String? = null,
+        val ep_poster: String? = null,
+        val suggest: List<Suggest>? = null
+    )
+    private data class NewTvEpisodesResponse(
+        val episodes: List<NewTvEpisode>? = null,
+        val nextPageShow: Int? = null
+    )
+    private data class NewTvEpisode(
+        val id: String,
+        val ep: String = "",
+        val s: String = "",
+        val t: String = "",
+        val time: String = ""
+    )
 }
