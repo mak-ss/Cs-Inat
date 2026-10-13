@@ -34,7 +34,7 @@ data class NetMirrorPlayResponse(
 )
 
 class NetMirrorAPI : MainAPI() {
-    override var mainUrl = "https://net52.cc"
+    override var mainUrl = "https://net77.cc"
     override var name = "NetMirror"
     override var lang = "tr"
     override val hasMainPage = true
