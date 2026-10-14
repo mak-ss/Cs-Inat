@@ -1,4 +1,4 @@
-package com.horis.net77
+package com.Blockades
 
 import com.horis.net77.entities.*
 import com.lagradost.cloudstream3.*
