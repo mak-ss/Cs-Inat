@@ -2,6 +2,7 @@
 
 package com.Blockades
 
+import android.util.Log
 import com.Blockades.SafeHttpClient
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -48,34 +49,20 @@ open class FilmizleInExtractor : ExtractorApi() {
                 ?: streamMatch?.value?.replace("\\/", "/")
 
             if (!streamUrl.isNullOrBlank()) {
-                val preflight = com.cloudstream.tr.core.network.StreamValidator.validateStream(
-                    url = streamUrl,
-                    headers = mapOf("Referer" to "https://player.filmizle.in/"),
-                    provider = name
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = "$name HLS",
+                        url = streamUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = "https://player.filmizle.in/"
+                        this.quality = Qualities.Unknown.value
+                    }
                 )
-                if (preflight.isValid) {
-                    callback(
-                        newExtractorLink(
-                            source = name,
-                            name = "$name ${if (preflight.streamType == ExtractorLinkType.M3U8) "HLS" else "Stream"}",
-                            url = streamUrl,
-                            type = preflight.streamType
-                        ) {
-                            this.referer = "https://player.filmizle.in/"
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                }
             }
         } catch (e: Exception) {
-            com.cloudstream.tr.core.diagnostics.DiagnosticLogger.log(
-                provider = name,
-                stage = com.cloudstream.tr.core.diagnostics.DiagnosticStage.EXTRACTOR,
-                category = com.cloudstream.tr.core.diagnostics.DiagnosticCategory.EXTRACTOR,
-                message = "FilmizleIn getUrl failed: ${e.message}",
-                url = url,
-                throwable = e
-            )
+            Log.e("FilmizleInExtractor", "getUrl failed: ${e.message}", e)
         }
     }
 }
