@@ -2,6 +2,7 @@
 
 package com.Blockades
 
+import android.util.Log
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 object BoundedParallelResolver {
     const val DEFAULT_MAX_CONCURRENCY = 4
+    private const val TAG = "BoundedParallelResolver"
 
     /**
      * Executes resolution tasks concurrently with bounded concurrency.
@@ -65,13 +67,7 @@ object BoundedParallelResolver {
                     } catch (_: CancellationException) {
                         // Coroutine cancelled cleanly
                     } catch (e: Exception) {
-                        com.cloudstream.tr.core.diagnostics.DiagnosticLogger.log(
-                            provider = provider,
-                            stage = com.cloudstream.tr.core.diagnostics.DiagnosticStage.EXTRACTOR,
-                            category = com.cloudstream.tr.core.diagnostics.DiagnosticCategory.EXTRACTOR,
-                            message = "Extractor resolution failed: ${e.message}",
-                            throwable = e
-                        )
+                        Log.e(TAG, "[$provider] Extractor resolution failed: ${e.message}", e)
                     }
                 }
             }
