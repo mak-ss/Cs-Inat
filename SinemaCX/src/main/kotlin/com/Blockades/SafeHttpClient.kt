@@ -2,6 +2,7 @@
 
 package com.Blockades
 
+import android.util.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.nicehttp.NiceResponse
 import kotlinx.coroutines.CancellationException
@@ -57,6 +58,7 @@ internal suspend fun <T> safeHttpCall(
  * - Standardized headers and browser-like user agent
  */
 object SafeHttpClient {
+    private const val TAG = "SafeHttpClient"
     const val DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     private val requests = InFlightRequestDeduplicator<GetRequestKey, NiceResponse>()
@@ -105,14 +107,7 @@ object SafeHttpClient {
             val mergedHeaders = defaultHeaders().toMutableMap().apply { putAll(headers) }
             app.get(url, headers = mergedHeaders)
         }) { e ->
-            com.cloudstream.tr.core.diagnostics.DiagnosticLogger.log(
-                provider = provider,
-                stage = com.cloudstream.tr.core.diagnostics.DiagnosticStage.DOMAIN,
-                category = com.cloudstream.tr.core.diagnostics.DiagnosticCategory.NETWORK,
-                message = "safeGet failed: ${e.message}",
-                url = url,
-                throwable = e
-            )
+            Log.e(TAG, "[$provider] safeGet failed: ${e.message} ($url)", e)
         }
     }
 
@@ -136,14 +131,7 @@ object SafeHttpClient {
                 app.post(url, headers = mergedHeaders, data = data)
             }
         }) { e ->
-            com.cloudstream.tr.core.diagnostics.DiagnosticLogger.log(
-                provider = provider,
-                stage = com.cloudstream.tr.core.diagnostics.DiagnosticStage.DOMAIN,
-                category = com.cloudstream.tr.core.diagnostics.DiagnosticCategory.NETWORK,
-                message = "safePost failed: ${e.message}",
-                url = url,
-                throwable = e
-            )
+            Log.e(TAG, "[$provider] safePost failed: ${e.message} ($url)", e)
         }
     }
 }
