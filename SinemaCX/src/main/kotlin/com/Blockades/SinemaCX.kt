@@ -51,7 +51,6 @@ class SinemaCX : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        mainUrl = com.cloudstream.tr.core.network.DynamicDomainResolver.resolve(name, mainUrl)
         val reqUrl = request.data.replace(Regex("https?://[^/]+"), mainUrl)
 
         val targetUrl = if (page <= 1) {
@@ -61,17 +60,12 @@ class SinemaCX : MainAPI() {
             "${base}/page/${page}/"
         }
 
-        try {
-            val doc = app.get(targetUrl).document
-            val items = doc.select(".film_kutusu, div.frag-k, div.film-k").mapNotNull { el ->
-                parseFragCard(el)
-            }.distinctBy { it.url }
+        val doc = app.get(targetUrl).document
+        val items = doc.select(".film_kutusu, div.frag-k, div.film-k").mapNotNull { el ->
+            parseFragCard(el)
+        }.distinctBy { it.url }
 
-            return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
-        } catch (e: Exception) {
-            com.cloudstream.tr.core.network.DynamicDomainResolver.fallbackToNextMirror(name)
-            throw e
-        }
+        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
     }
 
     fun parseFragCard(element: Element): SearchResponse? {
