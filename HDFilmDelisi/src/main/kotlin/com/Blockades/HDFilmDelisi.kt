@@ -25,11 +25,9 @@ class HDFilmDelisi : MainAPI() {
     override val mainPage = mainPageOf(
         "${mainUrl}" to "Son Eklenen Filmler",
         "${mainUrl}/imdb-top-250" to "IMDb Top 250",
-        "${mainUrl}/tur/aile" to "Aile Filmleri",
-        "${mainUrl}/tur/aksiyon" to "Aksiyon Filmleri",
-        "${mainUrl}/tur/animasyon" to "Animasyon Filmleri",
-        "${mainUrl}/tur/bilim-kurgu" to "Bilim Kurgu",
-        "${mainUrl}/tur/gerilim" to "Gerilim"
+        "${mainUrl}/diziler" to "Diziler",
+        "${mainUrl}/listeler" to "Listeler",
+        "${mainUrl}/koleksiyonlar" to "Koleksiyonlar"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
