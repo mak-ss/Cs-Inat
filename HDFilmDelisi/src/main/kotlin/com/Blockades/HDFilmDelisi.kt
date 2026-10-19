@@ -2,10 +2,14 @@ package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.Blockades.BoundedParallelResolver
-import com.Blockades.ProviderModels
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.util.Base64
 import java.util.regex.Pattern
 
 class HDFilmDelisi : MainAPI() {
@@ -33,11 +37,7 @@ class HDFilmDelisi : MainAPI() {
             request.data
         } else {
             val base = request.data.removeSuffix("/")
-            if (base.contains("?")) {
-                "${base}&sayfa=${page}"
-            } else {
-                "${base}?sayfa=${page}"
-            }
+            if (base.contains("?")) "${base}&sayfa=${page}" else "${base}?sayfa=${page}"
         }
 
         val html = app.get(targetUrl, headers = mapOf("User-Agent" to userAgent)).text
@@ -47,7 +47,8 @@ class HDFilmDelisi : MainAPI() {
     }
 
     fun toSearchResult(element: Element): SearchResponse? {
-        val link = if (element.tagName() == "a") element else element.selectFirst("a[href*='/film/']") ?: return null
+        val link = if (element.tagName() == "a") element
+            else element.selectFirst("a[href*='/film/']") ?: return null
         val href = fixUrlNull(link.attr("href")) ?: return null
         if (!href.contains("/film/")) return null
 
@@ -55,8 +56,7 @@ class HDFilmDelisi : MainAPI() {
             ?: link.selectFirst("img")
             ?: element.parent()?.selectFirst("img")
 
-        val rawTitle = img?.attr("alt")?.trim()
-            ?.ifBlank { null }
+        val rawTitle = img?.attr("alt")?.trim()?.ifBlank { null }
             ?: element.selectFirst(".title, h3, h2, h4, span")?.text()?.trim()
             ?: link.text().trim().takeIf { it.isNotBlank() }
             ?: return null
@@ -80,11 +80,8 @@ class HDFilmDelisi : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        val targetUrl = if (page <= 1) {
-            "${mainUrl}/?s=${query}"
-        } else {
-            "${mainUrl}/page/${page}/?s=${query}"
-        }
+        val targetUrl = if (page <= 1) "${mainUrl}/?s=${query}"
+            else "${mainUrl}/page/${page}/?s=${query}"
 
         val html = app.get(targetUrl, headers = mapOf("User-Agent" to userAgent)).text
         val document = org.jsoup.Jsoup.parse(html, targetUrl)
@@ -96,22 +93,14 @@ class HDFilmDelisi : MainAPI() {
         val results = mutableListOf<SearchResponse>()
         val seenUrls = mutableSetOf<String>()
 
-        // 1. Direct HTML elements — poster dahil
-        val elements = document.select("a[href*='/film/']")
-        for (el in elements) {
-            toSearchResult(el)?.let { sr ->
-                if (seenUrls.add(sr.url)) results.add(sr)
-            }
+        // 1. HTML elementleri
+        for (el in document.select("a[href*='/film/']")) {
+            toSearchResult(el)?.let { sr -> if (seenUrls.add(sr.url)) results.add(sr) }
         }
 
-        // 2. JSON-LD / RSC payload fallback (Next.js kategori sayfaları)
+        // 2. JSON-LD / RSC fallback
         if (results.isEmpty() && rawHtml.isNotEmpty()) {
-
-            // 2a. JSON-LD Movie bloklarını property sırasından bağımsız çek
-            val movieBlockPattern = Pattern.compile(
-                """"@type"\s*:\s*"Movie"(.*?)\}""",
-                Pattern.DOTALL
-            )
+            val movieBlockPattern = Pattern.compile(""""@type"\s*:\s*"Movie"(.*?)\}""", Pattern.DOTALL)
             val mb = movieBlockPattern.matcher(rawHtml)
             while (mb.find()) {
                 val block = mb.group(1) ?: continue
@@ -124,14 +113,11 @@ class HDFilmDelisi : MainAPI() {
 
                 val fixedUrl = fixUrlNull(url) ?: continue
                 if (!seenUrls.add(fixedUrl)) continue
-                results.add(
-                    newMovieSearchResponse(name, fixedUrl, TvType.Movie) {
-                        this.posterUrl = fixUrlNull(image)
-                    }
-                )
+                results.add(newMovieSearchResponse(name, fixedUrl, TvType.Movie) {
+                    this.posterUrl = fixUrlNull(image)
+                })
             }
 
-            // 2b. RSC slug + poster fallback: /film/<slug> yanında image URL'i ara
             if (results.isEmpty()) {
                 val slugPattern = Pattern.compile(
                     """/film/([a-zA-Z0-9_-]+)[^"]*"[^{}]*?"image"\s*:\s*"([^"]+)"""",
@@ -144,16 +130,12 @@ class HDFilmDelisi : MainAPI() {
                     val fixedUrl = "${mainUrl}/film/$slug"
                     if (!seenUrls.add(fixedUrl)) continue
                     val title = slug.replace("-", " ")
-                        .split(" ")
-                        .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-                    results.add(
-                        newMovieSearchResponse(title, fixedUrl, TvType.Movie) {
-                            this.posterUrl = fixUrlNull(img)
-                        }
-                    )
+                        .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+                    results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie) {
+                        this.posterUrl = fixUrlNull(img)
+                    })
                 }
 
-                // 2c. Son çare: sadece slug (poster yok)
                 if (results.isEmpty()) {
                     val slugOnly = Pattern.compile(""""/film/([a-zA-Z0-9_-]+)"""")
                     val so = slugOnly.matcher(rawHtml)
@@ -162,15 +144,15 @@ class HDFilmDelisi : MainAPI() {
                         val fixedUrl = "${mainUrl}/film/$slug"
                         if (!seenUrls.add(fixedUrl)) continue
                         val title = slug.replace("-", " ")
-                            .split(" ")
-                            .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+                            .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
                         results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie))
                     }
                 }
             }
         }
 
-        return ProviderModels.dedupSearchResults(results)
+        // dedup
+        return results.distinctBy { it.url }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query, 1).items
@@ -183,13 +165,13 @@ class HDFilmDelisi : MainAPI() {
     suspend fun parseLoadMetadata(document: Document, url: String): LoadResponse? {
         val rawTitle = document.select("h1").firstOrNull { h ->
             val t = h.text().trim()
-            !t.equals("Film izle", ignoreCase = true) && !t.equals("Dizi izle", ignoreCase = true)
+            !t.equals("Film izle", true) && !t.equals("Dizi izle", true)
         }?.text()?.trim()
             ?: document.title().substringBefore("izle").substringBefore("-").trim()
 
-        val title = rawTitle.replace("izle", "", ignoreCase = true)
-            .replace("Türkçe Dublaj", "", ignoreCase = true)
-            .replace("ve Altyazılı", "", ignoreCase = true)
+        val title = rawTitle.replace("izle", "", true)
+            .replace("Türkçe Dublaj", "", true)
+            .replace("ve Altyazılı", "", true)
             .trim()
 
         val poster = fixUrlNull(
@@ -221,14 +203,19 @@ class HDFilmDelisi : MainAPI() {
                 }
             }
             val reversed = chars.reverse().toString()
-            val decoded = com.cloudstream.tr.core.utils.Base64Utils.decode(reversed) ?: return null
+            val decodedBytes = try {
+                Base64.getDecoder().decode(reversed)
+            } catch (_: Exception) {
+                return null
+            }
             val shifted = StringBuilder()
-            for (b in decoded) {
+            for (b in decodedBytes) {
                 val code = (b.toInt() and 0xFF) - offset
                 shifted.append(code.toChar())
             }
             val shiftedStr = shifted.toString()
-            val fileMatch = Regex("""file\s*:\s*['"]([^'"]+)['"]""").find(shiftedStr)?.groupValues?.get(1) ?: return null
+            val fileMatch = Regex("""file\s*:\s*['"]([^'"]+)['"]""")
+                .find(shiftedStr)?.groupValues?.get(1) ?: return null
             return Regex("""\\x([0-9a-fA-F]{2})""").replace(fileMatch) { mr ->
                 mr.groupValues[1].toInt(16).toChar().toString()
             }
@@ -247,13 +234,10 @@ class HDFilmDelisi : MainAPI() {
 
         val embedUrls = mutableListOf<String>()
 
-        // 1. Extract real Vixolity player from RSC or page data
-        val vixolityRegex = Regex("""https?://pl\.vixolity\.com/[a-zA-Z0-9_\-]+""")
-        vixolityRegex.findAll(html).forEach { m ->
+        Regex("""https?://pl\.vixolity\.com/[a-zA-Z0-9_\-]+""").findAll(html).forEach { m ->
             embedUrls.add(m.value)
         }
 
-        // 2. Direct iframes (excluding honeypot /embed/ and google/recaptcha)
         for (it in document.select("iframe[src]")) {
             val src = fixUrlNull(it.attr("src"))
             if (!src.isNullOrBlank() && !src.contains("google") && !src.contains("recaptcha") &&
@@ -263,48 +247,50 @@ class HDFilmDelisi : MainAPI() {
         }
 
         val candidates = embedUrls.distinct()
+        val semaphore = Semaphore(4)
 
-        val count = BoundedParallelResolver.resolveProgressive(
-            candidates = candidates,
-            resolver = { embedUrl, emitLink ->
-                try {
-                    if (embedUrl.contains("vixolity.com")) {
-                        val vixHtml = app.get(
-                            embedUrl,
-                            headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to data
-                            )
-                        ).text
-                        val m3u8Url = decryptVixolity(vixHtml)
-                        if (!m3u8Url.isNullOrBlank()) {
-                            emitLink(
-                                newExtractorLink(
-                                    source = name,
-                                    name = "$name Vixolity HLS",
-                                    url = m3u8Url,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = "https://pl.vixolity.com/"
-                                    this.headers = mapOf(
-                                        "Referer" to "https://pl.vixolity.com/",
-                                        "User-Agent" to userAgent
+        coroutineScope {
+            candidates.map { embedUrl ->
+                async {
+                    semaphore.withPermit {
+                        try {
+                            if (embedUrl.contains("vixolity.com")) {
+                                val vixHtml = app.get(
+                                    embedUrl,
+                                    headers = mapOf(
+                                        "User-Agent" to userAgent,
+                                        "Referer" to data
                                     )
-                                    this.quality = Qualities.P1080.value
+                                ).text
+                                val m3u8Url = decryptVixolity(vixHtml)
+                                if (!m3u8Url.isNullOrBlank()) {
+                                    val link = newExtractorLink(
+                                        source = name,
+                                        name = "$name Vixolity HLS",
+                                        url = m3u8Url,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = "https://pl.vixolity.com/"
+                                        this.headers = mapOf(
+                                            "Referer" to "https://pl.vixolity.com/",
+                                            "User-Agent" to userAgent
+                                        )
+                                        this.quality = Qualities.P1080.value
+                                    }
+                                    callback(link)
+                                    found = true
                                 }
-                            )
+                            } else {
+                                loadExtractor(embedUrl, data, subtitleCallback, callback)
+                                found = true
+                            }
+                        } catch (_: Exception) {
                         }
-                    } else {
-                        loadExtractor(embedUrl, data, subtitleCallback, emitLink)
                     }
-                } catch (_: Exception) {}
-            },
-            onLinkFound = { link ->
-                callback(link)
-                found = true
-            }
-        )
+                }
+            }.awaitAll()
+        }
 
-        return found || count > 0
+        return found
     }
 }
