@@ -40,7 +40,17 @@ class HDFilmDelisi : MainAPI() {
             if (base.contains("?")) "${base}&sayfa=${page}" else "${base}?sayfa=${page}"
         }
 
-        val html = app.get(targetUrl, headers = mapOf("User-Agent" to userAgent)).text
+        val response = app.get(targetUrl, headers = mapOf("User-Agent" to userAgent))
+        val html = response.text
+        
+        // --- GEÇİCİ HATA AYIKLAMA (DEBUG) ---
+        println("=== DEBUG HDFilmDelisi ===")
+        println("URL: $targetUrl")
+        println("HTML Uzunluğu: ${html.length}")
+        println("HTML Başlangıcı: ${html.take(1000)}")
+        println("=== DEBUG SONU ===")
+        // -------------------------------------
+
         val document = org.jsoup.Jsoup.parse(html, targetUrl)
         val items = parseSearchResults(document, html)
         return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
@@ -115,8 +125,6 @@ class HDFilmDelisi : MainAPI() {
                     
                     val urlMatch = Regex(""""url"\s*:\s*"([^"]+)"""").find(block)
                     val nameMatch = Regex(""""name"\s*:\s*"([^"]+)"""").find(block)
-                    
-                    // Image bazen "image", bazen "poster" veya "thumbnail" olabilir
                     val imageMatch = Regex(""""(?:image|poster|thumbnail)"\s*:\s*"([^"]+)"""").find(block)
 
                     val url = urlMatch?.groupValues?.get(1)?.replace("\\/", "/") ?: continue
