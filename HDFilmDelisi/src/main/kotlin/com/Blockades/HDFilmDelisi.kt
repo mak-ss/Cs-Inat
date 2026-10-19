@@ -104,7 +104,7 @@ class HDFilmDelisi : MainAPI() {
             val searchSpace = "$scriptsText\n$rawHtml"
 
             if (searchSpace.isNotBlank()) {
-                // Regex'te "@type" ve "Movie" arasındaki boşluklara tolerans tanındı
+                // Film objelerini yakalamak için daha esnek bir blok araması
                 val movieBlockPattern = Pattern.compile(
                     """"@type"\s*:\s*"Movie"(.*?)\}""",
                     Pattern.DOTALL
@@ -112,24 +112,29 @@ class HDFilmDelisi : MainAPI() {
                 val mb = movieBlockPattern.matcher(searchSpace)
                 while (mb.find()) {
                     val block = mb.group(1) ?: continue
-                    val url = Regex(""""url"\s*:\s*"([^"]+)"""")
-                        .find(block)?.groupValues?.get(1)?.replace("\\/", "/") ?: continue
-                    val name = Regex(""""name"\s*:\s*"([^"]+)"""")
-                        .find(block)?.groupValues?.get(1)?.trim() ?: continue
-                    val image = Regex(""""image"\s*:\s*"([^"]+)"""")
-                        .find(block)?.groupValues?.get(1)?.replace("\\/", "/")
+                    
+                    val urlMatch = Regex(""""url"\s*:\s*"([^"]+)"""").find(block)
+                    val nameMatch = Regex(""""name"\s*:\s*"([^"]+)"""").find(block)
+                    
+                    // Image bazen "image", bazen "poster" veya "thumbnail" olabilir
+                    val imageMatch = Regex(""""(?:image|poster|thumbnail)"\s*:\s*"([^"]+)"""").find(block)
+
+                    val url = urlMatch?.groupValues?.get(1)?.replace("\\/", "/") ?: continue
+                    val name = nameMatch?.groupValues?.get(1)?.trim() ?: continue
+                    val image = imageMatch?.groupValues?.get(1)?.replace("\\/", "/")
 
                     val fixedUrl = fixUrlNull(url) ?: continue
                     if (!seenUrls.add(fixedUrl)) continue
+                    
                     results.add(newMovieSearchResponse(name, fixedUrl, TvType.Movie) {
                         this.posterUrl = fixUrlNull(image)
                     })
                 }
 
-                // Hala sonuç yoksa, slug + image eşleşmesini dene
+                // Eğer JSON-LD Movie bloğu bulunamazsa, RSC paketindeki slug eşleşmelerini dene
                 if (results.isEmpty()) {
                     val slugPattern = Pattern.compile(
-                        """/film/([a-zA-Z0-9_-]+)[^"]*"[^{}]*?"image"\s*:\s*"([^"]+)"""",
+                        """/film/([a-zA-Z0-9_-]+)[^"]*"[^{}]*?"(?:image|poster)"\s*:\s*"([^"]+)"""",
                         Pattern.DOTALL
                     )
                     val sm = slugPattern.matcher(searchSpace)
@@ -138,6 +143,7 @@ class HDFilmDelisi : MainAPI() {
                         val img = sm.group(2)?.replace("\\/", "/")
                         val fixedUrl = "${mainUrl}/film/$slug"
                         if (!seenUrls.add(fixedUrl)) continue
+                        
                         val title = slug.replace("-", " ")
                             .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
                         results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie) {
