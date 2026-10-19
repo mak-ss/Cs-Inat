@@ -25,9 +25,11 @@ class HDFilmDelisi : MainAPI() {
     override val mainPage = mainPageOf(
         "${mainUrl}" to "Son Eklenen Filmler",
         "${mainUrl}/imdb-top-250" to "IMDb Top 250",
-        "${mainUrl}/diziler" to "Diziler",
-        "${mainUrl}/listeler" to "Listeler",
-        "${mainUrl}/koleksiyonlar" to "Koleksiyonlar"
+        "${mainUrl}/tur/aile" to "Aile Filmleri",
+        "${mainUrl}/tur/aksiyon" to "Aksiyon Filmleri",
+        "${mainUrl}/tur/animasyon" to "Animasyon Filmleri",
+        "${mainUrl}/tur/bilim-kurgu" to "Bilim Kurgu",
+        "${mainUrl}/tur/gerilim" to "Gerilim"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -91,65 +93,75 @@ class HDFilmDelisi : MainAPI() {
         val results = mutableListOf<SearchResponse>()
         val seenUrls = mutableSetOf<String>()
 
-        // 1. HTML elementleri
+        // 1. Normal HTML etiketlerini tara
         for (el in document.select("a[href*='/film/']")) {
             toSearchResult(el)?.let { sr -> if (seenUrls.add(sr.url)) results.add(sr) }
         }
 
-        // 2. JSON-LD / RSC fallback
-        if (results.isEmpty() && rawHtml.isNotEmpty()) {
-            val movieBlockPattern = Pattern.compile(""""@type"\s*:\s*"Movie"(.*?)\}""", Pattern.DOTALL)
-            val mb = movieBlockPattern.matcher(rawHtml)
-            while (mb.find()) {
-                val block = mb.group(1) ?: continue
-                val url = Regex(""""url"\s*:\s*"([^"]+)"""")
-                    .find(block)?.groupValues?.get(1)?.replace("\\/", "/") ?: continue
-                val name = Regex(""""name"\s*:\s*"([^"]+)"""")
-                    .find(block)?.groupValues?.get(1)?.trim() ?: continue
-                val image = Regex(""""image"\s*:\s*"([^"]+)"""")
-                    .find(block)?.groupValues?.get(1)?.replace("\\/", "/")
+        // 2. HTML boşsa, script etiketlerini ve ham metni tara (Next.js / RSC payload)
+        if (results.isEmpty()) {
+            val scriptsText = document.select("script").joinToString("\n") { it.data() }
+            val searchSpace = "$scriptsText\n$rawHtml"
 
-                val fixedUrl = fixUrlNull(url) ?: continue
-                if (!seenUrls.add(fixedUrl)) continue
-                results.add(newMovieSearchResponse(name, fixedUrl, TvType.Movie) {
-                    this.posterUrl = fixUrlNull(image)
-                })
-            }
-
-            if (results.isEmpty()) {
-                val slugPattern = Pattern.compile(
-                    """/film/([a-zA-Z0-9_-]+)[^"]*"[^{}]*?"image"\s*:\s*"([^"]+)"""",
+            if (searchSpace.isNotBlank()) {
+                // Regex'te "@type" ve "Movie" arasındaki boşluklara tolerans tanındı
+                val movieBlockPattern = Pattern.compile(
+                    """"@type"\s*:\s*"Movie"(.*?)\}""",
                     Pattern.DOTALL
                 )
-                val sm = slugPattern.matcher(rawHtml)
-                while (sm.find()) {
-                    val slug = sm.group(1) ?: continue
-                    val img = sm.group(2)?.replace("\\/", "/")
-                    val fixedUrl = "${mainUrl}/film/$slug"
+                val mb = movieBlockPattern.matcher(searchSpace)
+                while (mb.find()) {
+                    val block = mb.group(1) ?: continue
+                    val url = Regex(""""url"\s*:\s*"([^"]+)"""")
+                        .find(block)?.groupValues?.get(1)?.replace("\\/", "/") ?: continue
+                    val name = Regex(""""name"\s*:\s*"([^"]+)"""")
+                        .find(block)?.groupValues?.get(1)?.trim() ?: continue
+                    val image = Regex(""""image"\s*:\s*"([^"]+)"""")
+                        .find(block)?.groupValues?.get(1)?.replace("\\/", "/")
+
+                    val fixedUrl = fixUrlNull(url) ?: continue
                     if (!seenUrls.add(fixedUrl)) continue
-                    val title = slug.replace("-", " ")
-                        .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-                    results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie) {
-                        this.posterUrl = fixUrlNull(img)
+                    results.add(newMovieSearchResponse(name, fixedUrl, TvType.Movie) {
+                        this.posterUrl = fixUrlNull(image)
                     })
                 }
 
+                // Hala sonuç yoksa, slug + image eşleşmesini dene
                 if (results.isEmpty()) {
-                    val slugOnly = Pattern.compile(""""/film/([a-zA-Z0-9_-]+)"""")
-                    val so = slugOnly.matcher(rawHtml)
-                    while (so.find()) {
-                        val slug = so.group(1) ?: continue
+                    val slugPattern = Pattern.compile(
+                        """/film/([a-zA-Z0-9_-]+)[^"]*"[^{}]*?"image"\s*:\s*"([^"]+)"""",
+                        Pattern.DOTALL
+                    )
+                    val sm = slugPattern.matcher(searchSpace)
+                    while (sm.find()) {
+                        val slug = sm.group(1) ?: continue
+                        val img = sm.group(2)?.replace("\\/", "/")
                         val fixedUrl = "${mainUrl}/film/$slug"
                         if (!seenUrls.add(fixedUrl)) continue
                         val title = slug.replace("-", " ")
                             .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-                        results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie))
+                        results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie) {
+                            this.posterUrl = fixUrlNull(img)
+                        })
+                    }
+
+                    // Son çare: sadece slug bul (poster olmadan)
+                    if (results.isEmpty()) {
+                        val slugOnly = Pattern.compile(""""/film/([a-zA-Z0-9_-]+)"""")
+                        val so = slugOnly.matcher(searchSpace)
+                        while (so.find()) {
+                            val slug = so.group(1) ?: continue
+                            val fixedUrl = "${mainUrl}/film/$slug"
+                            if (!seenUrls.add(fixedUrl)) continue
+                            val title = slug.replace("-", " ")
+                                .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+                            results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie))
+                        }
                     }
                 }
             }
         }
 
-        // dedup
         return results.distinctBy { it.url }
     }
 
