@@ -37,7 +37,7 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 
 class InatTV : MainAPI() {
-    override var mainUrl              = "https://www.inattvizle495.top"
+    override var mainUrl              = "https://www.inattvizle496.top"
     override var name                 = "InatTV"
     override val hasMainPage          = true
     override var lang                 = "tr"
