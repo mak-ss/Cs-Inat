@@ -182,55 +182,56 @@ class DiziPal2 : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        return try {
-            // 1) Doğrudan m3u8 linki ise direkt callback'e gönder
-            if (data.contains(".m3u8") || data.contains("superadjacentsoddenly")) {
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    return try {
+        // 1) Doğrudan m3u8 linki ise direkt callback'e gönder
+        if (data.contains(".m3u8") || data.contains("superadjacentsoddenly")) {
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name = "DiziPal2 HLS",
+                    url = data,
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+            return true
+        }
+
+        // 2) Sayfa üzerinden m3u8 çıkarmayı dene
+        try {
+            val pageText = app.get(data, referer = "$mainUrl/").text
+            val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
+            if (m3u8 != null) {
                 callback.invoke(
-                    ExtractorLink(
-                        source   = this.name,
-                        name     = "DiziPal2 HLS",
-                        url      = data,
-                        referer  = "$mainUrl/",
-                        quality  = Qualities.Unknown.value,
-                        isM3u8   = true
-                    )
+                    newExtractorLink(
+                        source = this.name,
+                        name = "DiziPal2 HLS",
+                        url = m3u8,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = "$mainUrl/"
+                        this.quality = Qualities.Unknown.value
+                    }
                 )
                 return true
             }
-
-            // 2) Sayfa üzerinden m3u8 çıkarmayı dene
-            try {
-                val pageText = app.get(data, referer = "$mainUrl/").text
-                val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
-                if (m3u8 != null) {
-                    callback.invoke(
-                        ExtractorLink(
-                            source   = this.name,
-                            name     = "DiziPal2 HLS",
-                            url      = m3u8,
-                            referer  = "$mainUrl/",
-                            quality  = Qualities.Unknown.value,
-                            isM3u8   = true
-                        )
-                    )
-                    return true
-                }
-            } catch (e: Exception) {
-                Log.e("DiziPal2", "m3u8 regex HATA » ${e.message}")
-            }
-
-            // 3) Özel player (DizipalPlayer2) üzerinden dene
-            val player = DizipalPlayer2()
-            player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
-            true
         } catch (e: Exception) {
-            Log.e("DiziPal2", "DizipalPlayer2 HATA » ${e.message}", e)
-            false
+            Log.e("DiziPal2", "m3u8 regex HATA » ${e.message}")
         }
+
+        // 3) Özel player (DizipalPlayer2) üzerinden dene
+        val player = DizipalPlayer2()
+        player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
+        true
+    } catch (e: Exception) {
+        Log.e("DiziPal2", "DizipalPlayer2 HATA » ${e.message}", e)
+        false
     }
 }
