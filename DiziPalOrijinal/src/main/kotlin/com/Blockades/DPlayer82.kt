@@ -20,19 +20,30 @@ class DPlayer82 : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val realReferer = referer ?: "https://dizipal1591.com/"
+        val realReferer = referer ?: "https://dizipal1592.com/"
+
+        // 403'ü aşmak için tam tarayıcı başlıkları
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language" to "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer" to realReferer,
+            "Origin" to "https://four.dplayer82.site",
+            "Sec-Fetch-Dest" to "iframe",
+            "Sec-Fetch-Mode" to "navigate",
+            "Sec-Fetch-Site" to "cross-site",
+            "Upgrade-Insecure-Requests" to "1"
+        )
 
         val page = try {
-            app.get(
-                url,
-                referer = realReferer,
-                headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-                )
-            ).text
+            app.get(url, headers = headers, referer = realReferer).text
         } catch (e: Exception) {
-            return
+            // Referer'sız ikinci deneme (bazı sunucular referer'ı reddeder)
+            try {
+                app.get(url, headers = headers - "Referer").text
+            } catch (e2: Exception) {
+                return
+            }
         }
 
         // window.openPlayer('PLAYLIST', 'REQHASH', ...) içinden playList'i çek
@@ -44,12 +55,11 @@ class DPlayer82 : ExtractorApi() {
         val jsonText = try {
             app.get(
                 source2Url,
-                referer = url,
-                headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+                headers = headers + mapOf(
                     "X-Requested-With" to "XMLHttpRequest",
                     "Accept" to "application/json, text/javascript, */*; q=0.01"
-                )
+                ),
+                referer = url
             ).text
         } catch (e: Exception) {
             return
@@ -78,7 +88,8 @@ class DPlayer82 : ExtractorApi() {
                         this.quality = Qualities.Unknown.value
                         this.headers = mapOf(
                             "Referer" to realReferer,
-                            "Origin" to "https://four.dplayer82.site"
+                            "Origin" to "https://four.dplayer82.site",
+                            "User-Agent" to headers["User-Agent"]!!
                         )
                     }
                 )
