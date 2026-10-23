@@ -74,7 +74,6 @@ class MntPlayer12 : ExtractorApi() {
         }
 
         if (pageText.isNotEmpty()) {
-            // Oynatıcı sayfasındaki m3u8 bağlantısını çıkar
             val m3u8Regex = Regex("""(https?://vod\.mntplayer\.com:8443/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)""")
             val matches = m3u8Regex.findAll(pageText).map { it.value }.toList()
 
@@ -91,7 +90,7 @@ class MntPlayer12 : ExtractorApi() {
         Log.e("MntPlayer12", "m3u8 bulunamadı » $url")
     }
 
-    private fun pushHls(m3u8Url: String, referer: String, callback: (ExtractorLink) -> Unit) {
+    private suspend fun pushHls(m3u8Url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         callback.invoke(
             newExtractorLink(
                 source = this.name,
