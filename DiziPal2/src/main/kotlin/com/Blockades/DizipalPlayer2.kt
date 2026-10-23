@@ -1,277 +1,272 @@
 package com.Blockades
 
 import android.util.Log
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.USER_AGENT
-import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.json.JSONObject
-import java.util.Base64
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import com.Blockades.DizipalPlayer2
+import okhttp3.OkHttpClient
+import org.jsoup.nodes.Element
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
-class DizipalPlayer2 : ExtractorApi() {
-    override var name = "DizipalPlayer2"
-    override var mainUrl = "https://dizipal2142.com"
-    override val requiresReferer = true
+class DiziPal2 : MainAPI() {
+    override var mainUrl              = "https://dizipal2142.com"
+    override var name                 = "DiziPal2"
+    override val hasMainPage          = true
+    override var lang                 = "tr"
+    override val hasQuickSearch       = true
+    override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    override suspend fun getUrl(
-        url: String,
-        referer: String?,
+    override var sequentialMainPage = true
+
+    override val mainPage = mainPageOf(
+        "${mainUrl}/bolumler"             to "Son Bölümler",
+        "${mainUrl}/diziler"              to "Yeni Diziler",
+        "${mainUrl}/filmler"              to "Yeni Filmler",
+        "${mainUrl}/platform/netflix"     to "Netflix",
+        "${mainUrl}/platform/exxen"       to "Exxen",
+        "${mainUrl}/platform/blutv"       to "BluTV",
+        "${mainUrl}/platform/disney-plus" to "Disney+",
+        "${mainUrl}/platform/prime-video" to "Amazon Prime",
+        "${mainUrl}/platform/tabii"       to "Tabii",
+        "${mainUrl}/platform/gain"        to "Gain",
+        "${mainUrl}/platform/max"         to "Max",
+        "${mainUrl}/kategori/bilim-kurgu" to "Bilimkurgu Filmleri",
+        "${mainUrl}/kategori/komedi"      to "Komedi Filmleri",
+        "${mainUrl}/kategori/belgesel"    to "Belgesel Filmleri",
+    )
+
+    /** SSL sertifika doğrulamasını gevşeten OkHttpClient (sadece CDN istekleri için) */
+    private val relaxedClient: OkHttpClient by lazy {
+        val trustAll = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        }
+        val sslContext = SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+        }
+        OkHttpClient.Builder()
+            .sslSocketFactory(sslContext.socketFactory, trustAll)
+            .hostnameVerifier { _, _ -> true }
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(request.data).document
+        val home = if (request.data.contains("/bolumler")) {
+            document.select("div.episodes-list-grid > a.episode-list-item").mapNotNull { it.sonBolumler() }
+        } else {
+            document.select("ul.content-grid > li").mapNotNull { it.diziler() }
+        }
+        return newHomePageResponse(request.name, home, hasNext = false)
+    }
+
+    private fun Element.sonBolumler(): SearchResponse? {
+        val name    = this.selectFirst(".ep-title")?.text() ?: return null
+        val episode = this.selectFirst(".ep-info")?.text()?.trim()
+            ?.replace(". Sezon ", "x")?.replace(". Bölüm", "") ?: return null
+        val title   = "$name $episode"
+
+        val href = fixUrlNull(this.attr("href")) ?: return null
+        val imgElement = this.selectFirst("img")
+        val posterUrl = fixUrlNull(imgElement?.attr("data-src")?.ifEmpty { imgElement.attr("src") })
+
+        val seriesUrl = href
+            .replace(Regex("-\\d+-sezon-\\d+-bolum.*$"), "")
+            .replace("/bolum/", "/dizi/")
+
+        return newTvSeriesSearchResponse(title, seriesUrl, TvType.TvSeries) {
+            this.posterUrl = posterUrl
+        }
+    }
+
+    private fun Element.diziler(): SearchResponse? {
+        val title     = this.selectFirst("div.card-info h3")?.text() ?: return null
+        val href      = fixUrlNull(this.selectFirst("a")?.attr("href")) ?: return null
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("data-src"))
+
+        return newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = posterUrl }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val searchUrl = "$mainUrl/ajax-search?q=$query"
+
+        val responseRaw = app.get(
+            searchUrl,
+            headers = mapOf(
+                "Accept"           to "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With" to "XMLHttpRequest"
+            ),
+            referer = "$mainUrl/"
+        )
+
+        val results = mutableListOf<SearchResponse>()
+        try {
+            val json = org.json.JSONObject(responseRaw.text)
+            val arr = json.optJSONArray("results")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val item = arr.getJSONObject(i)
+                    val title  = item.optString("title", "").trim()
+                    val url    = fixUrl(item.optString("url", ""))
+                    val poster = item.optString("poster", "").takeIf { it.isNotBlank() }
+                    val type   = item.optString("type", "")
+                    val year   = item.optInt("year", 0).takeIf { it > 0 }
+
+                    if (title.isBlank() || url.isBlank()) continue
+
+                    val resp = if (type.equals("Dizi", true)) {
+                        newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
+                            this.posterUrl = poster
+                            this.year      = year
+                        }
+                    } else {
+                        newMovieSearchResponse(title, url, TvType.Movie) {
+                            this.posterUrl = poster
+                            this.year      = year
+                        }
+                    }
+                    results.add(resp)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("DiziPal2", "search JSON hatası » ${e.message}")
+        }
+
+        return results
+    }
+
+    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
+
+    override suspend fun load(url: String): LoadResponse? {
+        if (url.contains("/bolum/")) {
+            val seriesUrl = url.replace("/bolum/", "/dizi/")
+                .replace(Regex("-\\d+-sezon.*"), "")
+            return load(seriesUrl)
+        }
+
+        val document = app.get(url).document
+
+        val poster = fixUrlNull(document.selectFirst("meta[property=og:image]")?.attr("content"))
+        val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")
+            ?.text()?.trim()?.toIntOrNull()
+        val description = document.selectFirst("p.series-description")?.text()?.trim()
+        val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a")
+            .map { it.text().trim() }
+
+        if (url.contains("/dizi/")) {
+            val title = document.selectFirst("h1.series-title")?.text()?.trim() ?: return null
+
+            val episodes = document.select("div.detail-episode-item-wrap").mapNotNull { wrap ->
+                val anchor = wrap.selectFirst("a.detail-episode-item") ?: return@mapNotNull null
+                val epHref = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
+                val epName = anchor.selectFirst("div.detail-episode-title")?.text()?.trim()
+                    ?: return@mapNotNull null
+
+                val subtitle = anchor.selectFirst("div.detail-episode-subtitle")?.text()?.trim() ?: ""
+                val match = Regex("""(\d+)\.\s*[Ss]ezon\s*(\d+)\.\s*[Bb]ölüm""").find(subtitle)
+
+                val epSeason  = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val epEpisode = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+
+                newEpisode(epHref) {
+                    this.name    = epName
+                    this.episode = epEpisode
+                    this.season  = epSeason
+                }
+            }
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.year      = year
+                this.plot      = description
+                this.tags      = tags
+            }
+        } else {
+            val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim()
+                ?: document.selectFirst("meta[property=og:title]")?.attr("content")
+                    ?.substringBefore(" izle")?.trim()
+                ?: ""
+
+            if (title.isEmpty()) return null
+
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = poster
+                this.year      = year
+                this.plot      = description
+                this.tags      = tags
+            }
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
-    ) {
-        Log.d("DPPLAYER2", "===== BAŞLANGIÇ =====")
-        Log.d("DPPLAYER2", "url » $url")
-
-        // 1. Sayfayı Çek
-        val pageResp = try {
-            app.get(url, referer = "$mainUrl/")
-        } catch (e: Exception) {
-            Log.e("DPPLAYER2", "Sayfa çekme hatası » ${e.message}")
-            return
-        }
-        val document = pageResp.document
-        val cookieMap: Map<String, String> = pageResp.cookies
-
-        val cfg = document.selectFirst("#videoContainer")
-            ?.attr("data-cfg")?.takeIf { it.isNotBlank() }
-        if (cfg.isNullOrBlank()) {
-            Log.e("DPPLAYER2", "cfg özniteliği bulunamadı")
-            return
-        }
-
-        // 2. AJAX İsteği At
-        val response = try {
-            app.post(
-                "$mainUrl/ajax-player-config",
-                data = mapOf("cfg" to cfg),
-                referer = url,
-                cookies = cookieMap,
-                headers = mapOf(
-                    "Origin" to mainUrl,
-                    "Referer" to url,
-                    "X-Requested-With" to "XMLHttpRequest",
-                    "User-Agent" to USER_AGENT,
-                    "Accept" to "*/*",
-                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
-                )
-            ).text
-        } catch (e: Exception) {
-            Log.e("DPPLAYER2", "POST isteği başarısız » ${e.message}")
-            return
-        }
-
-        // 3. Yanıtı Decrypt Et
-        val result = parseAndDecrypt(response)
-        if (result == null) {
-            Log.e("DPPLAYER2", "Decryption işlemi başarısız")
-            return
-        }
-
-        val (videoUrl, videoType) = result
-
-        // 4. Iframe / Embed Yapılarını Doğrudan Çözümle
-        if (videoType == "iframe" || videoUrl.contains("<iframe", true) || videoUrl.contains(".html", true)) {
-            val iframeUrl = Regex("""src=["']([^"']+)["']""")
-                .find(videoUrl)?.groupValues?.get(1)
-                ?: videoUrl.takeIf { it.startsWith("http") }
-
-            if (!iframeUrl.isNullOrBlank()) {
-                val fixedUrl = fixUrl(iframeUrl)
-                Log.d("DPPLAYER2", "Iframe adresi işleniyor » $fixedUrl")
-
-                // Öncelik 1: Cloudstream dahili extractor'ları ile dene
-                val extracted = try {
-                    loadExtractor(fixedUrl, url, subtitleCallback, callback)
-                } catch (e: Exception) {
-                    false
-                }
-
-                // Öncelik 2: Tanınmadıysa (örneğin formationfeed.net) iframe HTML'ini çekip içindeki m3u8'i çıkar
-                if (!extracted) {
-                    Log.d("DPPLAYER2", "Dahili extractor tanımadı, iframe içeriği elle ayrıştırılıyor » $fixedUrl")
-                    extractMediaFromIframe(fixedUrl, url, callback)
-                }
-            }
-            return
-        }
-
-        // 5. Doğrudan Stream URL'si Gelmişse
-        val isM3u8 = videoUrl.contains(".m3u8", true)
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = videoUrl,
-                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-            ) {
-                this.referer = url
-                this.quality = Qualities.Unknown.value
-                this.headers = mapOf(
-                    "Origin" to mainUrl,
-                    "Referer" to url,
-                    "User-Agent" to USER_AGENT
-                )
-            }
-        )
-    }
-
-    // Iframe HTML sayfasından gerçek medya linkini (m3u8/mp4) çıkaran yardımcı fonksiyon
-    private suspend fun extractMediaFromIframe(
-        iframeUrl: String,
-        refererUrl: String,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            val html = app.get(
-                iframeUrl,
-                referer = refererUrl,
-                headers = mapOf("User-Agent" to USER_AGENT)
-            ).text
-
-            // HTML içindeki .m3u8 linkini bul
-            val m3u8Match = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""").find(html)?.groupValues?.get(1)
-            
-            if (!m3u8Match.isNullOrBlank()) {
-                Log.d("DPPLAYER2", "Iframe içinden M3U8 linki bulundu » $m3u8Match")
+    ): Boolean {
+        return try {
+            // 1) Doğrudan m3u8 linki ise direkt callback'e gönder
+            if (data.contains(".m3u8") || data.contains("superadjacentsoddenly")) {
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
-                        name = "${this.name} Stream",
-                        url = m3u8Match,
+                        name = "DiziPal2 HLS",
+                        url = data,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = iframeUrl
+                        this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
-                        this.headers = mapOf(
-                            "User-Agent" to USER_AGENT,
-                            "Referer" to iframeUrl
-                        )
                     }
                 )
-                return
+                return true
             }
 
-            // HTML içindeki .mp4 linkini bul
-            val mp4Match = Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\>]*)""").find(html)?.groupValues?.get(1)
-            if (!mp4Match.isNullOrBlank()) {
-                Log.d("DPPLAYER2", "Iframe içinden MP4 linki bulundu » $mp4Match")
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = "${this.name} Stream",
-                        url = mp4Match,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = iframeUrl
-                        this.quality = Qualities.Unknown.value
-                        this.headers = mapOf(
-                            "User-Agent" to USER_AGENT,
-                            "Referer" to iframeUrl
-                        )
-                    }
-                )
-            }
-        } catch (e: Exception) {
-            Log.e("DPPLAYER2", "Iframe içerik çekme hatası » ${e.message}")
-        }
-    }
+            // 2) Sayfa üzerinden m3u8 çıkarmayı dene (SSL gevşetilmiş client ile)
+            try {
+                val request = okhttp3.Request.Builder()
+                    .url(data)
+                    .addHeader("Referer", "$mainUrl/")
+                    .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                    .build()
 
-    private fun parseAndDecrypt(response: String): Pair<String, String>? {
-        try {
-            val json = JSONObject(response)
+                val response = relaxedClient.newCall(request).execute()
+                val pageText = response.body?.string() ?: ""
+                response.close()
 
-            var enc = json.optJSONObject("enc")
-            if (enc == null) enc = json.optJSONObject("config")?.optJSONObject("enc")
-
-            if (enc == null) {
-                val config = json.optJSONObject("config")
-                val directV = config?.optString("v", "")?.takeIf { it.isNotBlank() }
-                if (directV != null) {
-                    val t = config.optString("t", "").takeIf { it.isNotBlank() } ?: "m3u8"
-                    return directV to t
+                val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
+                if (m3u8 != null) {
+                    callback.invoke(
+                        newExtractorLink(
+                            source = this.name,
+                            name = "DiziPal2 HLS",
+                            url = m3u8,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = "$mainUrl/"
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    return true
                 }
-                val directUrl = json.optString("url", "").takeIf { it.isNotBlank() }
-                if (directUrl != null) return directUrl to "m3u8"
-                return null
+            } catch (e: Exception) {
+                Log.e("DiziPal2", "m3u8 regex HATA » ${e.message}")
             }
 
-            val k1B64 = enc.optString("k1", "")
-            val k2B64 = enc.optString("k2", "")
-            val ivB64 = enc.optString("iv", "")
-            val ctB64 = enc.optString("c", "")
-
-            if (k1B64.isEmpty() || k2B64.isEmpty() || ivB64.isEmpty() || ctB64.isEmpty()) return null
-
-            val k1 = decodeBase64(k1B64) ?: return null
-            val k2 = decodeBase64(k2B64) ?: return null
-            val iv = decodeBase64(ivB64) ?: return null
-            val ct = decodeBase64(ctB64) ?: return null
-
-            val keyLen = minOf(k1.size, k2.size)
-            val key = ByteArray(keyLen)
-            for (i in 0 until keyLen) {
-                key[i] = (k1[i].toInt() xor k2[i].toInt()).toByte()
-            }
-
-            val decrypted = aesCbcDecrypt(key, iv, ct) ?: return null
-
-            if (decrypted.trim().startsWith("{")) {
-                try {
-                    val inner = JSONObject(decrypted.trim())
-                    val u = inner.optString("url", "").takeIf { it.isNotBlank() }
-                        ?: inner.optString("v", "").takeIf { it.isNotBlank() }
-                        ?: inner.optString("file", "").takeIf { it.isNotBlank() }
-                    if (u != null) {
-                        val t = inner.optString("type", "").takeIf { it.isNotBlank() } ?: "iframe"
-                        return u to t
-                    }
-                } catch (_: Exception) {}
-            }
-
-            if (decrypted.contains("<iframe")) return decrypted to "iframe"
-
-            Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""").find(decrypted)?.groupValues?.get(1)?.let {
-                return it to "m3u8"
-            }
-
-            Regex("""(https?://[^\s"'\\<>]+\.mp4[^\s"'\\>]*)""").find(decrypted)?.groupValues?.get(1)?.let {
-                return it to "mp4"
-            }
-
-            Regex("""(https?://[^\s"'\\<>]+)""").find(decrypted)?.groupValues?.get(1)?.let {
-                return it to "iframe"
-            }
-
-            return null
+            // 3) Özel player (DizipalPlayer2) üzerinden dene
+            val player = DizipalPlayer2()
+            player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
+            true
         } catch (e: Exception) {
-            return null
+            Log.e("DiziPal2", "DizipalPlayer2 HATA » ${e.message}", e)
+            false
         }
-    }
-
-    private fun decodeBase64(input: String): ByteArray? = try {
-        val padded = when (input.length % 4) {
-            2 -> "$input=="
-            3 -> "$input="
-            else -> input
-        }
-        val normalized = padded.replace('-', '+').replace('_', '/')
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            Base64.getDecoder().decode(normalized)
-        } else {
-            android.util.Base64.decode(normalized, android.util.Base64.DEFAULT)
-        }
-    } catch (e: Exception) {
-        null
-    }
-
-    private fun aesCbcDecrypt(key: ByteArray, iv: ByteArray, ct: ByteArray): String? = try {
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        String(cipher.doFinal(ct), Charsets.UTF_8)
-    } catch (e: Exception) {
-        null
     }
 }
