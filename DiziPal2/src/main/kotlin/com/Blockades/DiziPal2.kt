@@ -13,7 +13,7 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 class DiziPal2 : MainAPI() {
-    override var mainUrl              = "https://dizipal2142.com"
+    override var mainUrl              = "https://dizipal2143.com"
     override var name                 = "DiziPal2"
     override val hasMainPage          = true
     override var lang                 = "tr"
