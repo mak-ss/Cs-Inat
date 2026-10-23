@@ -2,7 +2,6 @@ package com.Blockades
 
 import android.util.Log
 import org.jsoup.nodes.Element
-import com.Blockades.DPlayer82
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -85,6 +84,9 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // ANA SAYFA
+    // ---------------------------------------------------------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) request.data else "${request.data}?sayfa=$page"
         val document = app.get(url, interceptor = interceptor).document
@@ -127,6 +129,9 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // ARAMA
+    // ---------------------------------------------------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         try {
             val resp = app.get(
@@ -172,6 +177,9 @@ class DiziPalOrijinal : MainAPI() {
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
+    // ---------------------------------------------------------------------
+    // DETAY SAYFASI
+    // ---------------------------------------------------------------------
     override suspend fun load(url: String): LoadResponse? {
         val getUrl = app.get(url, interceptor = interceptor)
         val document = getUrl.document
@@ -246,6 +254,9 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // LİNKLER
+    // ---------------------------------------------------------------------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -253,9 +264,45 @@ class DiziPalOrijinal : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("kraptor_$name", "data = $data")
-        val document = app.get(data, interceptor = interceptor).document
+        val response = app.get(data, interceptor = interceptor)
+        val html = response.text
+        val document = response.document
 
-        // 1) Doğrudan iframe
+        // Debug logları
+        Log.d("kraptor_$name", "HTML uzunluk: ${html.length}")
+        Log.d("kraptor_$name", "iframe toplam: ${document.select("iframe").size}, src'li iframe: ${document.select("iframe[src]").size}, data-rm-k: ${document.select("[data-rm-k]").size}")
+        Log.d("kraptor_$name", "dplayer82 geçiyor mu: ${html.contains("dplayer82")}, iframe.php geçiyor mu: ${html.contains("iframe.php")}, contentx geçiyor mu: ${html.contains("contentx")}")
+
+        // 1) HTML içindeki player/iframe URL'lerini regex ile çıkar
+        val playerRegex = Regex(
+            """(https?://[^\s"'\\]+(?:dplayer82|player|iframe|embed|contentx|playru|pichive)[^\s"'\\]*)""",
+            RegexOption.IGNORE_CASE
+        )
+        val foundUrls = playerRegex.findAll(html)
+            .map { it.value }
+            .filter { it.contains("://") }
+            .toSet()
+
+        Log.d("kraptor_$name", "html'de bulunan player URL'leri: $foundUrls")
+
+        var anyFound = false
+        for (u in foundUrls) {
+            val fixed = fixUrlNull(u) ?: continue
+            Log.d("kraptor_$name", "denenen URL: $fixed")
+            try {
+                if (fixed.contains("dplayer82.site")) {
+                    DPlayer82().getUrl(fixed, "$mainUrl/", subtitleCallback, callback)
+                } else {
+                    loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                }
+                anyFound = true
+            } catch (e: Exception) {
+                Log.e("kraptor_$name", "extractor hatası: ${e.message}")
+            }
+        }
+        if (anyFound) return true
+
+        // 2) Doğrudan iframe[src]
         val directIframe = document.selectFirst("iframe[src]")?.attr("src")
         if (!directIframe.isNullOrBlank()) {
             val fixed = fixUrlNull(directIframe)
@@ -270,7 +317,7 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // 2) Şifreli data-rm-k
+        // 3) data-rm-k şifreli yapı (eski site)
         val hiddenEl = document.selectFirst("div[data-rm-k]")
             ?: document.selectFirst("[data-rm-k]")
         if (hiddenEl != null) {
@@ -300,8 +347,42 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // 3) Fallback: tüm iframe'ler
-        var any = false
+        // 4) __next_f.push script'lerindeki JSON içinden "iframe" veya "url" ara
+        val nextDataRegex = Regex("""self\.__next_f\.push\(\[1,\s*"(.+?)"\]\)""")
+        val nextMatches = nextDataRegex.findAll(html).map { it.groupValues[1] }.toList()
+        Log.d("kraptor_$name", "__next_f.push script sayısı: ${nextMatches.size}")
+
+        for (block in nextMatches) {
+            // JSON string escape'lerini temizle
+            val unescaped = block
+                .replace("\\\"", "\"")
+                .replace("\\/", "/")
+                .replace("\\\\", "\\")
+
+            // "iframe" geçen bir URL var mı?
+            val innerRegex = Regex(
+                """(https?://[^\s"']+(?:iframe|player|embed)[^\s"']*)""",
+                RegexOption.IGNORE_CASE
+            )
+            val innerUrls = innerRegex.findAll(unescaped).map { it.value }.toSet()
+            for (u in innerUrls) {
+                val fixed = fixUrlNull(u) ?: continue
+                Log.d("kraptor_$name", "next_f içinden URL: $fixed")
+                try {
+                    if (fixed.contains("dplayer82.site")) {
+                        DPlayer82().getUrl(fixed, "$mainUrl/", subtitleCallback, callback)
+                    } else {
+                        loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                    }
+                    anyFound = true
+                } catch (e: Exception) {
+                    Log.e("kraptor_$name", "next_f extractor hatası: ${e.message}")
+                }
+            }
+        }
+        if (anyFound) return true
+
+        // 5) Fallback: tüm iframe'leri dene
         document.select("iframe[src]").forEach { f ->
             val src = f.attr("src")
             if (src.isNotBlank()) {
@@ -312,11 +393,13 @@ class DiziPalOrijinal : MainAPI() {
                     } else {
                         loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
                     }
-                    any = true
+                    anyFound = true
                 }
             }
         }
-        return any
+
+        Log.d("kraptor_$name", "loadLinks sonucu: $anyFound")
+        return anyFound
     }
 }
 
