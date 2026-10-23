@@ -21,32 +21,52 @@ class DiziPal12 : MainAPI() {
         "$mainUrl/trend-1" to "Trend"
     )
 
+    // Poster URL temizleme: data: placeholder, SVG ve boş değerleri filtrele
+    private fun cleanPoster(vararg candidates: String?): String? {
+        for (c in candidates) {
+            if (c.isNullOrBlank()) continue
+            if (c.startsWith("data:")) continue
+            if (c.endsWith(".svg")) continue
+            if (c.contains("placeholder")) continue
+            return c
+        }
+        return null
+    }
+
+    private fun Element.bestPoster(): String? {
+        val img = selectFirst("img") ?: return null
+        return cleanPoster(
+            img.attr("data-src"),
+            img.attr("data-srcset").substringBefore(" ").takeIf { it.isNotBlank() },
+            img.attr("src")
+        )
+    }
+
     // ---------- ANASAYFA ----------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        Log.d("DiziPal12", "getMainPage: ${request.data}")
         val document = app.get(request.data).document
         val items = mutableListOf<SearchResponse>()
 
-        // Son Bölümler sayfası
         if (request.data.contains("/bolumler")) {
             document.select("a.episode-row-home").forEach { el ->
                 val title = el.selectFirst("span.episode-row-title")?.text()?.trim() ?: return@forEach
                 val href = fixUrlNull(el.attr("href")) ?: return@forEach
                 val poster = el.selectFirst("img")?.attr("src")
-                // /dizi/xxx/1-sezon/1-bolum -> /dizi/xxx
                 val seriesUrl = href.replace(Regex("/\\d+-sezon/\\d+-bolum.*$"), "")
                 items.add(newTvSeriesSearchResponse(title, seriesUrl, TvType.TvSeries) {
-                    this.posterUrl = poster
+                    this.posterUrl = cleanPoster(poster)
                 })
             }
+            Log.d("DiziPal12", "bolumler items: ${items.size}")
             return newHomePageResponse(request.name, items, hasNext = false)
         }
 
-        // Trend carousel (trend-1 sayfası)
         if (request.data.contains("/trend")) {
             document.select("a.trend-card").forEach { el ->
                 val title = el.selectFirst("h3.trend-card-title")?.text()?.trim() ?: return@forEach
                 val href = fixUrlNull(el.attr("href")) ?: return@forEach
-                val poster = el.selectFirst("img")?.attr("src")
+                val poster = el.bestPoster()
                 val type = if (href.contains("/anime/")) TvType.Anime
                            else if (href.contains("/film/")) TvType.Movie
                            else TvType.TvSeries
@@ -54,51 +74,44 @@ class DiziPal12 : MainAPI() {
                     this.posterUrl = poster
                 })
             }
+            Log.d("DiziPal12", "trend items: ${items.size}")
             return newHomePageResponse(request.name, items, hasNext = false)
         }
 
-        // Diziler / Filmler / Animeler / Platform / Kategori sayfaları
         document.select("a.homepage-card").forEach { el ->
             val title = el.selectFirst("h3.homepage-card-title")?.text()?.trim() ?: return@forEach
             val href = fixUrlNull(el.attr("href")) ?: return@forEach
-            // data-src öncelikli (lazyload), yoksa src
-            val img = el.selectFirst("img")
-            val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-
+            val poster = el.bestPoster()
             val type = if (href.contains("/anime/")) TvType.Anime
                        else if (href.contains("/film/")) TvType.Movie
                        else TvType.TvSeries
-
             items.add(newTvSeriesSearchResponse(title, href, type) {
                 this.posterUrl = poster
             })
         }
-
+        Log.d("DiziPal12", "homepage items: ${items.size}")
         return newHomePageResponse(request.name, items, hasNext = false)
     }
 
     // ---------- ARAMA ----------
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
+        Log.d("DiziPal12", "search: $url")
         val document = app.get(url).document
         val results = mutableListOf<SearchResponse>()
 
         document.select("a.homepage-card").forEach { el ->
             val title = el.selectFirst("h3.homepage-card-title")?.text()?.trim() ?: return@forEach
             val href = fixUrlNull(el.attr("href")) ?: return@forEach
-            val img = el.selectFirst("img")
-            val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-
+            val poster = el.bestPoster()
             val type = if (href.contains("/anime/")) TvType.Anime
                        else if (href.contains("/film/")) TvType.Movie
                        else TvType.TvSeries
-
             results.add(newTvSeriesSearchResponse(title, href, type) {
                 this.posterUrl = poster
             })
         }
+        Log.d("DiziPal12", "search results: ${results.size}")
         return results
     }
 
@@ -106,7 +119,8 @@ class DiziPal12 : MainAPI() {
 
     // ---------- DETAY ----------
     override suspend fun load(url: String): LoadResponse? {
-        // Bölüm URL'sinden dizi detayına yönlendir
+        Log.d("DiziPal12", "load: $url")
+
         if (url.contains("/sezon/") && url.contains("/bolum")) {
             val seriesUrl = url.replace(Regex("/\\d+-sezon/\\d+-bolum.*$"), "")
             return load(seriesUrl)
@@ -118,9 +132,13 @@ class DiziPal12 : MainAPI() {
             ?.removeSuffix(" izle")
             ?: return null
 
-        // Poster: series-poster içindeki img
-        val poster = document.selectFirst("div.series-poster img")?.attr("src")
-            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
+        // Poster: series-poster içindeki img (data-src öncelikli)
+        val posterImg = document.selectFirst("div.series-poster img")
+        val poster = cleanPoster(
+            posterImg?.attr("src"),
+            posterImg?.attr("data-src"),
+            document.selectFirst("meta[property=og:image]")?.attr("content")
+        )
 
         val plot = document.selectFirst("p.series-summary")?.text()?.trim()
         val year = document.selectFirst("div.series-data-item:contains(Yapım Yılı) time")?.text()?.toIntOrNull()
@@ -128,7 +146,6 @@ class DiziPal12 : MainAPI() {
 
         val tags = document.select("div.series-badges a.series-badge").map { it.text().trim() }
 
-        // Film mi?
         if (url.contains("/film/")) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
@@ -138,7 +155,6 @@ class DiziPal12 : MainAPI() {
             }
         }
 
-        // Dizi/Anime bölümleri — detay sayfasındaki episode-card-link'ler
         val episodes = mutableListOf<Episode>()
         document.select("a.episode-card-link").forEach { epAnchor ->
             val epHref = fixUrlNull(epAnchor.attr("href")) ?: return@forEach
@@ -154,6 +170,7 @@ class DiziPal12 : MainAPI() {
                 this.episode = epEpisode
             })
         }
+        Log.d("DiziPal12", "load episodes: ${episodes.size}, poster=$poster")
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
@@ -170,25 +187,27 @@ class DiziPal12 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d("DiziPal12", "loadLinks data=$data")
         return try {
-            // data = bölüm sayfası URL'si (/dizi/xxx/1-sezon/1-bolum)
             val document = app.get(data).document
+            val html = document.html()
 
-            // 1) Doğrudan oynatıcı iframe'i (montana-frame)
+            // 1) Doğrudan iframe
             val iframeSrc = document.selectFirst("iframe#montana-frame")?.attr("src")
                 ?: document.selectFirst("iframe[src*='mntplayer']")?.attr("src")
                 ?: document.selectFirst("iframe[src*='vod.']")?.attr("src")
+                ?: document.selectFirst("iframe[src]")?.attr("src")
 
+            Log.d("DiziPal12", "iframeSrc=$iframeSrc")
             if (!iframeSrc.isNullOrBlank()) {
-                Log.d("DiziPal12", "iframe bulundu: $iframeSrc")
                 MntPlayer12().getUrl(fixUrl(iframeSrc), mainUrl, subtitleCallback, callback)
                 return true
             }
 
-            // 2) Sayfa içinde doğrudan m3u8 varsa
-            val directM3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(document.html())?.value
+            // 2) HTML içinde doğrudan m3u8
+            val directM3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(html)?.value
+            Log.d("DiziPal12", "directM3u8=$directM3u8")
             if (directM3u8 != null) {
-                Log.d("DiziPal12", "m3u8 bulundu: $directM3u8")
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
@@ -203,14 +222,15 @@ class DiziPal12 : MainAPI() {
                 return true
             }
 
-            // 3) window.episodesData içindeki iframe_url_encrypted'i dene
+            // 3) episodesData içindeki iframe_url_encrypted token
             val episodesDataMatch = Regex("""window\.episodesData\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
-                .find(document.html())?.groupValues?.getOrNull(1)
+                .find(html)?.groupValues?.getOrNull(1)
             if (episodesDataMatch != null) {
-                // Geçerli bölümün token'ını al
-                val tokenMatch = Regex("""/embed/\?token=([^"\\]+)""").find(episodesDataMatch)
+                val tokenMatch = Regex("""\\/embed\\/\?token=([^"\\]+)""").find(episodesDataMatch)
+                    ?: Regex("""/embed/\?token=([^"\\]+)""").find(episodesDataMatch)
                 if (tokenMatch != null) {
                     val embedUrl = "$mainUrl/embed/?token=${tokenMatch.groupValues[1]}"
+                    Log.d("DiziPal12", "embedUrl=$embedUrl")
                     MntPlayer12().getUrl(embedUrl, mainUrl, subtitleCallback, callback)
                     return true
                 }
