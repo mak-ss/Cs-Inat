@@ -188,6 +188,43 @@ class DiziPal2 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         return try {
+            // 1) Doğrudan m3u8 linki ise direkt callback'e gönder
+            if (data.contains(".m3u8") || data.contains("superadjacentsoddenly")) {
+                callback.invoke(
+                    ExtractorLink(
+                        source   = this.name,
+                        name     = "DiziPal2 HLS",
+                        url      = data,
+                        referer  = "$mainUrl/",
+                        quality  = Qualities.Unknown.value,
+                        isM3u8   = true
+                    )
+                )
+                return true
+            }
+
+            // 2) Sayfa üzerinden m3u8 çıkarmayı dene
+            try {
+                val pageText = app.get(data, referer = "$mainUrl/").text
+                val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
+                if (m3u8 != null) {
+                    callback.invoke(
+                        ExtractorLink(
+                            source   = this.name,
+                            name     = "DiziPal2 HLS",
+                            url      = m3u8,
+                            referer  = "$mainUrl/",
+                            quality  = Qualities.Unknown.value,
+                            isM3u8   = true
+                        )
+                    )
+                    return true
+                }
+            } catch (e: Exception) {
+                Log.e("DiziPal2", "m3u8 regex HATA » ${e.message}")
+            }
+
+            // 3) Özel player (DizipalPlayer2) üzerinden dene
             val player = DizipalPlayer2()
             player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
             true
