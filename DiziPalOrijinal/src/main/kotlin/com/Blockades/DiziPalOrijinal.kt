@@ -268,14 +268,15 @@ class DiziPalOrijinal : MainAPI() {
         val html = response.text
         val document = response.document
 
-        // Debug logları
         Log.d("kraptor_$name", "HTML uzunluk: ${html.length}")
         Log.d("kraptor_$name", "iframe toplam: ${document.select("iframe").size}, src'li iframe: ${document.select("iframe[src]").size}, data-rm-k: ${document.select("[data-rm-k]").size}")
         Log.d("kraptor_$name", "dplayer82 geçiyor mu: ${html.contains("dplayer82")}, iframe.php geçiyor mu: ${html.contains("iframe.php")}, contentx geçiyor mu: ${html.contains("contentx")}")
 
+        var anyFound = false
+
         // 1) HTML içindeki player/iframe URL'lerini regex ile çıkar
         val playerRegex = Regex(
-            """(https?://[^\s"'\\]+(?:dplayer82|player|iframe|embed|contentx|playru|pichive)[^\s"'\\]*)""",
+            """(https?://[^\s"'\\]+(?:dplayer82|player|iframe|embed|contentx|playru|pichive|trstx|hotlinger|rapidvid|vidmoxy|sobreatsesuyp|turbo\.imgz|turkeyplayer)[^\s"'\\]*)""",
             RegexOption.IGNORE_CASE
         )
         val foundUrls = playerRegex.findAll(html)
@@ -285,7 +286,6 @@ class DiziPalOrijinal : MainAPI() {
 
         Log.d("kraptor_$name", "html'de bulunan player URL'leri: $foundUrls")
 
-        var anyFound = false
         for (u in foundUrls) {
             val fixed = fixUrlNull(u) ?: continue
             Log.d("kraptor_$name", "denenen URL: $fixed")
@@ -317,7 +317,7 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // 3) data-rm-k şifreli yapı (eski site)
+        // 3) data-rm-k şifreli yapı
         val hiddenEl = document.selectFirst("div[data-rm-k]")
             ?: document.selectFirst("[data-rm-k]")
         if (hiddenEl != null) {
@@ -347,21 +347,19 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // 4) __next_f.push script'lerindeki JSON içinden "iframe" veya "url" ara
+        // 4) __next_f.push script'lerindeki JSON içinden URL ara
         val nextDataRegex = Regex("""self\.__next_f\.push\(\[1,\s*"(.+?)"\]\)""")
         val nextMatches = nextDataRegex.findAll(html).map { it.groupValues[1] }.toList()
         Log.d("kraptor_$name", "__next_f.push script sayısı: ${nextMatches.size}")
 
         for (block in nextMatches) {
-            // JSON string escape'lerini temizle
             val unescaped = block
                 .replace("\\\"", "\"")
                 .replace("\\/", "/")
                 .replace("\\\\", "\\")
 
-            // "iframe" geçen bir URL var mı?
             val innerRegex = Regex(
-                """(https?://[^\s"']+(?:iframe|player|embed)[^\s"']*)""",
+                """(https?://[^\s"']+(?:iframe|player|embed|dplayer|contentx|trstx)[^\s"']*)""",
                 RegexOption.IGNORE_CASE
             )
             val innerUrls = innerRegex.findAll(unescaped).map { it.value }.toSet()
@@ -396,6 +394,11 @@ class DiziPalOrijinal : MainAPI() {
                     anyFound = true
                 }
             }
+        }
+
+        // 6) Debug: elementlerdeki data-* attribute'larını logla (sorun tespiti için)
+        document.select("[data-player-frame], [data-preroll-slot], [data-before-image], [data-rm-k]").forEach { el ->
+            Log.d("kraptor_$name", "DEBUG element <${el.tagName()}> attr'lar: ${el.attributes().joinToString { "${it.key}=${it.value.take(120)}" }}")
         }
 
         Log.d("kraptor_$name", "loadLinks sonucu: $anyFound")
