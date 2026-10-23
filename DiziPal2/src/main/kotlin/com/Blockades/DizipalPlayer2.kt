@@ -34,6 +34,16 @@ class DizipalPlayer2 : ExtractorApi() {
             .build()
     }
 
+    /** ExtractorApi içinde fixUrlNull olmadığı için basit URL düzeltme */
+    private fun fixUrlExtractor(url: String): String {
+        return when {
+            url.startsWith("http://") || url.startsWith("https://") -> url
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("/")  -> "$mainUrl$url"
+            else                 -> "$mainUrl/$url"
+        }
+    }
+
     override suspend fun getUrl(
         url: String,
         referer: String?,
@@ -96,7 +106,7 @@ class DizipalPlayer2 : ExtractorApi() {
             for (pattern in patterns) {
                 val match = pattern.find(pageText)?.groupValues?.getOrNull(1)
                 if (!match.isNullOrBlank()) {
-                    val finalUrl = fixUrlNull(match) ?: match
+                    val finalUrl = fixUrlExtractor(match)
                     if (finalUrl.contains(".m3u8")) {
                         callback.invoke(
                             newExtractorLink(
