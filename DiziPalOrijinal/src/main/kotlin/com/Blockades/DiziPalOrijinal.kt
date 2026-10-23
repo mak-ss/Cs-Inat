@@ -12,6 +12,7 @@ import okhttp3.Response
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.net.URLDecoder
+import java.net.URLEncoder
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.IvParameterSpec
@@ -24,7 +25,7 @@ class DiziPalOrijinal : MainAPI() {
     override val hasMainPage = true
     override var lang = "tr"
     override val hasQuickSearch = false
-    override val supportedTypes = setOf(TvType.TvSeries)
+    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
     override var sequentialMainPage = true
     override var sequentialMainPageDelay = 250L
@@ -46,7 +47,7 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
-    // Yeni site yapısı: platform-bolumler/<slug> ve kanal/<slug> sayfaları statik HTML
+    // Yeni site yapısı: platform-bolumler/<slug>, kanal/<slug> ve statik listeleme sayfaları
     override val mainPage = mainPageOf(
         "${mainUrl}/yeni-eklenen-dizi-bolumler" to "Yeni Eklenen Bölümler",
         "${mainUrl}/yabanci-dizi-izle" to "Yeni Eklenenler",
@@ -89,12 +90,11 @@ class DiziPalOrijinal : MainAPI() {
     // ---------------------------------------------------------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         // Site artık statik HTML döndürüyor; POST endpoint'leri kaldırıldı.
-        // Sayfalama için ?page=N dene, yoksa tek sayfa dön.
+        // Sayfalama için ?sayfa=N dene, yoksa tek sayfa dön.
         val url = if (page <= 1) request.data else "${request.data}?sayfa=$page"
         val document = app.get(url, interceptor = interceptor).document
 
-        // Kart yapısı: <a class="tc" href="/series/..."> ... <span class="fr"> ... <img src="..."> ... <span class="tt">Başlık</span> <span>Meta</span> </a>
-        // veya "role=listitem" içindeki <a class="tc">
+        // Kart yapısı: <a class="tc" href="/series/..."> ... <span class="fr"> ... <img src="..."> ... <span class="tt">Başlık</span>
         val home = document.select("a.tc")
             .mapNotNull { it.toMainPageResult() }
 
@@ -118,8 +118,7 @@ class DiziPalOrijinal : MainAPI() {
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotBlank() }
             ?: return null
 
-        // puan: <span style="...">8.6</span> — fr içindeki overlay span
-        // aria-label içinde "IMDb 8.6" geçiyor, ondan çekmek daha güvenli
+        // puan: aria-label içinde "IMDb 8.6" geçiyor, ondan çekmek daha güvenli
         val aria = this.attr("aria-label")
         val imdbScore = Regex("""IMDb\s+([0-9.]+)""").find(aria)?.groupValues?.get(1)
             ?: this.selectFirst("span.fr > span:not(.tt)")?.text()
@@ -142,13 +141,17 @@ class DiziPalOrijinal : MainAPI() {
     // ARAMA
     // ---------------------------------------------------------------------
     override suspend fun search(query: String): List<SearchResponse> {
-        // Site arama endpoint'i: /arama-yap?q=... (statik HTML dönüyor olabilir)
-        // Eğer hâlâ JSON POST varsa eski kod çalışır; ama HTML dönüyorsa parse et.
-        val resp = app.get("$mainUrl/arama-yap?q=${java.net.URLEncoder.encode(query, "UTF-8")}",
-            interceptor = interceptor)
-        val doc = resp.document
-        val fromHtml = doc.select("a.tc").mapNotNull { it.toMainPageResult() }
-        if (fromHtml.isNotEmpty()) return fromHtml
+        // Yeni site arama sayfası HTML döndürüyor olabilir
+        try {
+            val resp = app.get(
+                "$mainUrl/arama-yap?q=${URLEncoder.encode(query, "UTF-8")}",
+                interceptor = interceptor
+            )
+            val fromHtml = resp.document.select("a.tc").mapNotNull { it.toMainPageResult() }
+            if (fromHtml.isNotEmpty()) return fromHtml
+        } catch (e: Exception) {
+            Log.e("kraptor_Dizipal", "HTML search failed: ${e.message}")
+        }
 
         // Fallback: eski JSON POST
         initSession()
@@ -211,32 +214,37 @@ class DiziPalOrijinal : MainAPI() {
                 document.select("a[href^='/tur/'], a[href^='/kanal/']").map { it.text() }
             }
 
-        // Puan: aria-label'dan veya sayfadaki IMDb yazısından
+        // Puan: sayfadaki IMDb yazısından
         val ratingText = document.selectFirst("ul.rigth-content > li:nth-child(3) div.value")?.text()?.trim()
             ?: Regex("""IMDb\s*([0-9.]+)""").find(document.text())?.groupValues?.get(1)
 
         val duration = document.selectFirst("ul.rigth-content > li:nth-child(8) > div.value")
             ?.text()?.split(" ")?.first()?.trim()?.toIntOrNull()
 
-        // Bölüm listesi: yeni sitede <a class="tc" href="/bolum/..."> veya <a href="/bolum/..."> şeklinde
+        // Bölüm listesi: <a href="/bolum/..."> veya "1x01" içeren linkler
         val episodeLinks = document.select("a[href*='/bolum/'], a[href*='-bolum']")
-            .filter { it.attr("href").contains("/bolum/") || it.attr("href").matches(Regex(""".*\d+x\d+.*""")) }
+            .filter {
+                val h = it.attr("href")
+                h.contains("/bolum/") || h.matches(Regex(""".*\d+x\d+.*"""))
+            }
 
-        val bolumler = episodeLinks.map { el ->
-            val bolumHref = fixUrlNull(el.attr("href")) ?: ""
-            // başlıktan sezon/bölüm çıkar
+        val bolumler = episodeLinks.mapNotNull { el ->
+            val bolumHref = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
+            if (bolumHref.isBlank()) return@mapNotNull null
+
             val text = el.text()
             val se = Regex("""(\d+)\s*[xX.]\s*(\d+)""").find(text)
             val season = se?.groupValues?.get(1)?.toIntOrNull()
                 ?: el.selectFirst("[class*=opacity]")?.text()?.substringBefore(".")?.toIntOrNull()
             val episode = se?.groupValues?.get(2)?.toIntOrNull()
                 ?: el.selectFirst("[class*=opacity]")?.text()?.substringAfterLast(" ")?.toIntOrNull()
+
             newEpisode(bolumHref) {
                 this.name = "Bölüm"
                 this.season = season
                 this.episode = episode
             }
-        }.filter { it.link.isNotBlank() }
+        }
 
         return if (url.contains("/movies/")) {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
@@ -262,7 +270,12 @@ class DiziPalOrijinal : MainAPI() {
     // ---------------------------------------------------------------------
     // LİNKLER
     // ---------------------------------------------------------------------
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         Log.d("kraptor_$name", "data = $data")
         val document = app.get(data, interceptor = interceptor).document
 
@@ -270,8 +283,11 @@ class DiziPalOrijinal : MainAPI() {
         val directIframe = document.selectFirst("iframe[src]")?.attr("src")
         if (!directIframe.isNullOrBlank()) {
             Log.d("kraptor_$name", "directIframe = $directIframe")
-            loadExtractor(fixUrlNull(directIframe)!!, "$mainUrl/", subtitleCallback, callback)
-            return true
+            val fixed = fixUrlNull(directIframe)
+            if (fixed != null) {
+                loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                return true
+            }
         }
 
         // 2) Eski şifreli yapı: div[data-rm-k]
@@ -279,14 +295,18 @@ class DiziPalOrijinal : MainAPI() {
             ?: document.selectFirst("[data-rm-k]")
         if (hiddenEl != null) {
             val hiddenJson = hiddenEl.text()
-            val key = "3hPn4uCjTVtfYWcjIcoJQ4cL1WWk1qxXI39egLYOmNv6IblA7eKJz68uU3eLzux1biZLCms0quEjTYniGv5z1JcKbNIsDQFSeIZOBZJz4is6pD7UyWDggWWzTLBQbHcQFpBQdClnuQaMNUHtLHTpzCvZy33p6I7wFBvL4fnXBYH84aUIyWGTRvM2G5cfoNf4705tO2kv"
+            val key =
+                "3hPn4uCjTVtfYWcjIcoJQ4cL1WWk1qxXI39egLYOmNv6IblA7eKJz68uU3eLzux1biZLCms0quEjTYniGv5z1JcKbNIsDQFSeIZOBZJz4is6pD7UyWDggWWzTLBQbHcQFpBQdClnuQaMNUHtLHTpzCvZy33p6I7wFBvL4fnXBYH84aUIyWGTRvM2G5cfoNf4705tO2kv"
             try {
                 val obj = JSONObject(hiddenJson)
                 val decryptedContent = decrypt(
-                    key, obj.getString("salt"), obj.getString("iv"), obj.getString("ciphertext")
+                    key,
+                    obj.getString("salt"),
+                    obj.getString("iv"),
+                    obj.getString("ciphertext")
                 )
                 Log.d("kraptor_$name", "decryptedContent = $decryptedContent")
-                val iframe = fixUrlNull(decryptedContent)?.toString()
+                val iframe = fixUrlNull(decryptedContent)
                 if (iframe != null) {
                     loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
                     return true
@@ -297,13 +317,18 @@ class DiziPalOrijinal : MainAPI() {
         }
 
         // 3) Fallback: sayfadaki tüm iframe'leri dene
+        var any = false
         document.select("iframe[src]").forEach { f ->
             val src = f.attr("src")
             if (src.isNotBlank()) {
-                loadExtractor(fixUrlNull(src)!!, "$mainUrl/", subtitleCallback, callback)
+                val fixed = fixUrlNull(src)
+                if (fixed != null) {
+                    loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                    any = true
+                }
             }
         }
-        return true
+        return any
     }
 }
 
