@@ -2,6 +2,7 @@ package com.Blockades
 
 import android.util.Log
 import org.jsoup.nodes.Element
+import com.Blockades.extractors.DPlayer82
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -47,7 +48,6 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
-    // Yeni site yapısı: platform-bolumler/<slug>, kanal/<slug> ve statik listeleme sayfaları
     override val mainPage = mainPageOf(
         "${mainUrl}/yeni-eklenen-dizi-bolumler" to "Yeni Eklenen Bölümler",
         "${mainUrl}/yabanci-dizi-izle" to "Yeni Eklenenler",
@@ -85,16 +85,10 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // ANA SAYFA
-    // ---------------------------------------------------------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Site artık statik HTML döndürüyor; POST endpoint'leri kaldırıldı.
-        // Sayfalama için ?sayfa=N dene, yoksa tek sayfa dön.
         val url = if (page <= 1) request.data else "${request.data}?sayfa=$page"
         val document = app.get(url, interceptor = interceptor).document
 
-        // Kart yapısı: <a class="tc" href="/series/..."> ... <span class="fr"> ... <img src="..."> ... <span class="tt">Başlık</span>
         val home = document.select("a.tc")
             .mapNotNull { it.toMainPageResult() }
 
@@ -102,23 +96,19 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     private fun Element.toMainPageResult(): SearchResponse? {
-        // href
         val rawHref = this.attr("href").takeIf { it.isNotBlank() } ?: return null
         val href = fixUrlNull(rawHref) ?: return null
 
-        // poster: <span class="fr"> ... <img src="...">
         val posterUrl = fixUrlNull(
             this.selectFirst("span.fr img")?.attr("src")
                 ?: this.selectFirst("img")?.attr("src")
         )
 
-        // başlık: önce <span class="tt">, yoksa img alt
         val titleEl = this.selectFirst("span.tt")
         val title = titleEl?.text()?.trim()?.takeIf { it.isNotBlank() }
             ?: this.selectFirst("img")?.attr("alt")?.trim()?.takeIf { it.isNotBlank() }
             ?: return null
 
-        // puan: aria-label içinde "IMDb 8.6" geçiyor, ondan çekmek daha güvenli
         val aria = this.attr("aria-label")
         val imdbScore = Regex("""IMDb\s+([0-9.]+)""").find(aria)?.groupValues?.get(1)
             ?: this.selectFirst("span.fr > span:not(.tt)")?.text()
@@ -137,11 +127,7 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // ARAMA
-    // ---------------------------------------------------------------------
     override suspend fun search(query: String): List<SearchResponse> {
-        // Yeni site arama sayfası HTML döndürüyor olabilir
         try {
             val resp = app.get(
                 "$mainUrl/arama-yap?q=${URLEncoder.encode(query, "UTF-8")}",
@@ -153,7 +139,6 @@ class DiziPalOrijinal : MainAPI() {
             Log.e("kraptor_Dizipal", "HTML search failed: ${e.message}")
         }
 
-        // Fallback: eski JSON POST
         initSession()
         if (cKey == null || cValue == null) return emptyList()
         return try {
@@ -187,16 +172,12 @@ class DiziPalOrijinal : MainAPI() {
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
-    // ---------------------------------------------------------------------
-    // DETAY SAYFASI
-    // ---------------------------------------------------------------------
     override suspend fun load(url: String): LoadResponse? {
         val getUrl = app.get(url, interceptor = interceptor)
         val document = getUrl.document
 
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
 
-        // Poster: detay sayfasında büyük afiş — birden çok olası seçici
         val poster = fixUrlNull(
             document.selectFirst("img.w-full.h-full.object-cover")?.attr("src")
                 ?: document.selectFirst("img[alt][src*='poster']")?.attr("src")
@@ -214,14 +195,12 @@ class DiziPalOrijinal : MainAPI() {
                 document.select("a[href^='/tur/'], a[href^='/kanal/']").map { it.text() }
             }
 
-        // Puan: sayfadaki IMDb yazısından
         val ratingText = document.selectFirst("ul.rigth-content > li:nth-child(3) div.value")?.text()?.trim()
             ?: Regex("""IMDb\s*([0-9.]+)""").find(document.text())?.groupValues?.get(1)
 
         val duration = document.selectFirst("ul.rigth-content > li:nth-child(8) > div.value")
             ?.text()?.split(" ")?.first()?.trim()?.toIntOrNull()
 
-        // Bölüm listesi: <a href="/bolum/..."> veya "1x01" içeren linkler
         val episodeLinks = document.select("a[href*='/bolum/'], a[href*='-bolum']")
             .filter {
                 val h = it.attr("href")
@@ -267,9 +246,6 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
-    // ---------------------------------------------------------------------
-    // LİNKLER
-    // ---------------------------------------------------------------------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -279,18 +255,22 @@ class DiziPalOrijinal : MainAPI() {
         Log.d("kraptor_$name", "data = $data")
         val document = app.get(data, interceptor = interceptor).document
 
-        // 1) Yeni yapı: doğrudan iframe var mı?
+        // 1) Doğrudan iframe
         val directIframe = document.selectFirst("iframe[src]")?.attr("src")
         if (!directIframe.isNullOrBlank()) {
-            Log.d("kraptor_$name", "directIframe = $directIframe")
             val fixed = fixUrlNull(directIframe)
             if (fixed != null) {
-                loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                Log.d("kraptor_$name", "directIframe = $fixed")
+                if (fixed.contains("dplayer82.site")) {
+                    DPlayer82().getUrl(fixed, "$mainUrl/", subtitleCallback, callback)
+                } else {
+                    loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                }
                 return true
             }
         }
 
-        // 2) Eski şifreli yapı: div[data-rm-k]
+        // 2) Şifreli data-rm-k
         val hiddenEl = document.selectFirst("div[data-rm-k]")
             ?: document.selectFirst("[data-rm-k]")
         if (hiddenEl != null) {
@@ -308,7 +288,11 @@ class DiziPalOrijinal : MainAPI() {
                 Log.d("kraptor_$name", "decryptedContent = $decryptedContent")
                 val iframe = fixUrlNull(decryptedContent)
                 if (iframe != null) {
-                    loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
+                    if (iframe.contains("dplayer82.site")) {
+                        DPlayer82().getUrl(iframe, "$mainUrl/", subtitleCallback, callback)
+                    } else {
+                        loadExtractor(iframe, "$mainUrl/", subtitleCallback, callback)
+                    }
                     return true
                 }
             } catch (e: Exception) {
@@ -316,14 +300,18 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // 3) Fallback: sayfadaki tüm iframe'leri dene
+        // 3) Fallback: tüm iframe'ler
         var any = false
         document.select("iframe[src]").forEach { f ->
             val src = f.attr("src")
             if (src.isNotBlank()) {
                 val fixed = fixUrlNull(src)
                 if (fixed != null) {
-                    loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                    if (fixed.contains("dplayer82.site")) {
+                        DPlayer82().getUrl(fixed, "$mainUrl/", subtitleCallback, callback)
+                    } else {
+                        loadExtractor(fixed, "$mainUrl/", subtitleCallback, callback)
+                    }
                     any = true
                 }
             }
