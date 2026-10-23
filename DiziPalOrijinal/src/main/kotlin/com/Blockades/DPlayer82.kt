@@ -33,13 +33,11 @@ class DPlayer82 : ExtractorApi() {
         ).text
 
         // 2) window.openPlayer('PLAYLIST', 'REQHASH', ...) içinden playList'i çek
-        // playList base64 string — tek tırnak içinde
         val playListRegex = Regex("""openPlayer\(\s*'([^']+)'\s*,\s*'([^']*)'""")
         val match = playListRegex.find(page) ?: return
         val playList = match.groupValues[1]
 
-        // 3) source2.php?v=<playList> isteği at
-        // Bu isteğin de aynı domain üzerinden gitmesi gerekiyor (yani four.dplayer82.site/source2.php)
+        // 3) source2.php?v=<playList> isteği
         val source2Url = "$mainUrl/source2.php?v=$playList"
         val jsonText = try {
             app.get(
@@ -65,7 +63,6 @@ class DPlayer82 : ExtractorApi() {
             for (j in 0 until sources.length()) {
                 val src = sources.getJSONObject(j)
                 val file = src.optString("file").takeIf { it.isNotBlank() } ?: continue
-                // m.php → master.m3u8 dönüşümü (site kendi JS'inde yapıyor)
                 val m3u8 = file.replace("m.php", "master.m3u8")
                 val title = src.optString("title").takeIf { it.isNotBlank() } ?: name
 
@@ -87,9 +84,7 @@ class DPlayer82 : ExtractorApi() {
             }
         }
 
-        // 5) Altyazıları da ekle (subtitles[] dizisinden)
-        // openPlayer'ın son parametresi subtitles[] — ama bunu regex ile çekmek zor,
-        // onun yerine source2.php yanıtında subtitles da varsa al:
+        // 5) Altyazılar
         val subsArray = json.optJSONArray("subtitles")
         if (subsArray != null) {
             for (i in 0 until subsArray.length()) {
