@@ -4,8 +4,9 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.INFER_TYPE
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class DPlayer82 : ExtractorApi() {
     override var name = "DPlayer82"
@@ -29,21 +30,22 @@ class DPlayer82 : ExtractorApi() {
             )
         ).text
 
-        // TODO: Tarayıcıda F12 ile sayfa kaynağını incele, m3u8'in gerçek konumunu bul
+        // TODO: m3u8 linkinin gerçek konumunu tarayıcıda F12 ile doğrula
         val m3u8Regex = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""")
         val m3u8Url = m3u8Regex.find(response)?.groupValues?.get(1)
 
         if (m3u8Url != null) {
             callback.invoke(
-                ExtractorLink(
+                newExtractorLink(
                     source = this.name,
                     name = this.name,
                     url = m3u8Url,
-                    referer = realReferer,
-                    quality = Qualities.Unknown.value,
-                    type = INFER_TYPE,
-                    headers = mapOf("Referer" to realReferer)
-                )
+                    type = ExtractorLinkType.M3U8 // m3u8 olduğu için M3U8 tipi daha doğru
+                ) {
+                    this.referer = realReferer
+                    this.quality = Qualities.Unknown.value
+                    this.headers = mapOf("Referer" to realReferer)
+                }
             )
         }
     }
