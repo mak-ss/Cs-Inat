@@ -22,22 +22,24 @@ class DPlayer82 : ExtractorApi() {
     ) {
         val realReferer = referer ?: "https://dizipal1591.com/"
 
-        // 1) iframe.php sayfasını al
-        val page = app.get(
-            url,
-            referer = realReferer,
-            headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-                "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            )
-        ).text
+        val page = try {
+            app.get(
+                url,
+                referer = realReferer,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                )
+            ).text
+        } catch (e: Exception) {
+            return
+        }
 
-        // 2) window.openPlayer('PLAYLIST', 'REQHASH', ...) içinden playList'i çek
+        // window.openPlayer('PLAYLIST', 'REQHASH', ...) içinden playList'i çek
         val playListRegex = Regex("""openPlayer\(\s*'([^']+)'\s*,\s*'([^']*)'""")
         val match = playListRegex.find(page) ?: return
         val playList = match.groupValues[1]
 
-        // 3) source2.php?v=<playList> isteği
         val source2Url = "$mainUrl/source2.php?v=$playList"
         val jsonText = try {
             app.get(
@@ -55,7 +57,6 @@ class DPlayer82 : ExtractorApi() {
 
         val json = try { JSONObject(jsonText) } catch (e: Exception) { return }
 
-        // 4) playlist[] içinden m3u8'leri al
         val playlistArray = json.optJSONArray("playlist") ?: return
         for (i in 0 until playlistArray.length()) {
             val item = playlistArray.getJSONObject(i)
@@ -84,7 +85,6 @@ class DPlayer82 : ExtractorApi() {
             }
         }
 
-        // 5) Altyazılar
         val subsArray = json.optJSONArray("subtitles")
         if (subsArray != null) {
             for (i in 0 until subsArray.length()) {
