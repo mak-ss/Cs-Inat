@@ -45,14 +45,15 @@ class MntPlayer12 : ExtractorApi() {
         callback: (ExtractorLink) -> Unit
     ) {
         val safeReferer = referer ?: "https://dizipal12.com.tr/"
+        Log.d("MntPlayer12", "getUrl: $url")
 
-        // Zaten m3u8 ise doğrudan gönder
+        // 1) Zaten m3u8 ise doğrudan gönder
         if (url.contains(".m3u8")) {
             pushHls(url, safeReferer, callback)
             return
         }
 
-        // mntplayer oynatıcı sayfasını çek
+        // 2) Embed/oynatıcı sayfasını çek, m3u8'i çıkar
         val pageText = try {
             app.get(url, referer = safeReferer).text
         } catch (e: Exception) {
@@ -74,8 +75,10 @@ class MntPlayer12 : ExtractorApi() {
         }
 
         if (pageText.isNotEmpty()) {
+            // mntplayer m3u8 linkleri (master/video/audio)
             val m3u8Regex = Regex("""(https?://vod\.mntplayer\.com:8443/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)""")
             val matches = m3u8Regex.findAll(pageText).map { it.value }.toList()
+            Log.d("MntPlayer12", "m3u8 adet: ${matches.size}")
 
             val best = matches.firstOrNull { it.contains("master.m3u8") }
                 ?: matches.firstOrNull { it.contains("video.m3u8") }
@@ -85,12 +88,20 @@ class MntPlayer12 : ExtractorApi() {
                 pushHls(best, safeReferer, callback)
                 return
             }
+
+            // Fallback: genel m3u8 regex (başka CDN)
+            val genericM3u8 = Regex("""(https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)""").find(pageText)?.value
+            if (genericM3u8 != null) {
+                pushHls(genericM3u8, safeReferer, callback)
+                return
+            }
         }
 
         Log.e("MntPlayer12", "m3u8 bulunamadı » $url")
     }
 
     private suspend fun pushHls(m3u8Url: String, referer: String, callback: (ExtractorLink) -> Unit) {
+        Log.d("MntPlayer12", "pushHls: $m3u8Url")
         callback.invoke(
             newExtractorLink(
                 source = this.name,
