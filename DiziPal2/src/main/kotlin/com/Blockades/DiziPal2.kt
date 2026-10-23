@@ -4,7 +4,14 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.Blockades.DizipalPlayer2
+import okhttp3.OkHttpClient
 import org.jsoup.nodes.Element
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 class DiziPal2 : MainAPI() {
     override var mainUrl              = "https://dizipal2142.com"
@@ -32,6 +39,24 @@ class DiziPal2 : MainAPI() {
         "${mainUrl}/kategori/komedi"      to "Komedi Filmleri",
         "${mainUrl}/kategori/belgesel"    to "Belgesel Filmleri",
     )
+
+    /** SSL sertifika doğrulamasını gevşeten OkHttpClient (sadece CDN istekleri için) */
+    private val relaxedClient: OkHttpClient by lazy {
+        val trustAll = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        }
+        val sslContext = SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+        }
+        OkHttpClient.Builder()
+            .sslSocketFactory(sslContext.socketFactory, trustAll)
+            .hostnameVerifier { _, _ -> true }
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
@@ -204,9 +229,18 @@ class DiziPal2 : MainAPI() {
                 return true
             }
 
-            // 2) Sayfa üzerinden m3u8 çıkarmayı dene
+            // 2) Sayfa üzerinden m3u8 çıkarmayı dene (SSL gevşetilmiş client ile)
             try {
-                val pageText = app.get(data, referer = "$mainUrl/").text
+                val request = okhttp3.Request.Builder()
+                    .url(data)
+                    .addHeader("Referer", "$mainUrl/")
+                    .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                    .build()
+
+                val response = relaxedClient.newCall(request).execute()
+                val pageText = response.body?.string() ?: ""
+                response.close()
+
                 val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
                 if (m3u8 != null) {
                     callback.invoke(
