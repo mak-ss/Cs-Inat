@@ -13,15 +13,24 @@ class DiziPal12 : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
+    // Sadece platformlar
     override val mainPage = mainPageOf(
-        "$mainUrl/bolumler" to "Son Bölümler",
-        "$mainUrl/diziler" to "Diziler",
-        "$mainUrl/filmler" to "Filmler",
-        "$mainUrl/animeler" to "Animeler",
-        "$mainUrl/trend-1" to "Trend"
+        "$mainUrl/platform/netflix"      to "Netflix",
+        "$mainUrl/platform/prime-video"  to "Prime Video",
+        "$mainUrl/platform/disney"       to "Disney+",
+        "$mainUrl/platform/hbomax"       to "HBOMax",
+        "$mainUrl/platform/blutv"        to "BluTV",
+        "$mainUrl/platform/exxen"        to "Exxen",
+        "$mainUrl/platform/tabii"        to "Tabii",
+        "$mainUrl/platform/apple-tv"     to "Apple TV+",
+        "$mainUrl/platform/gain"         to "Gain",
+        "$mainUrl/platform/mubi"         to "Mubi",
+        "$mainUrl/platform/tod"          to "TOD",
+        "$mainUrl/platform/tv"           to "TV+",
+        "$mainUrl/platform/hulu"         to "Hulu",
+        "$mainUrl/platform/crunchyroll"  to "Crunchyroll"
     )
 
-    // Poster URL temizleme: data: placeholder, SVG ve boş değerleri filtrele
     private fun cleanPoster(vararg candidates: String?): String? {
         for (c in candidates) {
             if (c.isNullOrBlank()) continue
@@ -33,64 +42,65 @@ class DiziPal12 : MainAPI() {
         return null
     }
 
-    private fun Element.bestPoster(): String? {
-        val img = selectFirst("img") ?: return null
-        return cleanPoster(
-            img.attr("data-src"),
-            img.attr("data-srcset").substringBefore(" ").takeIf { it.isNotBlank() },
-            img.attr("src")
-        )
-    }
-
-    // ---------- ANASAYFA ----------
+    // ---------- ANASAYFA (Platform sayfaları) ----------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        Log.d("DiziPal12", "getMainPage: ${request.data}")
+        Log.d("DiziPal12", "getMainPage: ${request.data} page=$page")
         val document = app.get(request.data).document
         val items = mutableListOf<SearchResponse>()
 
-        if (request.data.contains("/bolumler")) {
-            document.select("a.episode-row-home").forEach { el ->
-                val title = el.selectFirst("span.episode-row-title")?.text()?.trim() ?: return@forEach
-                val href = fixUrlNull(el.attr("href")) ?: return@forEach
-                val poster = el.selectFirst("img")?.attr("src")
-                val seriesUrl = href.replace(Regex("/\\d+-sezon/\\d+-bolum.*$"), "")
-                items.add(newTvSeriesSearchResponse(title, seriesUrl, TvType.TvSeries) {
-                    this.posterUrl = cleanPoster(poster)
-                })
-            }
-            Log.d("DiziPal12", "bolumler items: ${items.size}")
-            return newHomePageResponse(request.name, items, hasNext = false)
-        }
+        // Platform sayfaları: article.grid-card > a.grid-card-link
+        document.select("article.grid-card").forEach { article ->
+            val anchor = article.selectFirst("a.grid-card-link") ?: return@forEach
+            val href = fixUrlNull(anchor.attr("href")) ?: return@forEach
 
-        if (request.data.contains("/trend")) {
-            document.select("a.trend-card").forEach { el ->
-                val title = el.selectFirst("h3.trend-card-title")?.text()?.trim() ?: return@forEach
-                val href = fixUrlNull(el.attr("href")) ?: return@forEach
-                val poster = el.bestPoster()
-                val type = if (href.contains("/anime/")) TvType.Anime
-                           else if (href.contains("/film/")) TvType.Movie
-                           else TvType.TvSeries
-                items.add(newTvSeriesSearchResponse(title, href, type) {
+            val title = article.selectFirst("h3.grid-card-title")?.text()?.trim()
+                ?: article.selectFirst("img")?.attr("alt")?.trim()
+                ?: return@forEach
+
+            // Poster: img[src] doğrudan (lazyload yok)
+            val img = article.selectFirst("img")
+            val poster = cleanPoster(
+                img?.attr("src"),
+                img?.attr("data-src")
+            )
+
+            // İçerik türü: badge class'ından
+            val badgeClass = article.selectFirst("span.grid-card-badge")?.className() ?: ""
+            val type = when {
+                badgeClass.contains("badge-anime") -> TvType.Anime
+                badgeClass.contains("badge-film")  -> TvType.Movie
+                badgeClass.contains("badge-dizi")  -> TvType.TvSeries
+                href.contains("/anime/")           -> TvType.Anime
+                href.contains("/film/")            -> TvType.Movie
+                else                               -> TvType.TvSeries
+            }
+
+            val year = article.selectFirst("span.grid-card-year")?.text()?.trim()?.toIntOrNull()
+            val rating = article.selectFirst("span.grid-card-rating")?.text()?.trim()
+                ?.replace("star", "")?.trim()?.toDoubleOrNull()
+
+            val resp = if (type == TvType.Movie) {
+                newMovieSearchResponse(title, href, TvType.Movie) {
                     this.posterUrl = poster
-                })
+                    this.year = year
+                }
+            } else {
+                newTvSeriesSearchResponse(title, href, type) {
+                    this.posterUrl = poster
+                    this.year = year
+                }
             }
-            Log.d("DiziPal12", "trend items: ${items.size}")
-            return newHomePageResponse(request.name, items, hasNext = false)
+            items.add(resp)
         }
 
-        document.select("a.homepage-card").forEach { el ->
-            val title = el.selectFirst("h3.homepage-card-title")?.text()?.trim() ?: return@forEach
-            val href = fixUrlNull(el.attr("href")) ?: return@forEach
-            val poster = el.bestPoster()
-            val type = if (href.contains("/anime/")) TvType.Anime
-                       else if (href.contains("/film/")) TvType.Movie
-                       else TvType.TvSeries
-            items.add(newTvSeriesSearchResponse(title, href, type) {
-                this.posterUrl = poster
-            })
-        }
-        Log.d("DiziPal12", "homepage items: ${items.size}")
-        return newHomePageResponse(request.name, items, hasNext = false)
+        Log.d("DiziPal12", "items: ${items.size} (page $page)")
+
+        // Pagination: sayfada pagination nav varsa hasNext=true
+        val hasNext = document.selectFirst("nav.pagination button.pag-next:not(.disabled)") != null
+            || document.selectFirst("nav.pagination a[rel=next]") != null
+            || page < 20
+
+        return newHomePageResponse(request.name, items, hasNext = hasNext)
     }
 
     // ---------- ARAMA ----------
@@ -100,17 +110,41 @@ class DiziPal12 : MainAPI() {
         val document = app.get(url).document
         val results = mutableListOf<SearchResponse>()
 
-        document.select("a.homepage-card").forEach { el ->
-            val title = el.selectFirst("h3.homepage-card-title")?.text()?.trim() ?: return@forEach
-            val href = fixUrlNull(el.attr("href")) ?: return@forEach
-            val poster = el.bestPoster()
-            val type = if (href.contains("/anime/")) TvType.Anime
-                       else if (href.contains("/film/")) TvType.Movie
-                       else TvType.TvSeries
-            results.add(newTvSeriesSearchResponse(title, href, type) {
-                this.posterUrl = poster
-            })
+        // Arama sonuçları hem homepage-card hem grid-card olabilir
+        document.select("article.grid-card").forEach { article ->
+            val anchor = article.selectFirst("a.grid-card-link") ?: return@forEach
+            val href = fixUrlNull(anchor.attr("href")) ?: return@forEach
+            val title = article.selectFirst("h3.grid-card-title")?.text()?.trim() ?: return@forEach
+            val img = article.selectFirst("img")
+            val poster = cleanPoster(img?.attr("src"), img?.attr("data-src"))
+            val badgeClass = article.selectFirst("span.grid-card-badge")?.className() ?: ""
+            val type = when {
+                badgeClass.contains("badge-anime") || href.contains("/anime/") -> TvType.Anime
+                badgeClass.contains("badge-film")  || href.contains("/film/")  -> TvType.Movie
+                else -> TvType.TvSeries
+            }
+            val resp = if (type == TvType.Movie) {
+                newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
+            } else {
+                newTvSeriesSearchResponse(title, href, type) { this.posterUrl = poster }
+            }
+            results.add(resp)
         }
+
+        // Fallback: ana sayfa kartları
+        if (results.isEmpty()) {
+            document.select("a.homepage-card").forEach { el ->
+                val title = el.selectFirst("h3.homepage-card-title")?.text()?.trim() ?: return@forEach
+                val href = fixUrlNull(el.attr("href")) ?: return@forEach
+                val img = el.selectFirst("img")
+                val poster = cleanPoster(img?.attr("data-src"), img?.attr("src"))
+                val type = if (href.contains("/anime/")) TvType.Anime
+                           else if (href.contains("/film/")) TvType.Movie
+                           else TvType.TvSeries
+                results.add(newTvSeriesSearchResponse(title, href, type) { this.posterUrl = poster })
+            }
+        }
+
         Log.d("DiziPal12", "search results: ${results.size}")
         return results
     }
@@ -132,7 +166,7 @@ class DiziPal12 : MainAPI() {
             ?.removeSuffix(" izle")
             ?: return null
 
-        // Poster: series-poster içindeki img (data-src öncelikli)
+        // Poster: series-poster img src, fallback og:image
         val posterImg = document.selectFirst("div.series-poster img")
         val poster = cleanPoster(
             posterImg?.attr("src"),
@@ -145,6 +179,8 @@ class DiziPal12 : MainAPI() {
             ?: document.selectFirst("time[datetime]")?.text()?.toIntOrNull()
 
         val tags = document.select("div.series-badges a.series-badge").map { it.text().trim() }
+
+        Log.d("DiziPal12", "load title=$title poster=$poster year=$year")
 
         if (url.contains("/film/")) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
@@ -170,7 +206,7 @@ class DiziPal12 : MainAPI() {
                 this.episode = epEpisode
             })
         }
-        Log.d("DiziPal12", "load episodes: ${episodes.size}, poster=$poster")
+        Log.d("DiziPal12", "episodes: ${episodes.size}")
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = poster
@@ -206,8 +242,8 @@ class DiziPal12 : MainAPI() {
 
             // 2) HTML içinde doğrudan m3u8
             val directM3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(html)?.value
-            Log.d("DiziPal12", "directM3u8=$directM3u8")
             if (directM3u8 != null) {
+                Log.d("DiziPal12", "directM3u8=$directM3u8")
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
@@ -222,7 +258,7 @@ class DiziPal12 : MainAPI() {
                 return true
             }
 
-            // 3) episodesData içindeki iframe_url_encrypted token
+            // 3) episodesData içindeki embed token
             val episodesDataMatch = Regex("""window\.episodesData\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
                 .find(html)?.groupValues?.getOrNull(1)
             if (episodesDataMatch != null) {
