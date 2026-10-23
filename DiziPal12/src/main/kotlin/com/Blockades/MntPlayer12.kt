@@ -53,7 +53,7 @@ class MntPlayer12 : ExtractorApi() {
             return
         }
 
-        // 2) Embed/oynatıcı sayfasını çek, m3u8'i çıkar
+        // 2) Oynatıcı/embed sayfasını çek
         val pageText = try {
             app.get(url, referer = safeReferer).text
         } catch (e: Exception) {
@@ -74,27 +74,43 @@ class MntPlayer12 : ExtractorApi() {
             }
         }
 
-        if (pageText.isNotEmpty()) {
-            // mntplayer m3u8 linkleri (master/video/audio)
-            val m3u8Regex = Regex("""(https?://vod\.mntplayer\.com:8443/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)""")
-            val matches = m3u8Regex.findAll(pageText).map { it.value }.toList()
-            Log.d("MntPlayer12", "m3u8 adet: ${matches.size}")
+        Log.d("MntPlayer12", "pageText length=${pageText.length}")
 
-            val best = matches.firstOrNull { it.contains("master.m3u8") }
-                ?: matches.firstOrNull { it.contains("video.m3u8") }
-                ?: matches.firstOrNull()
+        if (pageText.isNotEmpty()) {
+            // 2a) mntplayer m3u8 (master/video/audio)
+            val mntRegex = Regex("""(https?://vod\.mntplayer\.com:8443/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)""")
+            val mntMatches = mntRegex.findAll(pageText).map { it.value }.toList()
+            Log.d("MntPlayer12", "mntplayer m3u8 adet=${mntMatches.size}")
+
+            val best = mntMatches.firstOrNull { it.contains("master.m3u8") }
+                ?: mntMatches.firstOrNull { it.contains("video.m3u8") }
+                ?: mntMatches.firstOrNull()
 
             if (best != null) {
                 pushHls(best, safeReferer, callback)
                 return
             }
 
-            // Fallback: genel m3u8 regex (başka CDN)
+            // 2b) Genel m3u8 (başka CDN)
             val genericM3u8 = Regex("""(https?://[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*)""").find(pageText)?.value
             if (genericM3u8 != null) {
+                Log.d("MntPlayer12", "generic m3u8: $genericM3u8")
                 pushHls(genericM3u8, safeReferer, callback)
                 return
             }
+
+            // 2c) Bazı durumlarda player sayfası /p/... token'ı döner — onu tekrar çekmeyi dene
+            val innerToken = Regex("""(/p/[A-Za-z0-9_\.\-]+(?:/master\.m3u8)?)""").find(pageText)?.value
+            if (innerToken != null) {
+                val fullUrl = if (innerToken.startsWith("http")) innerToken
+                              else "https://vod.mntplayer.com:8443$innerToken"
+                Log.d("MntPlayer12", "innerToken m3u8: $fullUrl")
+                pushHls(if (fullUrl.endsWith(".m3u8")) fullUrl else "$fullUrl/master.m3u8", safeReferer, callback)
+                return
+            }
+
+            // Debug: sayfanın ilk 500 karakterini logla
+            Log.d("MntPlayer12", "pageHead=${pageText.take(500)}")
         }
 
         Log.e("MntPlayer12", "m3u8 bulunamadı » $url")
