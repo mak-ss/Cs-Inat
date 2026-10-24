@@ -132,6 +132,7 @@ class DiziPal2 : MainAPI() {
         val year = document.selectFirst("div.info-row:contains(Yıl) span.info-value")
             ?.text()?.trim()?.toIntOrNull()
         val description = document.selectFirst("p.series-description")?.text()?.trim()
+            ?: document.selectFirst("div.film-description p")?.text()?.trim()
         val tags = document.select("div.info-row:contains(Kategoriler) span.info-value.categories a")
             .map { it.text().trim() }
 
@@ -164,13 +165,14 @@ class DiziPal2 : MainAPI() {
                 this.tags      = tags
             }
         } else {
-            val title = document.selectFirst("h1.series-title, h1.movie-title")?.text()?.trim()
+            val title = document.selectFirst("h1.series-title, h1.movie-title, h1.film-title")?.text()?.trim()
                 ?: document.selectFirst("meta[property=og:title]")?.attr("content")
                     ?.substringBefore(" izle")?.trim()
                 ?: ""
 
             if (title.isEmpty()) return null
 
+            // data = film sayfası URL'si. loadLinks() bunu çekip embed/m3u8 bulacak.
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.year      = year
@@ -186,46 +188,96 @@ class DiziPal2 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        return try {
-            // 1) Doğrudan m3u8
-            if (data.contains(".m3u8", ignoreCase = true)) {
-                val origin = try {
-                    val u = java.net.URI(data)
-                    val p = if (u.port != -1) ":${u.port}" else ""
-                    "${u.scheme}://${u.host}$p"
-                } catch (_: Exception) { mainUrl }
+        val found = mutableListOf<String>()
 
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = this.name,
-                        url = data,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.quality = Qualities.Unknown.value
-                        this.headers = mapOf(
-                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
-                            "Origin" to origin,
-                            "Referer" to "$mainUrl/"
+        // 1) data doğrudan m3u8 mi?
+        if (data.contains(".m3u8", ignoreCase = true)) {
+            found += data
+        } else {
+            // 2) Film/bölüm sayfasını çek
+            val pageHtml = try {
+                app.get(
+                    data,
+                    referer = "$mainUrl/",
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                    )
+                ).text
+            } catch (e: Exception) {
+                Log.e("DiziPal2", "Sayfa çekilemedi » ${e.message}")
+                ""
+            }
+
+            if (pageHtml.isNotBlank()) {
+                val norm = pageHtml.replace("\\/", "/").replace("&amp;", "&")
+
+                // 2a) Sayfadaki doğrudan m3u8 linkleri
+                Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
+                    .findAll(norm)
+                    .forEach { found += it.groupValues[1] }
+
+                // 2b) data-preroll / data-cfg / player_init içinde embed URL'leri
+                Regex("""https?://[^\s"'\\<>]+\.(?:xyz|top|to|me|la|com|net)/[^\s"'\\<>]*""")
+                    .findAll(norm)
+                    .map { it.value }
+                    .filter { it.contains("superadjacentsoddenly") || it.contains("formationfeed") || it.contains("/embed") || it.contains("/hls2/") }
+                    .forEach { found += it }
+
+                // 2c) iframe src
+                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(norm)
+                    .forEach { found += it.groupValues[1] }
+            }
+        }
+
+        // 3) Tekilleştir
+        val unique = found.distinct().filter { it.isNotBlank() }
+
+        if (unique.isEmpty()) {
+            Log.w("DiziPal2", "Hiçbir kaynak bulunamadı: $data")
+            return false
+        }
+
+        // 4) Her kaynağı uygun extractor'a gönder
+        for (src in unique) {
+            try {
+                when {
+                    src.contains("superadjacentsoddenly", true) ->
+                        SuperAdjacentExtractor().getUrl(src, "$mainUrl/", subtitleCallback, callback)
+                    src.contains("formationfeed", true) ->
+                        FormationFeedExtractor().getUrl(src, "$mainUrl/", subtitleCallback, callback)
+                    src.contains(".m3u8", true) -> {
+                        val origin = try {
+                            val u = java.net.URI(src)
+                            val p = if (u.port != -1) ":${u.port}" else ""
+                            "${u.scheme}://${u.host}$p"
+                        } catch (_: Exception) { mainUrl }
+
+                        callback.invoke(
+                            newExtractorLink(
+                                source = this.name,
+                                name = this.name,
+                                url = src,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = "$mainUrl/"
+                                this.quality = Qualities.Unknown.value
+                                this.headers = mapOf(
+                                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
+                                    "Origin" to origin,
+                                    "Referer" to "$mainUrl/"
+                                )
+                            }
                         )
                     }
-                )
-                return true
+                    else -> DizipalPlayer2().getUrl(src, "$mainUrl/", subtitleCallback, callback)
+                }
+            } catch (e: Exception) {
+                Log.e("DiziPal2", "loadLinks alt hata ($src) » ${e.message}")
             }
-
-            // 2) superadjacentsoddenly → özel extractor
-            if (data.contains("superadjacentsoddenly", ignoreCase = true)) {
-                SuperAdjacentExtractor().getUrl(data, "$mainUrl/", subtitleCallback, callback)
-                return true
-            }
-
-            // 3) Genel embed → DizipalPlayer2
-            DizipalPlayer2().getUrl(data, "$mainUrl/", subtitleCallback, callback)
-            true
-        } catch (e: Exception) {
-            Log.e("DiziPal2", "loadLinks HATA » ${e.message}", e)
-            false
         }
+
+        return true
     }
 }
