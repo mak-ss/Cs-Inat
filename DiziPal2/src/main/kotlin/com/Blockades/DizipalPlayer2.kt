@@ -44,8 +44,11 @@ class DizipalPlayer2 : ExtractorApi() {
 
     private fun originOf(url: String): String = try {
         val u = java.net.URI(url)
-        "${u.scheme}://${u.host}" + if (u.port != -1) ":${u.port}" else ""
-    } catch (_: Exception) { mainUrl }
+        val portPart = if (u.port != -1) ":${u.port}" else ""
+        "${u.scheme}://${u.host}$portPart"
+    } catch (_: Exception) {
+        mainUrl
+    }
 
     private fun normalize(text: String): String =
         text.replace("\\/", "/").replace("&amp;", "&")
@@ -58,13 +61,13 @@ class DizipalPlayer2 : ExtractorApi() {
     ) {
         val pageReferer = referer ?: "$mainUrl/"
         try {
-            // 1) Doğrudan m3u8 ise direkt gönder (yalnızca gerçek m3u8)
+            // 1) Doğrudan m3u8 ise direkt gönder
             if (url.contains(".m3u8", ignoreCase = true)) {
                 emit(callback, url, pageReferer, originOf(url))
                 return
             }
 
-            // 2) Sayfayı çek, m3u8 regex ile çıkar
+            // 2) Sayfayı çek
             val request = okhttp3.Request.Builder()
                 .url(url)
                 .addHeader("Referer", pageReferer)
@@ -83,11 +86,11 @@ class DizipalPlayer2 : ExtractorApi() {
 
             val normalized = normalize(pageText)
 
-            // 3) Önce doğrudan m3u8 regex
+            // 3) Doğrudan m3u8 regex
             val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
             var m3u8 = m3u8Regex.find(normalized)?.groupValues?.getOrNull(1)
 
-            // 4) Bulunamazsa iframe/source/data-url/file: kalıpları
+            // 4) Bulunamazsa iframe/source/data-url/file:
             if (m3u8.isNullOrBlank()) {
                 val patterns = listOf(
                     Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
@@ -116,27 +119,27 @@ class DizipalPlayer2 : ExtractorApi() {
         }
     }
 
-    private fun emit(
+    /** suspend: newExtractorLink suspend olduğu için */
+    private suspend fun emit(
         callback: (ExtractorLink) -> Unit,
         m3u8: String,
         refererUrl: String,
         origin: String
     ) {
-        callback.invoke(
-            newExtractorLink(
-                source = this.name,
-                name = this.name,
-                url = m3u8,
-                type = ExtractorLinkType.M3U8
-            ) {
-                this.referer = refererUrl
-                this.quality = Qualities.Unknown.value
-                this.headers = mapOf(
-                    "User-Agent" to UA,
-                    "Origin" to origin,
-                    "Referer" to refererUrl
-                )
-            }
-        )
+        val link = newExtractorLink(
+            source = this.name,
+            name = this.name,
+            url = m3u8,
+            type = ExtractorLinkType.M3U8
+        ) {
+            this.referer = refererUrl
+            this.quality = Qualities.Unknown.value
+            this.headers = mapOf(
+                "User-Agent" to UA,
+                "Origin" to origin,
+                "Referer" to refererUrl
+            )
+        }
+        callback.invoke(link)
     }
 }
