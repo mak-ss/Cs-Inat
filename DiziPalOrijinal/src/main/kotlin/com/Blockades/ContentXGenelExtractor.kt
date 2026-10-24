@@ -48,8 +48,7 @@ open class ContentXGenel : ExtractorApi() {
                     this.quality = Qualities.Unknown.value
                 }
             )
-            return
-        }
+            return        }
 
         kaynakEkle(base, iExtract, extRef, tamUrl, host, callback)
 
