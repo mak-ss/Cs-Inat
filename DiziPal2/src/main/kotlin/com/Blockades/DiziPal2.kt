@@ -187,8 +187,14 @@ class DiziPal2 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         return try {
-            // Doğrudan m3u8
+            // 1) Doğrudan m3u8
             if (data.contains(".m3u8", ignoreCase = true)) {
+                val origin = try {
+                    val u = java.net.URI(data)
+                    val p = if (u.port != -1) ":${u.port}" else ""
+                    "${u.scheme}://${u.host}$p"
+                } catch (_: Exception) { mainUrl }
+
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
@@ -200,7 +206,7 @@ class DiziPal2 : MainAPI() {
                         this.quality = Qualities.Unknown.value
                         this.headers = mapOf(
                             "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
-                            "Origin" to mainUrl,
+                            "Origin" to origin,
                             "Referer" to "$mainUrl/"
                         )
                     }
@@ -208,7 +214,13 @@ class DiziPal2 : MainAPI() {
                 return true
             }
 
-            // Embed sayfası ise DizipalPlayer2'ye devret (tek yerde mantık)
+            // 2) superadjacentsoddenly → özel extractor
+            if (data.contains("superadjacentsoddenly", ignoreCase = true)) {
+                SuperAdjacentExtractor().getUrl(data, "$mainUrl/", subtitleCallback, callback)
+                return true
+            }
+
+            // 3) Genel embed → DizipalPlayer2
             DizipalPlayer2().getUrl(data, "$mainUrl/", subtitleCallback, callback)
             true
         } catch (e: Exception) {
