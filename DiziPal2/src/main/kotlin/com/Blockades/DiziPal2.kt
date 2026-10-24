@@ -47,18 +47,18 @@ class DiziPal2 : MainAPI() {
             // Ana sayfa (trend + son eklenenler)
             request.data == mainUrl || request.data == "$mainUrl/" -> {
                 val items = mutableListOf<SearchResponse>()
+
                 // Trend diziler
                 document.select("a.trending-item").forEach { item ->
-                    val href = item.attr("href")
-                    if (href.contains("/dizi/")) {
-                        items.add(dizilerFromTrend(item))
+                    if (item.attr("href").contains("/dizi/")) {
+                        dizilerFromTrend(item)?.let { items.add(it) }
                     }
                 }
                 // Son eklenen diziler
                 document.select("ul.content-grid.large > li").forEach { li ->
                     li.selectFirst("a")?.let { a ->
                         if (a.attr("href").contains("/dizi/")) {
-                            items.add(dizilerFromCard(li))
+                            dizilerFromCard(li)?.let { items.add(it) }
                         }
                     }
                 }
@@ -66,7 +66,7 @@ class DiziPal2 : MainAPI() {
                 document.select("ul.content-grid:not(.large) > li").forEach { li ->
                     li.selectFirst("a")?.let { a ->
                         if (a.attr("href").contains("/film/")) {
-                            items.add(dizilerFromCard(li))
+                            dizilerFromCard(li)?.let { items.add(it) }
                         }
                     }
                 }
