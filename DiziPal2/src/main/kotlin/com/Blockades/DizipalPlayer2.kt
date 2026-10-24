@@ -66,13 +66,19 @@ class DizipalPlayer2 : ExtractorApi() {
                 return
             }
 
-            // 2) superadjacentsoddenly domain'i ise özel extractor'a devret
+            // 2) superadjacentsoddenly domain → özel extractor
             if (url.contains("superadjacentsoddenly", ignoreCase = true)) {
                 SuperAdjacentExtractor().getUrl(url, pageReferer, subtitleCallback, callback)
                 return
             }
 
-            // 3) Sayfayı çek
+            // 3) formationfeed domain → özel extractor
+            if (url.contains("formationfeed", ignoreCase = true)) {
+                FormationFeedExtractor().getUrl(url, pageReferer, subtitleCallback, callback)
+                return
+            }
+
+            // 4) Sayfayı çek
             val request = okhttp3.Request.Builder()
                 .url(url)
                 .addHeader("Referer", pageReferer)
@@ -89,11 +95,11 @@ class DizipalPlayer2 : ExtractorApi() {
 
             val normalized = normalize(pageText)
 
-            // 4) m3u8 regex
+            // 5) m3u8 regex
             val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
             var m3u8 = m3u8Regex.find(normalized)?.groupValues?.getOrNull(1)
 
-            // 5) Alternatif kalıplar
+            // 6) Alternatif kalıplar
             if (m3u8.isNullOrBlank()) {
                 val patterns = listOf(
                     Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
