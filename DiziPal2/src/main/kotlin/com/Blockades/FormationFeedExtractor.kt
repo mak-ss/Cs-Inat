@@ -33,8 +33,9 @@ class FormationFeedExtractor : ExtractorApi() {
             return
         }
 
+        val normalized = response.replace("\\/", "/").replace("&amp;", "&")
         val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
-        val match = m3u8Regex.find(response)?.groupValues?.get(1)
+        val match = m3u8Regex.find(normalized)?.groupValues?.get(1)
 
         if (!match.isNullOrBlank()) {
             callback.invoke(
