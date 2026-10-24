@@ -172,7 +172,6 @@ class DiziPal2 : MainAPI() {
 
             if (title.isEmpty()) return null
 
-            // data = film sayfası URL'si. loadLinks() bunu çekip embed/m3u8 bulacak.
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.year      = year
@@ -182,6 +181,13 @@ class DiziPal2 : MainAPI() {
         }
     }
 
+    // ============================================================================================
+    // loadLinks — Dizipal'in gerçek akış mantığı:
+    //   1) /bolum/... veya /film/... sayfasını çek
+    //   2) data-cfg değerini bul
+    //   3) Dizipal'in player API'sine POST at → embed URL'si döner
+    //   4) Embed URL'sini SuperAdjacentExtractor'a ver → m3u8 çıkar
+    // ============================================================================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -189,13 +195,14 @@ class DiziPal2 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val found = mutableListOf<String>()
+        var pageHtml = ""
 
-        // 1) data doğrudan m3u8 mi?
+        // 1) data zaten m3u8 mi?
         if (data.contains(".m3u8", ignoreCase = true)) {
             found += data
         } else {
-            // 2) Film/bölüm sayfasını çek
-            val pageHtml = try {
+            // 2) Sayfayı çek
+            pageHtml = try {
                 app.get(
                     data,
                     referer = "$mainUrl/",
@@ -212,34 +219,83 @@ class DiziPal2 : MainAPI() {
             if (pageHtml.isNotBlank()) {
                 val norm = pageHtml.replace("\\/", "/").replace("&amp;", "&")
 
-                // 2a) Sayfadaki doğrudan m3u8 linkleri
-                Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
-                    .findAll(norm)
-                    .forEach { found += it.groupValues[1] }
+                // 2a) data-cfg değerini bul
+                val cfgRegex = Regex("""data-cfg=["']([^"']+)["']""")
+                val cfgMatch = cfgRegex.find(norm)?.groupValues?.getOrNull(1)
 
-                // 2b) data-preroll / data-cfg / player_init içinde embed URL'leri
-                Regex("""https?://[^\s"'\\<>]+\.(?:xyz|top|to|me|la|com|net)/[^\s"'\\<>]*""")
-                    .findAll(norm)
-                    .map { it.value }
-                    .filter { it.contains("superadjacentsoddenly") || it.contains("formationfeed") || it.contains("/embed") || it.contains("/hls2/") }
-                    .forEach { found += it }
+                // 2b) content-id
+                val contentIdRegex = Regex("""data-content-id=["']([^"']+)["']""")
+                val contentIdMatch = contentIdRegex.find(norm)?.groupValues?.getOrNull(1)
 
-                // 2c) iframe src
-                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .findAll(norm)
-                    .forEach { found += it.groupValues[1] }
+                Log.d("DiziPal2", "cfg=$cfgMatch, contentId=$contentIdMatch, url=$data")
+
+                // 2c) Dizipal'in player API'sine POST at
+                if (!cfgMatch.isNullOrBlank()) {
+                    try {
+                        val apiResponse = app.post(
+                            "$mainUrl/player/api",
+                            data = mapOf(
+                                "cfg"        to cfgMatch,
+                                "content_id" to (contentIdMatch ?: ""),
+                                "type"       to if (data.contains("/bolum/")) "episode" else "movie"
+                            ),
+                            referer = data,
+                            headers = mapOf(
+                                "User-Agent"     to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
+                                "Accept"         to "application/json, text/plain, */*",
+                                "X-Requested-With" to "XMLHttpRequest",
+                                "Origin"         to mainUrl
+                            )
+                        ).text
+
+                        Log.d("DiziPal2", "player/api yanıtı = $apiResponse")
+                        val apiNorm = apiResponse.replace("\\/", "/").replace("&amp;", "&")
+
+                        // Dönen yanıtta embed URL'si veya m3u8 var mı?
+                        Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
+                            .findAll(apiNorm).forEach { found += it.value }
+
+                        Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
+                            .findAll(apiNorm).forEach { found += it.value }
+
+                        // JSON içinde "url" alanı
+                        try {
+                            val json = org.json.JSONObject(apiNorm)
+                            json.optString("url").takeIf { it.isNotBlank() }?.let { found += it }
+                            json.optString("embed").takeIf { it.isNotBlank() }?.let { found += it }
+                            json.optString("source").takeIf { it.isNotBlank() }?.let { found += it }
+                            val sources = json.optJSONArray("sources")
+                            if (sources != null) {
+                                for (i in 0 until sources.length()) {
+                                    val s = sources.getJSONObject(i)
+                                    s.optString("file").takeIf { it.isNotBlank() }?.let { found += it }
+                                    s.optString("url").takeIf { it.isNotBlank() }?.let { found += it }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        Log.e("DiziPal2", "player/api POST HATA » ${e.message}")
+                    }
+                }
+
+                // 2d) Sayfadaki doğrudan m3u8 (yedek)
+                Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
+                    .findAll(norm).forEach { found += it.value }
+
+                // 2e) Sayfadaki superadjacentsoddenly / formationfeed URL'leri (yedek)
+                Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
+                    .findAll(norm).forEach { found += it.value }
             }
         }
 
-        // 3) Tekilleştir
         val unique = found.distinct().filter { it.isNotBlank() }
-
         if (unique.isEmpty()) {
             Log.w("DiziPal2", "Hiçbir kaynak bulunamadı: $data")
             return false
         }
 
-        // 4) Her kaynağı uygun extractor'a gönder
+        Log.d("DiziPal2", "Bulunan kaynaklar: $unique")
+
         for (src in unique) {
             try {
                 when {
@@ -271,13 +327,11 @@ class DiziPal2 : MainAPI() {
                             }
                         )
                     }
-                    else -> DizipalPlayer2().getUrl(src, "$mainUrl/", subtitleCallback, callback)
                 }
             } catch (e: Exception) {
                 Log.e("DiziPal2", "loadLinks alt hata ($src) » ${e.message}")
             }
         }
-
         return true
     }
 }
