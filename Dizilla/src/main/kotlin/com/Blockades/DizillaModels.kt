@@ -2,27 +2,29 @@
 
 package com.Blockades
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SearchResult(
-    @JsonProperty("response") val response: String?
+    @JsonProperty("response") val response: String? = null,
+    @JsonProperty("state")    val state:    Boolean? = null,
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SearchData(
-    @JsonProperty("state")   val state: Boolean?           = null,
-    @JsonProperty("result")  val result: List<SearchItem>? = arrayListOf(),
-    @JsonProperty("message") val message: String?          = null,
-    @JsonProperty("html")    val html: String?             = null
+    @JsonProperty("state")  val state:  Boolean?         = null,
+    @JsonProperty("result") val result: List<SearchItem>? = null,
 )
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SearchItem(
-    @JsonProperty("used_slug")         val slug: String?   = null,
-    @JsonProperty("object_name")       val title: String?  = null,
-    @JsonProperty("title")             val backupTitle: String? = null,
-    @JsonProperty("original_title")    val originalTitle: String? = null,
-    @JsonProperty("object_poster_url") val poster: String? = null,
-    @JsonProperty("poster_url")        val posterUrl: String? = null,
-    @JsonProperty("square_url")        val squareUrl: String? = null,
-    @JsonProperty("face_url")          val faceUrl: String? = null,
-    @JsonProperty("back_url")          val backUrl: String? = null,
+    @JsonProperty("title")          val title:         String? = null,
+    @JsonProperty("original_title") val originalTitle: String? = null,
+    @JsonProperty("used_title")     val usedTitle:     String? = null,
+    @JsonProperty("slug")           val slug:          String? = null,
+    @JsonProperty("used_slug")      val usedSlug:      String? = null,
+    @JsonProperty("poster")         val poster:        String? = null,
+    @JsonProperty("poster_url")     val posterUrl:     String? = null,
+    @JsonProperty("face_url")       val faceUrl:       String? = null,
 )
