@@ -39,12 +39,10 @@ class DiziPal2 : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
         val home = when {
-            // Son Bölümler sayfası
             request.data.contains("/bolumler") -> {
                 document.select("div.episodes-list-grid > a.episode-list-item")
                     .mapNotNull { it.sonBolumler() }
             }
-            // Ana sayfa (trend + son eklenenler)
             request.data == mainUrl || request.data == "$mainUrl/" -> {
                 val items = mutableListOf<SearchResponse>()
 
@@ -72,7 +70,6 @@ class DiziPal2 : MainAPI() {
                 }
                 items
             }
-            // Diğer sayfalar (diziler, filmler, platform, kategori)
             else -> {
                 document.select("ul.content-grid > li").mapNotNull { it.diziler() }
             }
@@ -118,7 +115,6 @@ class DiziPal2 : MainAPI() {
         val imgEl     = this.selectFirst("img")
         val posterUrl = fixUrlNull(imgEl?.attr("data-src")?.ifEmpty { imgEl.attr("src") })
 
-        // URL'ye göre tür belirleme
         val type = if (href.contains("/film/")) TvType.Movie else TvType.TvSeries
 
         return if (type == TvType.Movie) {
@@ -247,7 +243,7 @@ class DiziPal2 : MainAPI() {
     }
 
     // ============================================================================================
-    // VİDEO LİNKLERİ — data-cfg çözümü + tüm extractor'lara yönlendirme
+    // VİDEO LİNKLERİ — iframe / m3u8 / superadjacentsoddenly / formationfeed tarama
     // ============================================================================================
     override suspend fun loadLinks(
         data: String,
@@ -277,20 +273,31 @@ class DiziPal2 : MainAPI() {
             }
 
             if (pageHtml.isNotBlank()) {
+                Log.d("DiziPal2", "Sayfa HTML (ilk 500): ${pageHtml.take(500)}")
+
                 val norm = pageHtml.replace("\\/", "/").replace("&amp;", "&")
 
-                // 2a) data-cfg değerini bul
-                val cfgRegex = Regex("""data-cfg=["']([^"']+)["']""")
-                val cfgMatch = cfgRegex.find(norm)?.groupValues?.getOrNull(1)
+                // 2a) Tüm iframe src'leri
+                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                    .findAll(norm)
+                    .forEach { found += it.groupValues[1] }
 
-                // 2b) content-id
-                val contentIdRegex = Regex("""data-content-id=["']([^"']+)["']""")
-                val contentIdMatch = contentIdRegex.find(norm)?.groupValues?.getOrNull(1)
+                // 2b) Doğrudan m3u8 linkleri
+                Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
+                    .findAll(norm).forEach { found += it.value }
 
-                Log.d("DiziPal2", "cfg=$cfgMatch, contentId=$contentIdMatch, url=$data")
+                // 2c) superadjacentsoddenly / formationfeed URL'leri
+                Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
+                    .findAll(norm).forEach { found += it.value }
 
-                // 2c) Dizipal'in player API'sine POST at
+                // 2d) data-cfg varsa player/api dene (yedek yöntem)
+                val cfgMatch = Regex("""data-cfg=["']([^"']+)["']""")
+                    .find(norm)?.groupValues?.getOrNull(1)
+                val contentIdMatch = Regex("""data-content-id=["']([^"']+)["']""")
+                    .find(norm)?.groupValues?.getOrNull(1)
+
                 if (!cfgMatch.isNullOrBlank()) {
+                    Log.d("DiziPal2", "cfg=$cfgMatch, contentId=$contentIdMatch")
                     try {
                         val apiResponse = app.post(
                             "$mainUrl/player/api",
@@ -311,15 +318,11 @@ class DiziPal2 : MainAPI() {
                         Log.d("DiziPal2", "player/api yanıtı = $apiResponse")
                         val apiNorm = apiResponse.replace("\\/", "/").replace("&amp;", "&")
 
-                        // Dönen yanıtta m3u8 var mı?
                         Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
                             .findAll(apiNorm).forEach { found += it.value }
-
-                        // superadjacentsoddenly / formationfeed URL'leri
                         Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                             .findAll(apiNorm).forEach { found += it.value }
 
-                        // JSON içinde "url", "embed", "source", "sources" alanları
                         try {
                             val json = org.json.JSONObject(apiNorm)
                             json.optString("url").takeIf { it.isNotBlank() }?.let { found += it }
@@ -337,19 +340,9 @@ class DiziPal2 : MainAPI() {
                     } catch (e: Exception) {
                         Log.e("DiziPal2", "player/api POST HATA » ${e.message}")
                     }
+                } else {
+                    Log.d("DiziPal2", "cfg yok, sadece iframe/m3u8 taraması yapılıyor")
                 }
-
-                // 2d) Sayfadaki doğrudan m3u8 (yedek)
-                Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
-                    .findAll(norm).forEach { found += it.value }
-
-                // 2e) Sayfadaki superadjacentsoddenly / formationfeed URL'leri (yedek)
-                Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
-                    .findAll(norm).forEach { found += it.value }
-
-                // 2f) iframe src
-                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                    .findAll(norm).forEach { found += it.groupValues[1] }
             }
         }
 
