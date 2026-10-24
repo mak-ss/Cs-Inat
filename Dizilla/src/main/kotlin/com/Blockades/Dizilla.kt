@@ -295,7 +295,7 @@ class Dizilla : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     // =====================================================================
-    // LOAD (detay sayfası) — YENİLENDİ: Next.js + secureData + JSON
+    // LOAD (detay sayfası) — Next.js + secureData + JSON
     // =====================================================================
     override suspend fun load(url: String): LoadResponse? {
         return try {
@@ -433,7 +433,7 @@ class Dizilla : MainAPI() {
         val seasonsArray = s.path("seasons")
         if (seasonsArray.isArray && seasonsArray.size() > 0) {
             seasonsArray.forEach { season ->
-                val seasonNum = season.path("season_number").asIntOrNull()
+                val seasonNum: Int? = season.path("season_number").asIntOrNull()
                     ?: season.path("season").asIntOrNull()
                     ?: season.path("number").asIntOrNull()
 
@@ -444,7 +444,7 @@ class Dizilla : MainAPI() {
                 } ?: return@forEach
 
                 epsNode.forEach { ep ->
-                    val epNum = ep.path("episode_number").asIntOrNull()
+                    val epNum: Int? = ep.path("episode_number").asIntOrNull()
                         ?: ep.path("episode").asIntOrNull()
                         ?: ep.path("number").asIntOrNull()
                     val epTitle = ep.path("title").asText()
@@ -470,9 +470,9 @@ class Dizilla : MainAPI() {
             val epsArray = s.path("episodes")
             if (epsArray.isArray) {
                 epsArray.forEach { ep ->
-                    val seasonNum = ep.path("season_number").asIntOrNull()
+                    val seasonNum: Int? = ep.path("season_number").asIntOrNull()
                         ?: ep.path("season").asIntOrNull()
-                    val epNum = ep.path("episode_number").asIntOrNull()
+                    val epNum: Int? = ep.path("episode_number").asIntOrNull()
                         ?: ep.path("episode").asIntOrNull()
                         ?: ep.path("number").asIntOrNull()
                     val epTitle = ep.path("title").asText()
@@ -611,5 +611,23 @@ class Dizilla : MainAPI() {
             e.printStackTrace()
             return null
         }
+    }
+}
+
+// =====================================================================
+// JsonNode yardımcıları
+// =====================================================================
+
+/**
+ * JsonNode değerini güvenli şekilde Int?'ye çevirir.
+ * Sayısal değilse veya null ise null döner.
+ */
+private fun JsonNode.asIntOrNull(): Int? {
+    return when {
+        this.isMissingNode || this.isNull -> null
+        this.isIntegralNumber -> this.intValue()
+        this.isFloatingPointNumber -> this.doubleValue().toInt()
+        this.isTextual -> this.asText().toIntOrNull()
+        else -> null
     }
 }
