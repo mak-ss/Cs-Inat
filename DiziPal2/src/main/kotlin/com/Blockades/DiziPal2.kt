@@ -3,14 +3,7 @@ package com.Blockades
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import okhttp3.OkHttpClient
 import org.jsoup.nodes.Element
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
-import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 class DiziPal2 : MainAPI() {
     override var mainUrl              = "https://dizipal2143.com"
@@ -38,24 +31,6 @@ class DiziPal2 : MainAPI() {
         "${mainUrl}/kategori/komedi"      to "Komedi Filmleri",
         "${mainUrl}/kategori/belgesel"    to "Belgesel Filmleri",
     )
-
-    /** SSL sertifika doğrulamasını gevşeten OkHttpClient (sadece CDN istekleri için) */
-    private val relaxedClient: OkHttpClient by lazy {
-        val trustAll = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-        }
-        val sslContext = SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
-        }
-        OkHttpClient.Builder()
-            .sslSocketFactory(sslContext.socketFactory, trustAll)
-            .hostnameVerifier { _, _ -> true }
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .build()
-    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
@@ -212,59 +187,32 @@ class DiziPal2 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         return try {
-            // 1) Doğrudan m3u8 linki ise direkt callback'e gönder
-            if (data.contains(".m3u8") || data.contains("superadjacentsoddenly")) {
+            // Doğrudan m3u8
+            if (data.contains(".m3u8", ignoreCase = true)) {
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
-                        name = "DiziPal2 HLS",
+                        name = this.name,
                         url = data,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = "$mainUrl/"
                         this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
+                            "Origin" to mainUrl,
+                            "Referer" to "$mainUrl/"
+                        )
                     }
                 )
                 return true
             }
 
-            // 2) Sayfa üzerinden m3u8 çıkarmayı dene (SSL gevşetilmiş client ile)
-            try {
-                val request = okhttp3.Request.Builder()
-                    .url(data)
-                    .addHeader("Referer", "$mainUrl/")
-                    .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
-                    .build()
-
-                val response = relaxedClient.newCall(request).execute()
-                val pageText = response.body?.string() ?: ""
-                response.close()
-
-                val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
-                if (m3u8 != null) {
-                    callback.invoke(
-                        newExtractorLink(
-                            source = this.name,
-                            name = "DiziPal2 HLS",
-                            url = m3u8,
-                            type = ExtractorLinkType.M3U8
-                        ) {
-                            this.referer = "$mainUrl/"
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    return true
-                }
-            } catch (e: Exception) {
-                Log.e("DiziPal2", "m3u8 regex HATA » ${e.message}")
-            }
-
-            // 3) Özel player (DizipalPlayer2) üzerinden dene
-            val player = DizipalPlayer2()
-            player.getUrl(data, "$mainUrl/", subtitleCallback, callback)
+            // Embed sayfası ise DizipalPlayer2'ye devret (tek yerde mantık)
+            DizipalPlayer2().getUrl(data, "$mainUrl/", subtitleCallback, callback)
             true
         } catch (e: Exception) {
-            Log.e("DiziPal2", "DizipalPlayer2 HATA » ${e.message}", e)
+            Log.e("DiziPal2", "loadLinks HATA » ${e.message}", e)
             false
         }
     }
