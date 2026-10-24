@@ -9,5 +9,7 @@ class DiziPalPlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(DiziPal2())
         registerExtractorAPI(DizipalPlayer2())
+        registerExtractorAPI(SuperAdjacentExtractor())
+        registerExtractorAPI(FormationFeedExtractor())
     }
 }
