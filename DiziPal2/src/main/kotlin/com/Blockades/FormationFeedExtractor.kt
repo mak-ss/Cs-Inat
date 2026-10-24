@@ -38,22 +38,21 @@ class FormationFeedExtractor : ExtractorApi() {
         val match = m3u8Regex.find(normalized)?.groupValues?.get(1)
 
         if (!match.isNullOrBlank()) {
-            callback.invoke(
-                newExtractorLink(
-                    source = this.name,
-                    name = this.name,
-                    url = match,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = url
-                    this.quality = Qualities.Unknown.value
-                    this.headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Origin" to mainUrl,
-                        "Referer" to url
-                    )
-                }
-            )
+            val link = newExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = match,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.referer = url
+                this.quality = Qualities.Unknown.value
+                this.headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Origin" to mainUrl,
+                    "Referer" to url
+                )
+            }
+            callback.invoke(link)
         }
     }
 }
