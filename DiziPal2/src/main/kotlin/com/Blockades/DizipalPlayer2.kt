@@ -16,7 +16,8 @@ class DizipalPlayer2 : ExtractorApi() {
     override val mainUrl = "https://dizipal2143.com"
     override val requiresReferer = true
 
-    private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    private val UA = "Mozilla/5.0 (Linux; Android 10; AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
     private val relaxedClient: OkHttpClient by lazy {
         val trustAll = object : X509TrustManager {
@@ -44,11 +45,9 @@ class DizipalPlayer2 : ExtractorApi() {
 
     private fun originOf(url: String): String = try {
         val u = java.net.URI(url)
-        val portPart = if (u.port != -1) ":${u.port}" else ""
-        "${u.scheme}://${u.host}$portPart"
-    } catch (_: Exception) {
-        mainUrl
-    }
+        val port = if (u.port != -1) ":${u.port}" else ""
+        "${u.scheme}://${u.host}$port"
+    } catch (_: Exception) { mainUrl }
 
     private fun normalize(text: String): String =
         text.replace("\\/", "/").replace("&amp;", "&")
@@ -61,13 +60,19 @@ class DizipalPlayer2 : ExtractorApi() {
     ) {
         val pageReferer = referer ?: "$mainUrl/"
         try {
-            // 1) Doğrudan m3u8 ise direkt gönder
+            // 1) Doğrudan m3u8
             if (url.contains(".m3u8", ignoreCase = true)) {
                 emit(callback, url, pageReferer, originOf(url))
                 return
             }
 
-            // 2) Sayfayı çek
+            // 2) superadjacentsoddenly domain'i ise özel extractor'a devret
+            if (url.contains("superadjacentsoddenly", ignoreCase = true)) {
+                SuperAdjacentExtractor().getUrl(url, pageReferer, subtitleCallback, callback)
+                return
+            }
+
+            // 3) Sayfayı çek
             val request = okhttp3.Request.Builder()
                 .url(url)
                 .addHeader("Referer", pageReferer)
@@ -76,9 +81,7 @@ class DizipalPlayer2 : ExtractorApi() {
                 .build()
 
             val pageText = try {
-                relaxedClient.newCall(request).execute().use { resp ->
-                    resp.body?.string().orEmpty()
-                }
+                relaxedClient.newCall(request).execute().use { it.body?.string().orEmpty() }
             } catch (e: Exception) {
                 Log.e("DizipalPlayer2", "Fetch HATA » ${e.message}")
                 ""
@@ -86,11 +89,11 @@ class DizipalPlayer2 : ExtractorApi() {
 
             val normalized = normalize(pageText)
 
-            // 3) Doğrudan m3u8 regex
+            // 4) m3u8 regex
             val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
             var m3u8 = m3u8Regex.find(normalized)?.groupValues?.getOrNull(1)
 
-            // 4) Bulunamazsa iframe/source/data-url/file:
+            // 5) Alternatif kalıplar
             if (m3u8.isNullOrBlank()) {
                 val patterns = listOf(
                     Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
@@ -119,7 +122,6 @@ class DizipalPlayer2 : ExtractorApi() {
         }
     }
 
-    /** suspend: newExtractorLink suspend olduğu için */
     private suspend fun emit(
         callback: (ExtractorLink) -> Unit,
         m3u8: String,
