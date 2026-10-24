@@ -65,12 +65,29 @@ class DiziPalOrg : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = sayfaVar && home.isNotEmpty())
     }
 
-    private fun Element.posterAl(): String? {
-        val img = this.selectFirst("img") ?: return null
+private fun Element.posterAl(): String? {
+    // 1) Doğrudan img etiketi
+    val img = this.selectFirst("img")
+    if (img != null) {
         val src = img.attr("data-src").ifBlank { img.attr("data-srcset").substringBefore(" ") }
-            .ifBlank { img.attr("srcset").substringBefore(" ") }.ifBlank { img.attr("src") }
-        return if (src.isBlank() || src.startsWith("data:")) null else fixUrlNull(src)
+            .ifBlank { img.attr("srcset").substringBefore(" ") }
+            .ifBlank { img.attr("src") }
+        if (src.isNotBlank() && !src.startsWith("data:")) return fixUrlNull(src)
     }
+
+    // 2) span.fr gibi arka plan görselli öğeler (platform kartlarında sık görülür)
+    val arkaPlan = this.selectFirst("[style*=background-image]")
+        ?: this.selectFirst("span.fr")
+    val stil = arkaPlan?.attr("style").orEmpty()
+    val bgUrl = Regex("""url\(['"]?([^'")]+)['"]?\)""").find(stil)?.groupValues?.get(1)
+    if (!bgUrl.isNullOrBlank() && !bgUrl.startsWith("data:")) return fixUrlNull(bgUrl)
+
+    // 3) data-src / data-srcset doğrudan element üzerinde
+    val dogrudan = this.attr("data-src").ifBlank { this.attr("data-srcset").substringBefore(" ") }
+    if (dogrudan.isNotBlank() && !dogrudan.startsWith("data:")) return fixUrlNull(dogrudan)
+
+    return null
+}
 
     // Bölüm kartı: div.ec > a.ecl (resim) + div > span.tn (dizi adı) + span (sezon/bölüm)
     private fun Element.bolumKarti(): SearchResponse? {
@@ -87,24 +104,27 @@ class DiziPalOrg : MainAPI() {
     }
 
     // Dizi/film kartı: a.tc > span.fr (resim) + span > span.tt|span.ft1 (ad) + span (yıl / türler · yıl)
-    private fun Element.icerikKarti(anime: Boolean = false): SearchResponse? {
-        val href  = fixUrlNull(this.attr("href")) ?: return null
-        val title = this.selectFirst("span.tt, span.ft1")?.text()?.trim()?.ifBlank { null }
-            ?: this.attr("aria-label").substringBefore(",").trim().ifBlank { null } ?: return null
-        val year  = Regex("""\b(19|20)\d{2}\b""").find(this.selectFirst("span.tt + span, span.ft1 + span")?.text().orEmpty())?.value?.toIntOrNull()
+private fun Element.icerikKarti(anime: Boolean = false): SearchResponse? {
+    val href  = fixUrlNull(this.attr("href")) ?: return null
+    val title = this.selectFirst("span.tt, span.ft1")?.text()?.trim()?.ifBlank { null }
+        ?: this.attr("aria-label").substringBefore(",").trim().ifBlank { null } ?: return null
+    val year  = Regex("""\b(19|20)\d{2}\b""").find(this.selectFirst("span.tt + span, span.ft1 + span")?.text().orEmpty())?.value?.toIntOrNull()
 
-        return if (href.contains("/movies/")) {
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = this@icerikKarti.posterAl()
-                this.year      = year
-            }
-        } else {
-            newTvSeriesSearchResponse(title, href, if (anime) TvType.Anime else TvType.TvSeries) {
-                this.posterUrl = this@icerikKarti.posterAl()
-                this.year      = year
-            }
+    val poster = this.selectFirst("span.fr")?.posterAl()
+        ?: this.posterAl()
+
+    return if (href.contains("/movies/")) {
+        newMovieSearchResponse(title, href, TvType.Movie) {
+            this.posterUrl = poster
+            this.year      = year
+        }
+    } else {
+        newTvSeriesSearchResponse(title, href, if (anime) TvType.Anime else TvType.TvSeries) {
+            this.posterUrl = poster
+            this.year      = year
         }
     }
+}
 
     override suspend fun search(query: String): List<SearchResponse> {
         val govde = """{"action":"searchContent","params":[${mapper.writeValueAsString(query)}]}"""
