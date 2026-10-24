@@ -74,6 +74,7 @@ class SuperAdjacentExtractor : ExtractorApi() {
                 .addHeader("Referer", pageReferer)
                 .addHeader("User-Agent", UA)
                 .addHeader("Accept", "*/*")
+                .addHeader("Origin", "https://dizipal2143.com")
                 .build()
 
             val pageText = try {
@@ -134,7 +135,7 @@ class SuperAdjacentExtractor : ExtractorApi() {
             this.quality = Qualities.Unknown.value
             this.headers = mapOf(
                 "User-Agent" to UA,
-                "Origin" to origin,
+                "Origin" to "https://dizipal2143.com",
                 "Referer" to referer
             )
         }
