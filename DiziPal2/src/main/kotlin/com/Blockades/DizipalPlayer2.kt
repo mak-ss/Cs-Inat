@@ -13,7 +13,7 @@ import javax.net.ssl.X509TrustManager
 
 class DizipalPlayer2 : ExtractorApi() {
     override val name = "DizipalPlayer2"
-    override val mainUrl = "https://dizipal2142.com"
+    override val mainUrl = "https://dizipal2143.com"
     override val requiresReferer = true
 
     /** SSL sertifika doğrulamasını gevşeten OkHttpClient */
