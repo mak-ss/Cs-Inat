@@ -1,9 +1,9 @@
-version = 41  // ! ARTTIRILDI: Versiyon güncellendi
+version = 1  // ! ARTTIRILDI: Versiyon güncellendi
 
 cloudstream {
-    authors     = listOf("keyiflerolsun", "muratcesmecioglu")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "DiziPal - Güncel domain (dizipal1541.com) - en yeni dizileri güvenli ve hızlı şekilde sunar."
+    description = "DiziPal - Güncel domain (dizipal12.com.tr) - en yeni dizileri güvenli ve hızlı şekilde sunar."
 
     /**
      * Status int as the following:
@@ -14,5 +14,5 @@ cloudstream {
     **/
     status  = 1
     tvTypes = listOf("TvSeries", "Movie")
-    iconUrl = "https://www.google.com/s2/favicons?domain=https://dizipal1541.com&sz=%size%"  // ! GÜNCELLENDİ
+    iconUrl = "https://files.sikayetvar.com/lg/cmp/35/358737.png?1755090746"  // ! GÜNCELLENDİ
 }
