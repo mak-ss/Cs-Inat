@@ -16,7 +16,8 @@ class DizipalPlayer2 : ExtractorApi() {
     override val mainUrl = "https://dizipal2143.com"
     override val requiresReferer = true
 
-    /** SSL sertifika doğrulamasını gevşeten OkHttpClient */
+    private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
     private val relaxedClient: OkHttpClient by lazy {
         val trustAll = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
@@ -34,15 +35,20 @@ class DizipalPlayer2 : ExtractorApi() {
             .build()
     }
 
-    /** ExtractorApi içinde fixUrlNull olmadığı için basit URL düzeltme */
-    private fun fixUrlExtractor(url: String): String {
-        return when {
-            url.startsWith("http://") || url.startsWith("https://") -> url
-            url.startsWith("//") -> "https:$url"
-            url.startsWith("/")  -> "$mainUrl$url"
-            else                 -> "$mainUrl/$url"
-        }
+    private fun fixUrlExtractor(url: String): String = when {
+        url.startsWith("http://") || url.startsWith("https://") -> url
+        url.startsWith("//") -> "https:$url"
+        url.startsWith("/") -> "$mainUrl$url"
+        else -> "$mainUrl/$url"
     }
+
+    private fun originOf(url: String): String = try {
+        val u = java.net.URI(url)
+        "${u.scheme}://${u.host}" + if (u.port != -1) ":${u.port}" else ""
+    } catch (_: Exception) { mainUrl }
+
+    private fun normalize(text: String): String =
+        text.replace("\\/", "/").replace("&amp;", "&")
 
     override suspend fun getUrl(
         url: String,
@@ -50,83 +56,87 @@ class DizipalPlayer2 : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        val pageReferer = referer ?: "$mainUrl/"
         try {
-            // 1) Doğrudan m3u8 linki ise direkt callback'e gönder
-            if (url.contains(".m3u8") || url.contains("superadjacentsoddenly")) {
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = "DizipalPlayer2 HLS",
-                        url = url,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = referer ?: "$mainUrl/"
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
+            // 1) Doğrudan m3u8 ise direkt gönder (yalnızca gerçek m3u8)
+            if (url.contains(".m3u8", ignoreCase = true)) {
+                emit(callback, url, pageReferer, originOf(url))
                 return
             }
 
-            // 2) Sayfa üzerinden m3u8 çıkarmayı dene (SSL gevşetilmiş client ile)
+            // 2) Sayfayı çek, m3u8 regex ile çıkar
             val request = okhttp3.Request.Builder()
                 .url(url)
-                .addHeader("Referer", referer ?: "$mainUrl/")
-                .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
+                .addHeader("Referer", pageReferer)
+                .addHeader("User-Agent", UA)
+                .addHeader("Accept", "*/*")
                 .build()
 
-            val response = relaxedClient.newCall(request).execute()
-            val pageText = response.body?.string() ?: ""
-            response.close()
-
-            // m3u8 regex
-            val m3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(pageText)?.value
-            if (m3u8 != null) {
-                callback.invoke(
-                    newExtractorLink(
-                        source = this.name,
-                        name = "DizipalPlayer2 HLS",
-                        url = m3u8,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = referer ?: "$mainUrl/"
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-                return
+            val pageText = try {
+                relaxedClient.newCall(request).execute().use { resp ->
+                    resp.body?.string().orEmpty()
+                }
+            } catch (e: Exception) {
+                Log.e("DizipalPlayer2", "Fetch HATA » ${e.message}")
+                ""
             }
 
-            // 3) iframe / source / data-url / file: gibi alternatifleri de dene
-            val patterns = listOf(
-                Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-                Regex("""<source[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-                Regex("""data-url=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
-                Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
-            )
+            val normalized = normalize(pageText)
 
-            for (pattern in patterns) {
-                val match = pattern.find(pageText)?.groupValues?.getOrNull(1)
-                if (!match.isNullOrBlank()) {
-                    val finalUrl = fixUrlExtractor(match)
-                    if (finalUrl.contains(".m3u8")) {
-                        callback.invoke(
-                            newExtractorLink(
-                                source = this.name,
-                                name = "DizipalPlayer2 HLS",
-                                url = finalUrl,
-                                type = ExtractorLinkType.M3U8
-                            ) {
-                                this.referer = referer ?: "$mainUrl/"
-                                this.quality = Qualities.Unknown.value
-                            }
-                        )
-                        return
+            // 3) Önce doğrudan m3u8 regex
+            val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
+            var m3u8 = m3u8Regex.find(normalized)?.groupValues?.getOrNull(1)
+
+            // 4) Bulunamazsa iframe/source/data-url/file: kalıpları
+            if (m3u8.isNullOrBlank()) {
+                val patterns = listOf(
+                    Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""<source[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""data-url=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+                )
+                for (p in patterns) {
+                    val m = p.find(normalized)?.groupValues?.getOrNull(1) ?: continue
+                    val fixed = fixUrlExtractor(m)
+                    if (fixed.contains(".m3u8", ignoreCase = true)) {
+                        m3u8 = fixed
+                        break
                     }
                 }
             }
 
-            Log.w("DizipalPlayer2", "Hiçbir m3u8 linki bulunamadı: $url")
+            if (m3u8.isNullOrBlank()) {
+                Log.w("DizipalPlayer2", "Hiçbir m3u8 bulunamadı: $url")
+                return
+            }
+
+            emit(callback, m3u8, url, originOf(url))
         } catch (e: Exception) {
             Log.e("DizipalPlayer2", "getUrl HATA » ${e.message}", e)
         }
+    }
+
+    private fun emit(
+        callback: (ExtractorLink) -> Unit,
+        m3u8: String,
+        refererUrl: String,
+        origin: String
+    ) {
+        callback.invoke(
+            newExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = m3u8,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.referer = refererUrl
+                this.quality = Qualities.Unknown.value
+                this.headers = mapOf(
+                    "User-Agent" to UA,
+                    "Origin" to origin,
+                    "Referer" to refererUrl
+                )
+            }
+        )
     }
 }
