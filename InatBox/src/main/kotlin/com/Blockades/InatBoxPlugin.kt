@@ -10,7 +10,6 @@ class InatBoxPlugin : Plugin() {
         registerMainAPI(InatBox())
         registerExtractorAPI(CDNJWPlayer())
         registerExtractorAPI(DiskYandexComTr())
-        registerExtractorAPI(DzenRu())
         registerExtractorAPI(Vk())
     }
 }
