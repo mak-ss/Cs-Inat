@@ -1,4 +1,4 @@
-package com.neowatch
+package com.Blockades
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.base64DecodeArray
