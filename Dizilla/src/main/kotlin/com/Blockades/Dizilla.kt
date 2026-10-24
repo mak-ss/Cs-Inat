@@ -59,7 +59,7 @@ class Dizilla : MainAPI() {
 
     private val privateAESKey = "9bYMCNQiWsXIYFWYAu7EkdsSbmGBTyUI"
 
-    // Ortak ObjectMapper (tüm isteklerde tekrar tekrar oluşturmamak için)
+    // Ortak ObjectMapper
     private val mapper by lazy {
         ObjectMapper().registerModule(KotlinModule.Builder().build()).also {
             it.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
@@ -118,6 +118,9 @@ class Dizilla : MainAPI() {
         }
     }
 
+    // =====================================================================
+    // /arsiv — HTML + Next.js secureData
+    // =====================================================================
     private suspend fun getArsivPage(page: Int, request: MainPageRequest): HomePageResponse {
         val response = app.get("${request.data}?page=$page", interceptor = interceptor)
         val document = response.document
@@ -141,53 +144,76 @@ class Dizilla : MainAPI() {
             val title = item.path("original_title").asText()
                 .ifEmpty { item.path("used_title").asText() }
             val slug = item.path("used_slug").asText()
+                .ifEmpty { item.path("slug").asText() }
             val poster = fixPosterUrl(
                 item.path("poster_url").asText()
                     .ifEmpty { item.path("face_url").asText() }
             )
             if (title.isEmpty() || slug.isEmpty()) return@mapNotNull null
 
-            newTvSeriesSearchResponse(title, fixUrl("/$slug"), TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, fixUrl("/dizi/$slug"), TvType.TvSeries) {
                 this.posterUrl = poster
             }
         }
         return newHomePageResponse(request.name, home)
     }
 
+    // =====================================================================
+    // findSeries API — GET isteği (POST değil!)
+    // =====================================================================
     private suspend fun getFindSeriesPage(page: Int, request: MainPageRequest): HomePageResponse {
+        // URL'deki currentPage=1 kısmını sayfa numarasıyla değiştir
         val apiUrl = request.data
+            .replace(Regex("currentPage=\\d+"), "currentPage=$page")
         Log.d("DizillaDebug", "API URL: $apiUrl")
 
-        val response = app.post(
+        val response = app.get(
             apiUrl,
             headers = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0",
                 "Accept" to "application/json, text/plain, */*",
-                "Accept-Language" to "en-US,en;q=0.5",
+                "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8",
                 "X-Requested-With" to "XMLHttpRequest",
-                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                "Origin" to mainUrl,
-                "Referer" to mainUrl
+                "Referer" to "$mainUrl/",
+                "Origin" to mainUrl
             ),
-            data = mapOf("page" to page.toString())
+            interceptor = interceptor
         )
 
         val responseBody = response.body.string()
+        Log.d("DizillaDebug", "Response başlangıç: ${responseBody.take(200)}")
 
-        val jsonResponse = mapper.readTree(responseBody)
-        if (!(jsonResponse.path("success").asBoolean())) {
+        // JSON mu HTML mi kontrol et
+        if (!responseBody.trimStart().startsWith("{")) {
+            Log.e("DizillaDebug", "findSeries JSON değil, HTML döndü. İlk 200: ${responseBody.take(200)}")
             return newHomePageResponse(request.name, emptyList())
         }
 
+        val jsonResponse = try {
+            mapper.readTree(responseBody)
+        } catch (e: Exception) {
+            Log.e("DizillaDebug", "JSON parse hatası: ${e.message}")
+            return newHomePageResponse(request.name, emptyList())
+        }
+
+        // Şifreli veri var mı?
         val encryptedData = jsonResponse.path("response").asText()
-        if (encryptedData.isEmpty()) return newHomePageResponse(request.name, emptyList())
 
-        val decodedData = decryptDizillaResponse(encryptedData)
-            ?: return newHomePageResponse(request.name, emptyList())
+        val decodedData: String = if (encryptedData.isNotEmpty()) {
+            decryptDizillaResponse(encryptedData)
+                ?: return newHomePageResponse(request.name, emptyList())
+        } else {
+            // Açık JSON gelmiş olabilir
+            responseBody
+        }
 
-        // "result" array'ini manuel çıkar (JSON bazen bozuk olabilir)
+        // "result" veya "listItems" array'ini bul
         val resultArrayJson = extractArray(decodedData, "result")
-            ?: return newHomePageResponse(request.name, emptyList())
+            ?: extractArray(decodedData, "listItems")
+            ?: run {
+                Log.e("DizillaDebug", "findSeries result array yok. decoded başlangıç: ${decodedData.take(300)}")
+                return newHomePageResponse(request.name, emptyList())
+            }
 
         val resultArray = mapper.readTree(resultArrayJson)
 
@@ -195,27 +221,84 @@ class Dizilla : MainAPI() {
             val title = item.path("original_title").asText()
                 .ifEmpty { item.path("culture_title").asText() }
                 .ifEmpty { item.path("title").asText() }
+                .ifEmpty { item.path("used_title").asText() }
             val poster = item.path("poster_url").asText()
                 .ifEmpty { item.path("square_url").asText() }
                 .ifEmpty { item.path("face_url").asText() }
                 .ifEmpty { item.path("back_url").asText() }
             val slug = item.path("used_slug").asText()
-                .ifEmpty {
-                    Regex(""""serie_site_id":0,.*?"used_slug":"(.*?)"""")
-                        .find(item.toString())?.groupValues?.get(1) ?: ""
-                }
+                .ifEmpty { item.path("slug").asText() }
 
             if (title.isEmpty() || slug.isEmpty()) return@mapNotNull null
 
-            newTvSeriesSearchResponse(title, fixUrl("/$slug"), TvType.TvSeries) {
+            newTvSeriesSearchResponse(title, fixUrl("/dizi/$slug"), TvType.TvSeries) {
                 this.posterUrl = fixPosterUrl(poster)
             }
         }
+        Log.d("DizillaDebug", "findSeries ${home.size} öğe döndü")
         return newHomePageResponse(request.name, home)
     }
 
+    // =====================================================================
+    // tum-bolumler vb. — Next.js secureData + HTML fallback
+    // =====================================================================
     private suspend fun getHtmlPage(request: MainPageRequest): HomePageResponse {
-        val document = Jsoup.parse(app.get(request.data, interceptor = interceptor).body.string())
+        val response = app.get(request.data, interceptor = interceptor)
+        val document = response.document
+
+        // 1. Önce Next.js __NEXT_DATA__ içinde secureData var mı?
+        val script = document.selectFirst("script#__NEXT_DATA__")?.data()
+        if (script != null) {
+            try {
+                val secureData = mapper.readTree(script)
+                    .path("props").path("pageProps").path("secureData").asText()
+
+                if (secureData.isNotEmpty()) {
+                    val decoded = decryptDizillaResponse(secureData)
+                    if (!decoded.isNullOrEmpty()) {
+                        Log.d("DizillaDebug", "htmlPage decoded: ${decoded.take(200)}")
+
+                        val json = mapper.readTree(decoded)
+
+                        // Olası array alanları
+                        val arrayNode: JsonNode? = when {
+                            json.path("currentEpisodes").isArray -> json.path("currentEpisodes")
+                            json.path("listItems").isArray -> json.path("listItems")
+                            json.path("result").isArray -> json.path("result")
+                            else -> null
+                        }
+
+                        if (arrayNode != null) {
+                            val home = arrayNode.mapNotNull { item ->
+                                // Episode tipinde: title + episodeHref
+                                val epHref = item.path("episodeHref").asText()
+                                    .ifEmpty { item.path("href").asText() }
+                                val title = item.path("title").asText()
+                                val poster = item.path("poster").asText()
+                                    .ifEmpty { item.path("backdrop").asText() }
+
+                                if (epHref.isEmpty() || title.isEmpty()) return@mapNotNull null
+
+                                newTvSeriesSearchResponse(
+                                    title,
+                                    fixUrl(epHref),
+                                    TvType.TvSeries
+                                ) {
+                                    this.posterUrl = fixPosterUrl(poster)
+                                }
+                            }
+                            if (home.isNotEmpty()) {
+                                return newHomePageResponse(request.name, home)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DizillaDebug", "getHtmlPage Next.js hatası: ${e.message}")
+            }
+        }
+
+        // 2. Fallback: eski HTML parse
         val home = if (request.data.contains("api")) {
             document.select("span.watchlistitem-").mapNotNull { it.diziler() }
         } else {
@@ -262,7 +345,8 @@ class Dizilla : MainAPI() {
                 "Accept" to "application/json, text/plain, */*",
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to "${mainUrl}/"
-            )
+            ),
+            interceptor = interceptor
         )
 
         val searchResult: SearchResult = mapper.readValue(searchReq.text)
@@ -286,7 +370,7 @@ class Dizilla : MainAPI() {
             val name = item.title ?: return@mapNotNull null
             val slug = item.slug ?: return@mapNotNull null
             val posterLink = fixPosterUrl(item.poster) ?: ""
-            newTvSeriesSearchResponse(name, fixUrl("/$slug"), TvType.TvSeries) {
+            newTvSeriesSearchResponse(name, fixUrl("/dizi/$slug"), TvType.TvSeries) {
                 this.posterUrl = posterLink
             }
         } ?: emptyList()
@@ -295,7 +379,7 @@ class Dizilla : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     // =====================================================================
-    // LOAD (detay sayfası) — Next.js + secureData + JSON
+    // LOAD (detay sayfası)
     // =====================================================================
     override suspend fun load(url: String): LoadResponse? {
         return try {
@@ -493,7 +577,6 @@ class Dizilla : MainAPI() {
             }
         }
 
-        // Sıralama (sezon, bölüm)
         out.sortWith(compareBy({ it.season ?: 0 }, { it.episode ?: 0 }))
     }
 
