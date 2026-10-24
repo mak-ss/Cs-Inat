@@ -4,11 +4,6 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
-/**
- * jwplayer("...").setup({ sources: [{file:"...m3u8"}], tracks: [...] }) kullanan
- * XFileSharing tabanlı oynatıcılar (formationfeed.net vb.) için çözücü.
- * Örnek: https://formationfeed.net/embed-7yno2djovj7e.html
- */
 open class JwKaynak : ExtractorApi() {
     override val name            = "PalPlayer"
     override val mainUrl         = "https://formationfeed.net"
@@ -23,7 +18,6 @@ open class JwKaynak : ExtractorApi() {
             headers = mapOf("Sec-Fetch-Dest" to "iframe")
         ).text
 
-        // Bazı sunucular betiği p,a,c,k,e,d ile paketliyor
         val metin = if (sayfa.contains("eval(function(p,a,c,k,e")) {
             runCatching { getAndUnpack(sayfa) }.getOrNull()?.let { sayfa + "\n" + it } ?: sayfa
         } else {
@@ -54,7 +48,6 @@ open class JwKaynak : ExtractorApi() {
             )
         }
 
-        // Altyazılar
         Regex("""tracks\s*:\s*\[(.*?)]""", RegexOption.DOT_MATCHES_ALL).find(metin)?.groupValues?.get(1)?.let { izler ->
             Regex("""\{[^}]*?file\s*:\s*["']([^"']+)["'][^}]*?}""").findAll(izler).forEach { iz ->
                 val blok  = iz.value
