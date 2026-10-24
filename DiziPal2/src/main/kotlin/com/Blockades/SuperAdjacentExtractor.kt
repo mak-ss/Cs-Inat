@@ -11,11 +11,6 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
-/**
- * superadjacentsoddenly.xyz (sN.superadjacentsoddenly.xyz) CDN'i için özel extractor.
- * - Token'lı m3u8 linklerini embed sayfasından gerçek zamanlı çıkarır
- * - Origin/Referer başlıklarını CDN'in beklediği şekilde gönderir
- */
 class SuperAdjacentExtractor : ExtractorApi() {
     override val name = "SuperAdjacent"
     override val mainUrl = "https://superadjacentsoddenly.xyz"
@@ -38,6 +33,7 @@ class SuperAdjacentExtractor : ExtractorApi() {
             .hostnameVerifier { _, _ -> true }
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
             .build()
     }
 
@@ -63,12 +59,12 @@ class SuperAdjacentExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        val pageReferer = referer ?: "$mainUrl/"
+        val pageReferer = referer ?: "https://dizipal2143.com/"
 
         try {
-            // 1) Doğrudan m3u8 ise: doğru headers ile gönder
+            // 1) Doğrudan m3u8
             if (url.contains(".m3u8", ignoreCase = true)) {
-                emit(callback, url, referer = pageReferer, origin = originOf(url))
+                emit(callback, url, pageReferer, originOf(url))
                 return
             }
 
@@ -89,7 +85,7 @@ class SuperAdjacentExtractor : ExtractorApi() {
 
             val normalized = normalize(pageText)
 
-            // 3) m3u8 regex (kaçış karakterleri temizlenmiş içerikte)
+            // 3) m3u8 regex
             val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
             var m3u8 = m3u8Regex.find(normalized)?.groupValues?.getOrNull(1)
 
@@ -98,7 +94,8 @@ class SuperAdjacentExtractor : ExtractorApi() {
                 val patterns = listOf(
                     Regex("""<source[^>]+src=["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
                     Regex("""file\s*:\s*["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
-                    Regex("""data-url=["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+                    Regex("""data-url=["']([^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE),
+                    Regex("""["'](https?://[^"']+/hls2/[^"']+\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
                 )
                 for (p in patterns) {
                     val m = p.find(normalized)?.groupValues?.getOrNull(1) ?: continue
@@ -115,7 +112,7 @@ class SuperAdjacentExtractor : ExtractorApi() {
                 return
             }
 
-            emit(callback, m3u8, referer = url, origin = originOf(url))
+            emit(callback, m3u8, url, originOf(url))
         } catch (e: Exception) {
             Log.e("SuperAdjacent", "getUrl HATA » ${e.message}", e)
         }
