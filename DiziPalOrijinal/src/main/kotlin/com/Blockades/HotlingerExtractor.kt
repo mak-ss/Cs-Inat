@@ -1,52 +1,51 @@
-
 package com.Blockades
 
-class Hotlinger : ContentX() {
-    override var name    = "Hotlinger"
-    override var mainUrl = "https://hotlinger.com"
+class Hotlinger : ContentXGenel() {
+    override val name    = "Hotlinger"
+    override val mainUrl = "https://hotlinger.com"
 }
 
-class FourCX : ContentX() {
-    override var name    = "FourCX"
-    override var mainUrl = "https://four.contentx.me"
+class FourCX : ContentXGenel() {
+    override val name    = "FourCX"
+    override val mainUrl = "https://four.contentx.me"
 }
 
-class PlayRu : ContentX() {
-    override var name    = "PlayRu"
-    override var mainUrl = "https://playru.net"
+class PlayRu : ContentXGenel() {
+    override val name    = "PlayRu"
+    override val mainUrl = "https://playru.net"
 }
 
-class FourPlayRu : ContentX() {
-    override var name    = "FourPlayRu"
-    override var mainUrl = "https://four.playru.net"
+class FourPlayRu : ContentXGenel() {
+    override val name    = "FourPlayRu"
+    override val mainUrl = "https://four.playru.net"
 }
 
-class Pichive : ContentX() {
-    override var name    = "Pichive"
-    override var mainUrl = "https://pichive.online"
+class Pichive : ContentXGenel() {
+    override val name    = "Pichive"
+    override val mainUrl = "https://pichive.online"
 }
 
-class FourPichive : ContentX() {
-    override var name    = "FourPichive"
-    override var mainUrl = "https://four.pichive.online"
+class FourPichive : ContentXGenel() {
+    override val name    = "FourPichive"
+    override val mainUrl = "https://four.pichive.online"
 }
 
-class FourDplayer : ContentX() {
-    override var name    = "Dplayer82"
-    override var mainUrl = "https://four.dplayer82.site"
+class FourDplayer : ContentXGenel() {
+    override val name    = "Dplayer82"
+    override val mainUrl = "https://four.dplayer82.site"
 }
 
-class SNDplayer : ContentX() {
-    override var name    = "SNDplayer"
-    override var mainUrl = "https://sn.dplayer82.site"
+class SNDplayer : ContentXGenel() {
+    override val name    = "SNDplayer"
+    override val mainUrl = "https://sn.dplayer82.site"
 }
 
-class ORGDplayer : ContentX() {
-    override var name    = "ORGDplayer"
-    override var mainUrl = "https://org.dplayer82.site"
+class ORGDplayer : ContentXGenel() {
+    override val name    = "ORGDplayer"
+    override val mainUrl = "https://org.dplayer82.site"
 }
 
-class Dplayer : ContentX() {
-    override var name    = "Dplayer"
-    override var mainUrl = "https://dplayer82.site"
+class Dplayer : ContentXGenel() {
+    override val name    = "Dplayer"
+    override val mainUrl = "https://dplayer82.site"
 }
