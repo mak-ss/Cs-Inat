@@ -4,7 +4,7 @@ package com.Blockades
 
 class Hotlinger : ContentX() {
     override var name    = "Hotlinger"
-    override var mainUrl = "https://sn.hotlinger.com"
+    override var mainUrl = "https://hotlinger.com"
 }
 
 class FourCX : ContentX() {
@@ -32,7 +32,22 @@ class FourPichive : ContentX() {
     override var mainUrl = "https://four.pichive.online"
 }
 
-class SNplayer : ContentX() {
-    override var name    = "SNplayer"
-    override var mainUrl = "https://sn.dplayer82.site"
+class Filese : ContentX() {
+    override var name    = "Filese"
+    override var mainUrl = "https://filese.me"
+}
+
+class FourFilese : ContentX() {
+    override var name    = "FourFilese"
+    override var mainUrl = "https://four.filese.me"
+}
+
+class Okvip : ContentX() {
+    override var name    = "Okvip"
+    override var mainUrl = "https://okvip.cab"
+}
+
+class FourOkvip : ContentX() {
+    override var name    = "FourOkvip"
+    override var mainUrl = "https://four.okvip.cab"
 }
