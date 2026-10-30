@@ -3,7 +3,10 @@ package com.Blockades
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -16,14 +19,6 @@ import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * RecTV
- *
- * - API adresi uygulamanın Firebase Remote Config'inden ("api_url") okunur; okunamazsa [mainUrl] kullanılır.
- * - Bölüm (season) ve arama uçları HMAC imzası ister:
- *   X-HMAC = HMAC-SHA256(anahtar, "METOT\nYOL\nZAMAN\nNONCE\nsha256(gövde)")
- * - Kaynaklarda düz "url" yoksa "enc_url" AES-256-GCM ile çözülür.
- */
 class Rec : MainAPI() {
     override var mainUrl              = "https://a.psrectv80.xyz"
     override var name                 = "RecTV"
@@ -65,7 +60,6 @@ class Rec : MainAPI() {
         "/api/movie/by/filtres/5/created/SAYFA/"  to "Romantik"
     )
 
-    // ? API adresi (Firebase Remote Config → api_url)
     private suspend fun apiAdresi(): String {
         apiTabani?.let { return it }
 
@@ -98,7 +92,6 @@ class Rec : MainAPI() {
         return taban
     }
 
-    // ? İmzalı istek başlıkları
     private fun imzaliBasliklar(metot: String, yol: String, govde: String = ""): Map<String, String> {
         val zaman = (System.currentTimeMillis() / 1000L).toString()
         val nonce = UUID.randomUUID().toString()
@@ -182,14 +175,17 @@ class Rec : MainAPI() {
                     val kaynak = bolum.sources.firstNotNullOfOrNull { kaynakAdresi(it) } ?: continue
 
                     episodes.add(newEpisode(kaynak) {
-                        this.name    = bolum.title
-                        this.season  = numberRegex.find(sezon.title ?: "")?.value?.toIntOrNull()
-                        this.episode = numberRegex.find(bolum.title ?: "")?.value?.toIntOrNull()
+                        this.name = bolum.title
                     })
                 }
             }
 
-            return newTvSeriesLoadResponse(veri.title ?: "", url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(
+                name     = veri.title ?: "",
+                url      = url,
+                type     = TvType.TvSeries,
+                episodes = episodes
+            ) {
                 this.posterUrl = veri.image
                 this.plot      = veri.description
                 this.year      = veri.year
@@ -253,7 +249,6 @@ class Rec : MainAPI() {
         return source.encUrl?.let { encCoz(it) }?.takeIf { it.startsWith("http") }
     }
 
-    // ? enc_url: base64( iv[12] + şifreli + etiket[16] ), AES-256-GCM
     private fun encCoz(sifreli: String): String? = runCatching {
         val ham    = base64DecodeArray(sifreli)
         if (ham.size < 28) return null
@@ -285,3 +280,57 @@ class Rec : MainAPI() {
         }
     }
 }
+
+// ── JSON model ───────────────────────────────────────────────────────────────
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RecGenre(
+    @JsonProperty("title") val title: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RecSource(
+    @JsonProperty("url")     val url: String? = null,
+    @JsonProperty("enc_url") val encUrl: String? = null,
+    @JsonProperty("type")    val type: String? = null,
+    @JsonProperty("title")   val title: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RecItem(
+    @JsonProperty("id")          val id: Int? = null,
+    @JsonProperty("title")       val title: String? = null,
+    @JsonProperty("image")       val image: String? = null,
+    @JsonProperty("description") val description: String? = null,
+    @JsonProperty("year")        val year: Int? = null,
+    @JsonProperty("rating")      val rating: Double? = null,
+    @JsonProperty("label")       val label: String? = null,
+    @JsonProperty("type")        val type: String? = null,
+    @JsonProperty("genres")      val genres: List<RecGenre>? = null,
+    @JsonProperty("sources")     val sources: List<RecSource> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RecEpisode(
+    @JsonProperty("title")   val title: String? = null,
+    @JsonProperty("sources") val sources: List<RecSource> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RecDizi(
+    @JsonProperty("title")    val title: String? = null,
+    @JsonProperty("episodes") val episodes: List<RecEpisode> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RecSearch(
+    @JsonProperty("channels") val channels: List<RecItem>? = null,
+    @JsonProperty("posters")  val posters: List<RecItem>? = null
+)
+
+// ── JSON helper ──────────────────────────────────────────────────────────────
+
+inline fun <reified T> recJsonOku(metin: String?): T? = runCatching {
+    if (metin.isNullOrBlank()) return null
+    jacksonObjectMapper().readValue<T>(metin)
+}.getOrNull()
