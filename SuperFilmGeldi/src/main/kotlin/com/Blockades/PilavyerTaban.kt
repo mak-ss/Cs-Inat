@@ -2,27 +2,19 @@ package com.Blockades
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.extractors.ExtractorApi
-import com.lagradost.cloudstream3.newExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.newSubtitleFile
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Pilavyer/benzeri embed'lerde ortak akış:
- *  1. embed sayfasını çek
- *  2. window.__PLAYER__ = {...} JSON'unu ayıkla
- *  3. stream (m3u8) + subs + audios
- *  4. cdn=0 yedek bağlantısını da ver
- */
 abstract class PilavyerTaban : ExtractorApi() {
 
     override val requiresReferer = true
 
-    /** Embed URL'yi verilen referer ile çözer. */
     protected suspend fun coz(
         url: String,
         referer: String,
