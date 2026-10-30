@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.extractors.helper.AesHelper
 
-class SfgMixPlayHd : ExtractorApi() {
+class SuperFilmGeldiResimMixPlayHd : ExtractorApi() {
     override var name            = "MixPlayHD"
     override var mainUrl         = "https://mixplayhd.com"
     override val requiresReferer = true
