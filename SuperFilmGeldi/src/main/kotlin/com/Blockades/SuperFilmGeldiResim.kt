@@ -12,7 +12,7 @@ import org.jsoup.nodes.Element
  * Paket (`com.panates`) tum modullerde ortak oldugu icin sinif adi her
  * modulde farklidir; yardimci her modulun icine kopyalanir.
  */
-object SfgResim {
+object SuperFilmGeldiResimResim {
     private val cdnBoyut = Regex("""/images/(?:0|360|640)/360/(?:85|90)/(?=[^/]+$)""")
     private val tmdbBoyut = Regex("""/t/p/(?:w\d+|h\d+)/""")
     private val wpKucuk = Regex("""-\d{2,4}x\d{2,4}(\.[A-Za-z0-9]{2,5})$""")
