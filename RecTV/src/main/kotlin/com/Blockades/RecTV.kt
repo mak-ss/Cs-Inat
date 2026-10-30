@@ -3,7 +3,10 @@ package com.Blockades
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -131,12 +134,12 @@ class Rec : MainAPI() {
 
             if (item.label != "CANLI" && item.label != "Canlı") {
                 if (item.type == "serie") {
-                    newTvSeriesSearchResponse(item.title, veri, TvType.TvSeries) { this.posterUrl = item.image }
+                    newTvSeriesSearchResponse(item.title ?: "", veri, TvType.TvSeries) { this.posterUrl = item.image }
                 } else {
-                    newMovieSearchResponse(item.title, veri, TvType.Movie) { this.posterUrl = item.image }
+                    newMovieSearchResponse(item.title ?: "", veri, TvType.Movie) { this.posterUrl = item.image }
                 }
             } else {
-                newLiveSearchResponse(item.title, veri, TvType.Live) { this.posterUrl = item.image }
+                newLiveSearchResponse(item.title ?: "", veri, TvType.Live) { this.posterUrl = item.image }
             }
         }
 
@@ -151,15 +154,15 @@ class Rec : MainAPI() {
 
         veriler.channels?.forEach { item ->
             val veri = jacksonObjectMapper().writeValueAsString(item)
-            sonuclar.add(newLiveSearchResponse(item.title, veri, TvType.Live) { this.posterUrl = item.image })
+            sonuclar.add(newLiveSearchResponse(item.title ?: "", veri, TvType.Live) { this.posterUrl = item.image })
         }
 
         veriler.posters?.forEach { item ->
             val veri = jacksonObjectMapper().writeValueAsString(item)
             if (item.type == "serie") {
-                sonuclar.add(newTvSeriesSearchResponse(item.title, veri, TvType.TvSeries) { this.posterUrl = item.image })
+                sonuclar.add(newTvSeriesSearchResponse(item.title ?: "", veri, TvType.TvSeries) { this.posterUrl = item.image })
             } else {
-                sonuclar.add(newMovieSearchResponse(item.title, veri, TvType.Movie) { this.posterUrl = item.image })
+                sonuclar.add(newMovieSearchResponse(item.title ?: "", veri, TvType.Movie) { this.posterUrl = item.image })
             }
         }
 
@@ -179,9 +182,9 @@ class Rec : MainAPI() {
 
             for (sezon in sezonlar) {
                 val dublaj = when {
-                    sezon.title.contains("altyazı", ignoreCase = true) -> DubStatus.Subbed
-                    sezon.title.contains("dublaj", ignoreCase = true)  -> DubStatus.Dubbed
-                    else                                               -> DubStatus.None
+                    sezon.title?.contains("altyazı", ignoreCase = true) == true -> DubStatus.Subbed
+                    sezon.title?.contains("dublaj", ignoreCase = true)  == true -> DubStatus.Dubbed
+                    else                                                        -> DubStatus.None
                 }
 
                 for (bolum in sezon.episodes) {
@@ -189,37 +192,36 @@ class Rec : MainAPI() {
 
                     episodes.getOrPut(dublaj) { mutableListOf() }.add(newEpisode(kaynak) {
                         this.name        = bolum.title
-                        this.season      = numberRegex.find(sezon.title)?.value?.toIntOrNull()
-                        this.episode     = numberRegex.find(bolum.title)?.value?.toIntOrNull()
-                        this.description = sezon.title.substringAfter(".S ")
+                        this.season      = numberRegex.find(sezon.title ?: "")?.value?.toIntOrNull()
+                        this.episode     = numberRegex.find(bolum.title ?: "")?.value?.toIntOrNull()
+                        this.description = sezon.title?.substringAfter(".S ") ?: sezon.title
                         this.posterUrl   = veri.image
                     })
                 }
             }
 
-            return newAnimeLoadResponse(name = veri.title, url = url, type = TvType.TvSeries, comingSoonIfNone = false) {
-                this.episodes  = episodes.mapValues { it.value.toList() }.toMutableMap()
+            return newTvSeriesLoadResponse(veri.title ?: "", url, TvType.TvSeries, episodes.mapValues { it.value }) {
                 this.posterUrl = veri.image
                 this.plot      = veri.description
                 this.year      = veri.year
-                this.tags      = veri.genres?.map { it.title }
+                this.tags      = veri.genres?.mapNotNull { it.title }
                 this.score     = Score.from10("${veri.rating}")
             }
         }
 
         return if (veri.label != "CANLI" && veri.label != "Canlı") {
-            newMovieLoadResponse(veri.title, url, TvType.Movie, url) {
+            newMovieLoadResponse(veri.title ?: "", url, TvType.Movie, url) {
                 this.posterUrl = veri.image
                 this.plot      = veri.description
                 this.year      = veri.year
-                this.tags      = veri.genres?.map { it.title }
+                this.tags      = veri.genres?.mapNotNull { it.title }
                 this.score     = Score.from10("${veri.rating}")
             }
         } else {
-            newLiveStreamLoadResponse(veri.title, url, url) {
+            newLiveStreamLoadResponse(veri.title ?: "", url, url) {
                 this.posterUrl = veri.image
                 this.plot      = veri.description
-                this.tags      = veri.genres?.map { it.title }
+                this.tags      = veri.genres?.mapNotNull { it.title }
             }
         }
     }
@@ -294,3 +296,57 @@ class Rec : MainAPI() {
         }
     }
 }
+
+// ── JSON model ───────────────────────────────────────────────────────────────
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RctGenre(
+    @JsonProperty("title") val title: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RctSource(
+    @JsonProperty("url")     val url: String? = null,
+    @JsonProperty("enc_url") val encUrl: String? = null,
+    @JsonProperty("type")    val type: String? = null,
+    @JsonProperty("title")   val title: String? = null
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RctItem(
+    @JsonProperty("id")          val id: Int? = null,
+    @JsonProperty("title")       val title: String? = null,
+    @JsonProperty("image")       val image: String? = null,
+    @JsonProperty("description") val description: String? = null,
+    @JsonProperty("year")        val year: Int? = null,
+    @JsonProperty("rating")      val rating: Double? = null,
+    @JsonProperty("label")       val label: String? = null,
+    @JsonProperty("type")        val type: String? = null,
+    @JsonProperty("genres")      val genres: List<RctGenre>? = null,
+    @JsonProperty("sources")     val sources: List<RctSource> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RctEpisode(
+    @JsonProperty("title")   val title: String? = null,
+    @JsonProperty("sources") val sources: List<RctSource> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RctDizi(
+    @JsonProperty("title")    val title: String? = null,
+    @JsonProperty("episodes") val episodes: List<RctEpisode> = emptyList()
+)
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class RctSearch(
+    @JsonProperty("channels") val channels: List<RctItem>? = null,
+    @JsonProperty("posters")  val posters: List<RctItem>? = null
+)
+
+// ── JSON helper ──────────────────────────────────────────────────────────────
+
+inline fun <reified T> rctJsonOku(metin: String?): T? = runCatching {
+    if (metin.isNullOrBlank()) return null
+    jacksonObjectMapper().readValue<T>(metin)
+}.getOrNull()
