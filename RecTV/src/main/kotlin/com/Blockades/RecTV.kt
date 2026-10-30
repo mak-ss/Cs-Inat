@@ -3,10 +3,7 @@ package com.Blockades
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -127,7 +124,7 @@ class Rec : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val yol   = request.data.replace("SAYFA", "${page - 1}") + "$SW_KEY/"
-        val liste = rctJsonOku<List<RctItem>>(apiGet(yol)).orEmpty()
+        val liste = recJsonOku<List<RecItem>>(apiGet(yol)).orEmpty()
 
         val icerik = liste.map { item ->
             val veri = jacksonObjectMapper().writeValueAsString(item)
@@ -148,7 +145,7 @@ class Rec : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val kodlu   = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
-        val veriler = rctJsonOku<RctSearch>(apiGet("/api/search/$kodlu/$SW_KEY/")) ?: return emptyList()
+        val veriler = recJsonOku<RecSearch>(apiGet("/api/search/$kodlu/$SW_KEY/")) ?: return emptyList()
 
         val sonuclar = mutableListOf<SearchResponse>()
 
@@ -172,35 +169,27 @@ class Rec : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val veri = rctJsonOku<RctItem>(url) ?: return null
+        val veri = recJsonOku<RecItem>(url) ?: return null
 
         if (veri.type == "serie") {
-            val sezonlar = rctJsonOku<List<RctDizi>>(apiGet("/api/season/by/serie/${veri.id}/$SW_KEY/")) ?: return null
+            val sezonlar = recJsonOku<List<RecDizi>>(apiGet("/api/season/by/serie/${veri.id}/$SW_KEY/")) ?: return null
 
-            val episodes    = mutableMapOf<DubStatus, MutableList<Episode>>()
+            val episodes    = mutableListOf<Episode>()
             val numberRegex = Regex("\\d+")
 
             for (sezon in sezonlar) {
-                val dublaj = when {
-                    sezon.title?.contains("altyazı", ignoreCase = true) == true -> DubStatus.Subbed
-                    sezon.title?.contains("dublaj", ignoreCase = true)  == true -> DubStatus.Dubbed
-                    else                                                        -> DubStatus.None
-                }
-
                 for (bolum in sezon.episodes) {
                     val kaynak = bolum.sources.firstNotNullOfOrNull { kaynakAdresi(it) } ?: continue
 
-                    episodes.getOrPut(dublaj) { mutableListOf() }.add(newEpisode(kaynak) {
-                        this.name        = bolum.title
-                        this.season      = numberRegex.find(sezon.title ?: "")?.value?.toIntOrNull()
-                        this.episode     = numberRegex.find(bolum.title ?: "")?.value?.toIntOrNull()
-                        this.description = sezon.title?.substringAfter(".S ") ?: sezon.title
-                        this.posterUrl   = veri.image
+                    episodes.add(newEpisode(kaynak) {
+                        this.name    = bolum.title
+                        this.season  = numberRegex.find(sezon.title ?: "")?.value?.toIntOrNull()
+                        this.episode = numberRegex.find(bolum.title ?: "")?.value?.toIntOrNull()
                     })
                 }
             }
 
-            return newTvSeriesLoadResponse(veri.title ?: "", url, TvType.TvSeries, episodes.mapValues { it.value }) {
+            return newTvSeriesLoadResponse(veri.title ?: "", url, TvType.TvSeries, episodes) {
                 this.posterUrl = veri.image
                 this.plot      = veri.description
                 this.year      = veri.year
@@ -233,7 +222,7 @@ class Rec : MainAPI() {
             return true
         }
 
-        val veri    = rctJsonOku<RctItem>(data) ?: return false
+        val veri    = recJsonOku<RecItem>(data) ?: return false
         var bulundu = false
 
         for (source in veri.sources) {
@@ -259,7 +248,7 @@ class Rec : MainAPI() {
         }
     }
 
-    private fun kaynakAdresi(source: RctSource): String? {
+    private fun kaynakAdresi(source: RecSource): String? {
         source.url?.takeIf { it.startsWith("http") }?.let { return it }
         return source.encUrl?.let { encCoz(it) }?.takeIf { it.startsWith("http") }
     }
@@ -296,57 +285,3 @@ class Rec : MainAPI() {
         }
     }
 }
-
-// ── JSON model ───────────────────────────────────────────────────────────────
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RctGenre(
-    @JsonProperty("title") val title: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RctSource(
-    @JsonProperty("url")     val url: String? = null,
-    @JsonProperty("enc_url") val encUrl: String? = null,
-    @JsonProperty("type")    val type: String? = null,
-    @JsonProperty("title")   val title: String? = null
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RctItem(
-    @JsonProperty("id")          val id: Int? = null,
-    @JsonProperty("title")       val title: String? = null,
-    @JsonProperty("image")       val image: String? = null,
-    @JsonProperty("description") val description: String? = null,
-    @JsonProperty("year")        val year: Int? = null,
-    @JsonProperty("rating")      val rating: Double? = null,
-    @JsonProperty("label")       val label: String? = null,
-    @JsonProperty("type")        val type: String? = null,
-    @JsonProperty("genres")      val genres: List<RctGenre>? = null,
-    @JsonProperty("sources")     val sources: List<RctSource> = emptyList()
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RctEpisode(
-    @JsonProperty("title")   val title: String? = null,
-    @JsonProperty("sources") val sources: List<RctSource> = emptyList()
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RctDizi(
-    @JsonProperty("title")    val title: String? = null,
-    @JsonProperty("episodes") val episodes: List<RctEpisode> = emptyList()
-)
-
-@JsonIgnoreProperties(ignoreUnknown = true)
-data class RctSearch(
-    @JsonProperty("channels") val channels: List<RctItem>? = null,
-    @JsonProperty("posters")  val posters: List<RctItem>? = null
-)
-
-// ── JSON helper ──────────────────────────────────────────────────────────────
-
-inline fun <reified T> rctJsonOku(metin: String?): T? = runCatching {
-    if (metin.isNullOrBlank()) return null
-    jacksonObjectMapper().readValue<T>(metin)
-}.getOrNull()
