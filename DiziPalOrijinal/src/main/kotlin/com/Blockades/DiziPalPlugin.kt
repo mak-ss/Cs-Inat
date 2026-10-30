@@ -1,0 +1,18 @@
+package com.Blockades
+
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
+import android.content.Context
+
+@CloudstreamPlugin
+class DiziPalPlugin: Plugin() {
+    override fun load(context: Context) {
+        registerMainAPI(DiziPal())
+        registerExtractorAPI(DpSnHotlinger())
+        registerExtractorAPI(DpHotlinger())
+        registerExtractorAPI(DpContentX())
+        registerExtractorAPI(DpJwKaynak())
+        registerExtractorAPI(DpStreamCore())
+        registerExtractorAPI(DpVideoPlays())
+    }
+}
