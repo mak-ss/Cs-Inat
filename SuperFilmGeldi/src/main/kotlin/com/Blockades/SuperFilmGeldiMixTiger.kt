@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.fasterxml.jackson.annotation.JsonProperty
 
-open class SfgMixTiger : ExtractorApi() {
+open class SuperFilmGeldiResimMixTiger : ExtractorApi() {
     override val name            = "MixTiger"
     override val mainUrl         = "https://www.mixtiger.com"
     override val requiresReferer = true
