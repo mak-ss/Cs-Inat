@@ -15,6 +15,6 @@ cloudstream {
      * 3: Beta only
     **/
     status  = 1 // will be 3 if unspecified
-    tvTypes = listOf("TvSeries", "Live")
+    tvTypes = listOf("TvSeries")
     iconUrl = "https://www.google.com/s2/favicons?domain=www.showtv.com.tr&sz=%size%"
 }
