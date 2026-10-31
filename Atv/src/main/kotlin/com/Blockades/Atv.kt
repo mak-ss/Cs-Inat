@@ -18,7 +18,7 @@ class Atv : MainAPI() {
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = false
-    override val supportedTypes       = setOf(TvType.TvSeries, TvType.Live)
+    override val supportedTypes       = setOf(TvType.TvSeries)
 
     private var allContentCache: List<SearchResponse> = emptyList()
     private var cacheTime: Long = 0
