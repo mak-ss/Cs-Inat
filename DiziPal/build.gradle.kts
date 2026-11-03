@@ -1,6 +1,6 @@
 
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-version = 6
+version = 7
 
 cloudstream {
     authors     = listOf("Blockades")
