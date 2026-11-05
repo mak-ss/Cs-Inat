@@ -1,8 +1,8 @@
 package com.Blockades
 
 import android.util.Base64
-import com.bigbull.common.browserHeaders
-import com.bigbull.common.posterSrcLazy
+import com.Blockades.common.browserHeaders
+import com.Blockades.common.posterSrcLazy
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
