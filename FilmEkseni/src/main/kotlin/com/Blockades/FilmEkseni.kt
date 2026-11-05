@@ -1,8 +1,6 @@
 package com.Blockades
 
 import android.util.Base64
-import com.Blockades.common.browserHeaders
-import com.Blockades.common.posterSrcLazy
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -54,10 +52,9 @@ class FilmEkseni : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Movie)
 
-    private val uaHeaders get() = browserHeaders
+    private val uaHeaders get() = mapOf("User-Agent" to UA)
 
     override val mainPage get() = ROWS.mapNotNull { name ->
-        if (!Settings.rowEnabled(name)) return@mapNotNull null
         when (name) {
             "Son Eklenen Filmler" -> MainPageData(name, "$mainUrl/filmler/")
             "En Çok İzlenenler" -> MainPageData(name, "$mainUrl/en-cok-izlenenler/")
@@ -180,9 +177,8 @@ class FilmEkseni : MainAPI() {
 
         val found = links.distinctBy { it.url }
         if (found.isEmpty()) throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
-        val allowed = found.filter { Settings.qualityAllowed(it.quality) }
         // Kalite sınırı bütün kaynakları elediğinde en düşük kaliteli tek link verilir.
-        (allowed.ifEmpty { listOfNotNull(found.minByOrNull { it.quality }) }).forEach(callback)
+        (found.ifEmpty { listOfNotNull(found.minByOrNull { it.quality }) }).forEach(callback)
         return true
     }
 
@@ -196,7 +192,11 @@ class FilmEkseni : MainAPI() {
         val href = fixUrlNull(attr("href")) ?: return null
         val title = selectFirst("h3")?.text()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = fixUrlNull(selectFirst("img[src]")?.posterSrcLazy()?.takeIf { it.startsWith("http") })
+            this.posterUrl = fixUrlNull(
+                selectFirst("img[src]")?.let { img ->
+                    img.attr("src").ifBlank { img.attr("data-src") }
+                }?.takeIf { it.startsWith("http") }
+            )
             this.year = selectFirst("span.text-gray-300")?.text()?.trim()?.toIntOrNull()
             this.score = selectFirst("span.text-accent")?.text()?.trim()?.toDoubleOrNull()
                 ?.let { Score.from10(it) }
