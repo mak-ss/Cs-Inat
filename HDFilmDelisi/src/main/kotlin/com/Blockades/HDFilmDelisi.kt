@@ -13,7 +13,7 @@ import java.util.Base64
 import java.util.regex.Pattern
 
 class HDFilmDelisi : MainAPI() {
-    override var mainUrl = "https://hdfilmdelisi.one"
+    override var mainUrl = "https://hdfilmdelisi1.com"
     override var name = "HDFilmDelisi"
     override val hasMainPage = true
     override var lang = "tr"
