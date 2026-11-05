@@ -2,7 +2,6 @@
 
 package com.Blockades
 
-
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -29,10 +28,10 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
-import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 /** Anizm (turkanime.info) — Türkçe altyazılı anime; anizm.net Cloudflare arkasında. */
-class AnizmProvider : MainAPI() {
+class Anizm : MainAPI() {
     override var mainUrl = "https://turkanime.info"
     override var name = "Anizm"
     override var lang = "tr"
@@ -43,8 +42,8 @@ class AnizmProvider : MainAPI() {
     private val uaHeaders get() = browserHeaders
     private val ajaxHeaders = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest")
 
-    override val mainPage get() = ROWS.mapNotNull { name ->
-        if (!Settings.rowEnabled(name)) return@mapNotNull null
+    // Settings bağımlılığı kaldırıldı; tüm satırlar her zaman etkin.
+    override val mainPage get() = ROWS.map { name ->
         when (name) {
             "Katalog" -> MainPageData(name, "$mainUrl/arama?sayfa=SAYFA")
             "Aksiyon" -> MainPageData(name, "$mainUrl/kategoriler/2?sayfa=SAYFA")
@@ -59,7 +58,7 @@ class AnizmProvider : MainAPI() {
             "Okul" -> MainPageData(name, "$mainUrl/kategoriler/26?sayfa=SAYFA")
             "Shounen" -> MainPageData(name, "$mainUrl/kategoriler/34?sayfa=SAYFA")
             "Spor" -> MainPageData(name, "$mainUrl/kategoriler/37?sayfa=SAYFA")
-            else -> null
+            else -> MainPageData(name, "$mainUrl/arama?sayfa=SAYFA")
         }
     }
 
@@ -77,11 +76,18 @@ class AnizmProvider : MainAPI() {
         return doc.select("article.v3-catalog-card").mapNotNull { it.toSearchResult() }
     }
 
+    /** Poster URL'sini data-src veya src özniteliğinden okur. */
+    private fun Element.posterUrl(): String? {
+        val img = selectFirst("img") ?: return null
+        return img.attr("data-src").takeIf { it.isNotBlank() }
+            ?: img.attr("src").takeIf { it.isNotBlank() }
+    }
+
     private fun Element.toSearchResult(): SearchResponse? {
         val href = fixUrlNull(selectFirst("a.v3-catalog-poster")?.attr("href")) ?: return null
         val title = selectFirst("h2 a")?.text()?.trim()?.takeIf { it.isNotBlank() } ?: return null
         return newTvSeriesSearchResponse(title, href, TvType.Anime) {
-            this.posterUrl = fixUrlNull(selectFirst("a.v3-catalog-poster img")?.posterSrcLazy())
+            this.posterUrl = fixUrlNull(selectFirst("a.v3-catalog-poster")?.posterUrl())
             this.year = selectFirst(".v3-catalog-card-copy p")?.text()?.trim()?.toIntOrNull()
         }
     }
@@ -113,7 +119,7 @@ class AnizmProvider : MainAPI() {
         }
 
         return newTvSeriesLoadResponse(title, url, TvType.Anime, episodes) {
-            this.posterUrl = fixUrlNull(doc.selectFirst(".v3-anime-detail-cover img")?.posterSrcLazy())
+            this.posterUrl = fixUrlNull(doc.selectFirst(".v3-anime-detail-cover")?.posterUrl())
             this.plot = doc.selectFirst(".v3-anime-summary p")?.text()?.trim()?.takeIf { it.isNotBlank() }
             this.year = doc.select(".v3-anime-detail-meta span").firstNotNullOfOrNull { span ->
                 span.text().trim().toIntOrNull()?.takeIf { it in 1900..2100 }
@@ -133,13 +139,11 @@ class AnizmProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val seenLinks = Collections.synchronizedSet(mutableSetOf<String>())
-        val seenSubs = Collections.synchronizedSet(mutableSetOf<String>())
-        val emit: (ExtractorLink) -> Unit = {
-            if (Settings.qualityAllowed(it.quality)) callback(it)
-        }
+        val seenLinks = ConcurrentHashMap.newKeySet<String>()
+        val seenSubs = ConcurrentHashMap.newKeySet<String>()
+        val emit: (ExtractorLink) -> Unit = { callback(it) }
         val emitSub: (SubtitleFile) -> Unit = {
-            if (seenSubs.add(it.url) && Settings.subtitleAllowed(it.lang)) subtitleCallback(it)
+            if (seenSubs.add(it.url)) subtitleCallback(it)
         }
 
         val doc = runCatching { app.get(data, headers = uaHeaders).document }
@@ -154,14 +158,12 @@ class AnizmProvider : MainAPI() {
             val name = button.attr("title").trim().let { if (it == "-") "" else it }
             id to name
         }.distinctBy { it.first }
-        // Ten translators answer ~140 mirrors; the site's own player sits in the first translator's
-        // first mirror, so two translators are enough for a first round.
+
         val perTranslator = translators.take(MAX_TRANSLATORS).amap { (translatorId, translatorName) ->
             val payload = runCatching {
                 app.get(
                     "$mainUrl/bolum/$episodeId/cevirmen/$translatorId",
-                    referer = data,
-                    headers = ajaxHeaders,
+                    headers = ajaxHeaders + mapOf("Referer" to data),
                 ).text
             }.getOrNull() ?: return@amap emptyList()
             val videos = runCatching { JSONObject(payload).optJSONArray("videos") }.getOrNull()
@@ -175,9 +177,6 @@ class AnizmProvider : MainAPI() {
             }
         }
 
-        // Every mirror costs one same-host /player probe plus an extractor pass; a 6-translator
-        // episode lists 54 of them (152s under QA's 2s-per-host gate). Probe one mirror rank per
-        // round (each translator's first mirror, then seconds) and stop as soon as a round answers.
         val sources = (0 until MAX_MIRRORS)
             .flatMap { rank -> perTranslator.mapNotNull { it.getOrNull(rank) } }
             .take(MAX_MIRRORS)
@@ -185,18 +184,16 @@ class AnizmProvider : MainAPI() {
 
         for (batch in rounds) {
             if (seenLinks.isNotEmpty()) break
-            // Emit as soon as a mirror answers so one slow embed host cannot hold back the rest.
             batch.amap { (label, videoId) ->
                 if (seenLinks.size >= MAX_LINKS) return@amap
                 val links = mutableListOf<ExtractorLink>()
                 val subs = mutableListOf<SubtitleFile>()
                 val playerUrl = "$mainUrl/player/$videoId"
                 val probe = runCatching {
-                    app.get(playerUrl, referer = data, headers = uaHeaders, allowRedirects = false)
+                    app.get(playerUrl, headers = uaHeaders + mapOf("Referer" to data))
                 }.getOrNull()
-                // The app answers the 302 itself; the JVM QA runner ignores allowRedirects and
-                // lands on the embed, so the final response URL is the redirect target there.
-                val target = listOfNotNull(probe?.headers?.get("location"), probe?.url)
+                // Yönlendirme hedefi: son yanıt URL'si veya Location başlığı
+                val target = listOfNotNull(probe?.url, probe?.headers?.get("location"))
                     .firstOrNull { it.startsWith("http") && it != playerUrl }
                 if (target != null) {
                     runCatching {
@@ -217,11 +214,6 @@ class AnizmProvider : MainAPI() {
         return true
     }
 
-    /**
-     * Anizm's own player (PuffyTR engine): POST `player/index.php?do=getVideo` answers JSON
-     * whose `videoSource` is the master playlist. The signed `securedLink` 403s on cold
-     * requests, so only `videoSource` is used.
-     */
     private suspend fun loadAnizmPlayer(
         embed: String,
         referer: String,
@@ -247,7 +239,6 @@ class AnizmProvider : MainAPI() {
         callback.invoke(
             newExtractorLink(name, label, stream, ExtractorLinkType.M3U8) {
                 this.referer = "$origin/"
-                // The CDN answers "security error" to requests without Accept.
                 this.headers = mapOf("Accept" to "*/*")
                 this.quality = Qualities.Unknown.value
             }
@@ -255,7 +246,6 @@ class AnizmProvider : MainAPI() {
         return true
     }
 
-    /** pl.puffytr.tr/watch/{slug} plays the master at /stream/{slug}/native.m3u8. */
     private suspend fun loadPuffytr(target: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
         val origin = target.substringBefore("/watch/")
         val slug = target.substringAfterLast('/')
@@ -271,7 +261,6 @@ class AnizmProvider : MainAPI() {
     }
 
     companion object {
-        /** Homepage rows in display order; all map to live listing pages. */
         val ROWS = listOf("Katalog", "Aksiyon", "Macera", "Komedi", "Dram", "Romantizm",
             "Bilim Kurgu", "Doğaüstü", "Fantastik", "Gizem", "Okul", "Shounen", "Spor")
 
