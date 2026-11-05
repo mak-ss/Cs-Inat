@@ -39,10 +39,13 @@ class Anizm : MainAPI() {
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.Anime)
 
-    private val uaHeaders get() = browserHeaders
-    private val ajaxHeaders = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest")
+    // browserHeaders yerine doğrudan User-Agent tanımı
+    private val uaHeaders get() = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    private val ajaxHeaders get() = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest")
 
-    // Settings bağımlılığı kaldırıldı; tüm satırlar her zaman etkin.
     override val mainPage get() = ROWS.map { name ->
         when (name) {
             "Katalog" -> MainPageData(name, "$mainUrl/arama?sayfa=SAYFA")
@@ -192,9 +195,8 @@ class Anizm : MainAPI() {
                 val probe = runCatching {
                     app.get(playerUrl, headers = uaHeaders + mapOf("Referer" to data))
                 }.getOrNull()
-                // Yönlendirme hedefi: son yanıt URL'si veya Location başlığı
-                val target = listOfNotNull(probe?.url, probe?.headers?.get("location"))
-                    .firstOrNull { it.startsWith("http") && it != playerUrl }
+                // Yönlendirme hedefi: probe.url (allowRedirects desteklenmediğinden Location başlığı kullanılmaz)
+                val target = probe?.url?.takeIf { it.startsWith("http") && it != playerUrl }
                 if (target != null) {
                     runCatching {
                         when {
