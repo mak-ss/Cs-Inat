@@ -241,7 +241,7 @@ class DiziPal2 : MainAPI() {
     }
 
     // ============================================================================================
-    // VİDEO LİNKLERİ
+    // VİDEO LİNKLERİ — ajax-player-config endpoint'i
     // ============================================================================================
     override suspend fun loadLinks(
         data: String,
@@ -275,12 +275,12 @@ class DiziPal2 : MainAPI() {
 
                 val norm = pageHtml.replace("\\/", "/").replace("&amp;", "&")
 
-                // 2a) Tüm iframe src'leri
+                // 2a) Tüm iframe src'leri (bazı bölümlerde hâlâ olabilir)
                 Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .findAll(norm)
                     .forEach { found += it.groupValues[1] }
 
-                // 2b) Doğrudan m3u8 linkleri (imzalı + imzasız)
+                // 2b) Doğrudan m3u8 linkleri (nadiren)
                 Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
                     .findAll(norm).forEach { found += it.value }
 
@@ -288,11 +288,19 @@ class DiziPal2 : MainAPI() {
                 Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                     .findAll(norm).forEach { found += it.value }
 
-                // 2d) data-cfg VEYA meta[name=_bc] varsa player/api dene
-                val cfgMatch = Regex("""data-cfg=["']([^"']+)["']""")
-                    .find(norm)?.groupValues?.getOrNull(1)
+                // 2d) videoContainer data-cfg VEYA meta[name=_bc]
+                //     Dizipal'in JS'i: document.getElementById("videoContainer").dataset.cfg
+                //     <div id="videoContainer" data-cfg="...">
+                val dataCfgMatch = Regex(
+                    """<div[^>]*id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']""",
+                    RegexOption.IGNORE_CASE
+                ).find(norm)?.groupValues?.getOrNull(1)
+                    ?: Regex(
+                        """<div[^>]*data-cfg=["']([^"']+)["'][^>]*id=["']videoContainer["']""",
+                        RegexOption.IGNORE_CASE
+                    ).find(norm)?.groupValues?.getOrNull(1)
 
-                // <meta name="_bc" content="..."> — iki attribute sırasını da destekle
+                // <meta name="_bc" content="..."> — iki attribute sırası
                 val bcMatch = Regex(
                     """<meta\s+name=["']_bc["']\s+content=["']([^"']+)["']""",
                     RegexOption.IGNORE_CASE
@@ -302,67 +310,98 @@ class DiziPal2 : MainAPI() {
                         RegexOption.IGNORE_CASE
                     ).find(norm)?.groupValues?.getOrNull(1)
 
-                val contentIdMatch = Regex("""data-content-id=["']([^"']+)["']""")
+                // Eski data-cfg (div üzerinde değil, farklı elementlerde olabilir)
+                val anyCfgMatch = Regex("""data-cfg=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .find(norm)?.groupValues?.getOrNull(1)
 
-                // Bölüm URL'inden content_id türet (örn: welcome-to-chippendales-1-sezon-1-bolum)
-                val derivedContentId = data.substringAfterLast("/bolum/")
-                    .substringBefore("?")
-                    .ifBlank { contentIdMatch ?: "" }
-
-                val cfgToSend = cfgMatch ?: bcMatch
+                val cfgToSend = dataCfgMatch ?: anyCfgMatch ?: bcMatch
 
                 if (!cfgToSend.isNullOrBlank()) {
-                    Log.d("DiziPal2", "cfg/bc=${cfgToSend.take(40)}... contentId=$derivedContentId")
+                    Log.d("DiziPal2", "cfg=${cfgToSend.take(40)}... POST → ajax-player-config")
                     try {
+                        // Dizipal JS: BASE_URL + "ajax-player-config"
+                        // BASE_URL = meta[name="dp-base-url"] content veya "/"
+                        val baseUrlMeta = Regex(
+                            """<meta\s+name=["']dp-base-url["']\s+content=["']([^"']+)["']""",
+                            RegexOption.IGNORE_CASE
+                        ).find(norm)?.groupValues?.getOrNull(1) ?: "/"
+
+                        val apiUrl = if (baseUrlMeta.startsWith("http"))
+                            "${baseUrlMeta.trimEnd('/')}/ajax-player-config"
+                        else
+                            "$mainUrl/ajax-player-config"
+
+                        Log.d("DiziPal2", "POST → $apiUrl")
+
                         val apiResponse = app.post(
-                            "$mainUrl/player/api",
-                            data = mapOf(
-                                "cfg"        to cfgToSend,
-                                "content_id" to derivedContentId,
-                                "type"       to if (data.contains("/bolum/")) "episode" else "movie"
-                            ),
+                            apiUrl,
+                            data = mapOf("cfg" to cfgToSend),
                             referer = data,
                             headers = mapOf(
                                 "User-Agent"       to UA,
                                 "Accept"           to "application/json, text/plain, */*",
                                 "X-Requested-With" to "XMLHttpRequest",
-                                "Origin"           to mainUrl
+                                "Origin"           to mainUrl,
+                                "Content-Type"     to "application/x-www-form-urlencoded; charset=UTF-8"
                             )
                         ).text
 
-                        Log.d("DiziPal2", "player/api yanıtı = ${apiResponse.take(500)}")
+                        Log.d("DiziPal2", "ajax-player-config yanıtı = ${apiResponse.take(800)}")
+
                         val apiNorm = apiResponse.replace("\\/", "/").replace("&amp;", "&")
 
-                        Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
-                            .findAll(apiNorm).forEach { found += it.value }
-                        Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
-                            .findAll(apiNorm).forEach { found += it.value }
-
+                        // Dizipal JS: JSON.parse(responseText).config içinde {v, t, p}
                         try {
                             val json = org.json.JSONObject(apiNorm)
-                            json.optString("url").takeIf { it.isNotBlank() }?.let { found += it }
-                            json.optString("embed").takeIf { it.isNotBlank() }?.let { found += it }
-                            json.optString("source").takeIf { it.isNotBlank() }?.let { found += it }
-                            val sources = json.optJSONArray("sources")
-                            if (sources != null) {
-                                for (i in 0 until sources.length()) {
-                                    val s = sources.getJSONObject(i)
-                                    s.optString("file").takeIf { it.isNotBlank() }?.let { found += it }
-                                    s.optString("url").takeIf { it.isNotBlank() }?.let { found += it }
+
+                            // Bazı sürümlerde {"success":true,"config":{...}}
+                            val config = json.optJSONObject("config")
+                                ?: json.optJSONObject("data")?.optJSONObject("config")
+
+                            if (config != null) {
+                                val v = config.optString("v", "")
+                                val t = config.optString("t", "").lowercase()
+                                Log.d("DiziPal2", "config.v=${v.take(120)} | config.t=$t")
+
+                                if (v.isNotBlank()) {
+                                    when {
+                                        v.contains(".m3u8", true) -> found += v
+                                        t == "iframe" && v.contains("<iframe", true) -> {
+                                            Regex("""src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                                .find(v)?.groupValues?.getOrNull(1)?.let { found += it }
+                                        }
+                                        t == "iframe" -> found += v
+                                        v.contains("<iframe", true) -> {
+                                            Regex("""src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+                                                .find(v)?.groupValues?.getOrNull(1)?.let { found += it }
+                                        }
+                                        else -> found += v
+                                    }
                                 }
+                            } else {
+                                // config yok, yanıt içinde m3u8/iframe arayalım
+                                Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
+                                    .findAll(apiNorm).forEach { found += it.value }
+                                Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
+                                    .findAll(apiNorm).forEach { found += it.value }
                             }
-                        } catch (_: Exception) {}
+                        } catch (e: Exception) {
+                            Log.e("DiziPal2", "JSON parse hatası » ${e.message}")
+                            Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
+                                .findAll(apiNorm).forEach { found += it.value }
+                            Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
+                                .findAll(apiNorm).forEach { found += it.value }
+                        }
                     } catch (e: Exception) {
-                        Log.e("DiziPal2", "player/api POST HATA » ${e.message}")
+                        Log.e("DiziPal2", "ajax-player-config POST HATA » ${e.message}")
                     }
                 } else {
-                    Log.d("DiziPal2", "cfg/_bc yok, sadece iframe/m3u8 taraması yapılıyor")
+                    Log.d("DiziPal2", "data-cfg/_bc bulunamadı, sadece HTML taraması")
                 }
             }
         }
 
-        // Tekilleştir, boşları at, öncelik sırala
+        // Tekilleştir + öncelik sırala
         val unique = found
             .filter { it.isNotBlank() }
             .distinct()
