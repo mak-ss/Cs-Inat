@@ -5,9 +5,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
-class DiziPal2 : MainAPI() {
+class DiziPal12 : MainAPI() {
     override var mainUrl              = "https://dizipal2147.com"
-    override var name                 = "DiziPal2"
+    override var name                 = "DiziPal12"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -167,7 +167,7 @@ class DiziPal2 : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("DiziPal2", "search JSON hatası » ${e.message}")
+            Log.e("DiziPal12", "search JSON hatası » ${e.message}")
         }
 
         return results
@@ -241,7 +241,7 @@ class DiziPal2 : MainAPI() {
     }
 
     // ============================================================================================
-    // VİDEO LİNKLERİ — ajax-player-config endpoint'i + _ct cookie + CSRF token
+    // VİDEO LİNKLERİ
     // ============================================================================================
     override suspend fun loadLinks(
         data: String,
@@ -251,11 +251,9 @@ class DiziPal2 : MainAPI() {
     ): Boolean {
         val found = mutableListOf<String>()
 
-        // 1) data zaten m3u8 mi?
         if (data.contains(".m3u8", ignoreCase = true)) {
             found += data
         } else {
-            // 2) Sayfayı çek — Cookie'leri korumak için app.get kullan
             val pageResponse = try {
                 app.get(
                     data,
@@ -266,43 +264,39 @@ class DiziPal2 : MainAPI() {
                     )
                 )
             } catch (e: Exception) {
-                Log.e("DiziPal2", "Sayfa çekilemedi » ${e.message}")
+                Log.e("DiziPal12", "Sayfa çekilemedi » ${e.message}")
                 null
             }
 
             val pageHtml = pageResponse?.text ?: ""
 
-            // 2a) Set-Cookie başlıklarından _ct ve cf_clearance çıkar
-            val setCookies = pageResponse?.headers?.get("Set-Cookie") ?: emptyList()
-            val cookieMap = mutableMapOf<String, String>()
-            setCookies.forEach { raw ->
-                raw.split(";").forEach { part ->
+            // Set-Cookie başlıkları — TİP AÇIKÇA BELİRTİLDİ (derleme hatasını giderir)
+            val setCookies: List<String> = pageResponse?.headers?.get("Set-Cookie") ?: emptyList()
+            val cookieMap: MutableMap<String, String> = mutableMapOf()
+            for (raw in setCookies) {
+                for (part in raw.split(";")) {
                     val kv = part.trim().split("=", limit = 2)
                     if (kv.size == 2 && kv[0].isNotBlank()) {
                         cookieMap[kv[0]] = kv[1]
                     }
                 }
             }
-            Log.d("DiziPal2", "Set-Cookie anahtarları: ${cookieMap.keys}")
+            Log.d("DiziPal12", "Set-Cookie anahtarları: ${cookieMap.keys}")
 
             if (pageHtml.isNotBlank()) {
-                Log.d("DiziPal2", "Sayfa HTML (ilk 500): ${pageHtml.take(500)}")
+                Log.d("DiziPal12", "Sayfa HTML (ilk 500): ${pageHtml.take(500)}")
 
                 val norm = pageHtml.replace("\\/", "/").replace("&amp;", "&")
 
-                // 2b) iframe src'leri (bazı bölümlerde hâlâ olabilir)
                 Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
                     .findAll(norm).forEach { found += it.groupValues[1] }
 
-                // 2c) Doğrudan m3u8 linkleri (nadiren)
                 Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
                     .findAll(norm).forEach { found += it.value }
 
-                // 2d) superadjacentsoddenly / formationfeed URL'leri
                 Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                     .findAll(norm).forEach { found += it.value }
 
-                // 2e) videoContainer data-cfg VEYA meta[name=_bc]
                 val dataCfgMatch = Regex(
                     """<div[^>]*id=["']videoContainer["'][^>]*data-cfg=["']([^"']+)["']""",
                     RegexOption.IGNORE_CASE
@@ -326,12 +320,10 @@ class DiziPal2 : MainAPI() {
 
                 val cfgToSend = dataCfgMatch ?: anyCfgMatch ?: bcMatch
 
-                // 2f) _ct cookie değeri (cookie başlığından veya HTML'den)
                 val ctFromCookie = cookieMap["_ct"]
                     ?: Regex("""_ct=([a-zA-Z0-9_\-]+)""", RegexOption.IGNORE_CASE)
                         .find(norm)?.groupValues?.getOrNull(1)
 
-                // 2g) csrf-token meta'sı
                 val csrfMatch = Regex(
                     """<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']""",
                     RegexOption.IGNORE_CASE
@@ -341,15 +333,14 @@ class DiziPal2 : MainAPI() {
                         RegexOption.IGNORE_CASE
                     ).find(norm)?.groupValues?.getOrNull(1)
 
-                // 2h) cf_clearance (Cloudflare çerezi) — varsa mutlaka gönder
                 val cfClearance = cookieMap["cf_clearance"]
                     ?: Regex("""cf_clearance=([a-zA-Z0-9_\-\.]+)""", RegexOption.IGNORE_CASE)
                         .find(norm)?.groupValues?.getOrNull(1)
 
-                Log.d("DiziPal2", "ct=${ctFromCookie?.take(20)}... csrf=${csrfMatch?.take(20)}... cf=${cfClearance?.take(20)}...")
+                Log.d("DiziPal12", "ct=${ctFromCookie?.take(20)}... csrf=${csrfMatch?.take(20)}... cf=${cfClearance?.take(20)}...")
 
                 if (!cfgToSend.isNullOrBlank()) {
-                    Log.d("DiziPal2", "cfg=${cfgToSend.take(40)}... POST → ajax-player-config")
+                    Log.d("DiziPal12", "cfg=${cfgToSend.take(40)}... POST → ajax-player-config")
                     try {
                         val baseUrlMeta = Regex(
                             """<meta\s+name=["']dp-base-url["']\s+content=["']([^"']+)["']""",
@@ -361,21 +352,17 @@ class DiziPal2 : MainAPI() {
                         else
                             "$mainUrl/ajax-player-config"
 
-                        Log.d("DiziPal2", "POST → $apiUrl")
+                        Log.d("DiziPal12", "POST → $apiUrl")
 
-                        // Cookie string oluştur
                         val cookieParts = mutableListOf<String>()
                         ctFromCookie?.let { cookieParts += "_ct=$it" }
                         cfClearance?.let { cookieParts += "cf_clearance=$it" }
-                        // Diğer cookie'leri de ekle (varsa)
-                        cookieMap.forEach { (k, v) ->
-                            if (k != "_ct" && k != "cf_clearance") {
-                                cookieParts += "$k=$v"
-                            }
+                        for ((k, v) in cookieMap) {
+                            if (k != "_ct" && k != "cf_clearance") cookieParts += "$k=$v"
                         }
                         val cookieHeader = cookieParts.joinToString("; ")
 
-                        Log.d("DiziPal2", "Cookie başlığı: ${cookieHeader.take(200)}")
+                        Log.d("DiziPal12", "Cookie başlığı: ${cookieHeader.take(200)}")
 
                         val apiResponse = app.post(
                             apiUrl,
@@ -392,14 +379,14 @@ class DiziPal2 : MainAPI() {
                             }
                         ).text
 
-                        Log.d("DiziPal2", "ajax-player-config yanıtı = ${apiResponse.take(800)}")
+                        Log.d("DiziPal12", "ajax-player-config yanıtı = ${apiResponse.take(800)}")
 
                         val apiNorm = apiResponse.replace("\\/", "/").replace("&amp;", "&")
 
                         try {
                             val json = org.json.JSONObject(apiNorm)
                             val success = json.optBoolean("success", false)
-                            Log.d("DiziPal2", "success=$success")
+                            Log.d("DiziPal12", "success=$success")
 
                             val config = json.optJSONObject("config")
                                 ?: json.optJSONObject("data")?.optJSONObject("config")
@@ -407,7 +394,7 @@ class DiziPal2 : MainAPI() {
                             if (config != null) {
                                 val v = config.optString("v", "")
                                 val t = config.optString("t", "").lowercase()
-                                Log.d("DiziPal2", "config.v=${v.take(120)} | config.t=$t")
+                                Log.d("DiziPal12", "config.v=${v.take(120)} | config.t=$t")
 
                                 if (v.isNotBlank()) {
                                     when {
@@ -425,29 +412,27 @@ class DiziPal2 : MainAPI() {
                                     }
                                 }
                             } else {
-                                // config yok, yanıt içinde m3u8/iframe arayalım
                                 Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
                                     .findAll(apiNorm).forEach { found += it.value }
                                 Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                                     .findAll(apiNorm).forEach { found += it.value }
                             }
                         } catch (e: Exception) {
-                            Log.e("DiziPal2", "JSON parse hatası » ${e.message}")
+                            Log.e("DiziPal12", "JSON parse hatası » ${e.message}")
                             Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
                                 .findAll(apiNorm).forEach { found += it.value }
                             Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                                 .findAll(apiNorm).forEach { found += it.value }
                         }
                     } catch (e: Exception) {
-                        Log.e("DiziPal2", "ajax-player-config POST HATA » ${e.message}")
+                        Log.e("DiziPal12", "ajax-player-config POST HATA » ${e.message}")
                     }
                 } else {
-                    Log.d("DiziPal2", "data-cfg/_bc bulunamadı, sadece HTML taraması")
+                    Log.d("DiziPal12", "data-cfg/_bc bulunamadı, sadece HTML taraması")
                 }
             }
         }
 
-        // Tekilleştir + öncelik sırala
         val unique = found
             .filter { it.isNotBlank() }
             .distinct()
@@ -463,11 +448,11 @@ class DiziPal2 : MainAPI() {
             }
 
         if (unique.isEmpty()) {
-            Log.w("DiziPal2", "Hiçbir kaynak bulunamadı: $data")
+            Log.w("DiziPal12", "Hiçbir kaynak bulunamadı: $data")
             return false
         }
 
-        Log.d("DiziPal2", "Bulunan kaynaklar: $unique")
+        Log.d("DiziPal12", "Bulunan kaynaklar: $unique")
 
         for (src in unique) {
             try {
@@ -506,7 +491,7 @@ class DiziPal2 : MainAPI() {
                     else -> JwKaynak().getUrl(src, "$mainUrl/", subtitleCallback, callback)
                 }
             } catch (e: Exception) {
-                Log.e("DiziPal2", "loadLinks alt hata ($src) » ${e.message}")
+                Log.e("DiziPal12", "loadLinks alt hata ($src) » ${e.message}")
             }
         }
         return true
