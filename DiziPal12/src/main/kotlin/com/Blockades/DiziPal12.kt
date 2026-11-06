@@ -5,6 +5,9 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
+// ================================================================================================
+// ANA API
+// ================================================================================================
 class DiziPal12 : MainAPI() {
     override var mainUrl              = "https://dizipal2147.com"
     override var name                 = "DiziPal12"
@@ -254,7 +257,7 @@ class DiziPal12 : MainAPI() {
         if (data.contains(".m3u8", ignoreCase = true)) {
             found += data
         } else {
-            val pageResponse = try {
+            val pageHtml = try {
                 app.get(
                     data,
                     referer = "$mainUrl/",
@@ -262,26 +265,11 @@ class DiziPal12 : MainAPI() {
                         "User-Agent" to UA,
                         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                     )
-                )
+                ).text
             } catch (e: Exception) {
                 Log.e("DiziPal12", "Sayfa çekilemedi » ${e.message}")
-                null
+                ""
             }
-
-            val pageHtml = pageResponse?.text ?: ""
-
-            // Set-Cookie başlıkları — TİP AÇIKÇA BELİRTİLDİ (derleme hatasını giderir)
-            val setCookies: List<String> = pageResponse?.headers?.get("Set-Cookie") ?: emptyList()
-            val cookieMap: MutableMap<String, String> = mutableMapOf()
-            for (raw in setCookies) {
-                for (part in raw.split(";")) {
-                    val kv = part.trim().split("=", limit = 2)
-                    if (kv.size == 2 && kv[0].isNotBlank()) {
-                        cookieMap[kv[0]] = kv[1]
-                    }
-                }
-            }
-            Log.d("DiziPal12", "Set-Cookie anahtarları: ${cookieMap.keys}")
 
             if (pageHtml.isNotBlank()) {
                 Log.d("DiziPal12", "Sayfa HTML (ilk 500): ${pageHtml.take(500)}")
@@ -320,9 +308,12 @@ class DiziPal12 : MainAPI() {
 
                 val cfgToSend = dataCfgMatch ?: anyCfgMatch ?: bcMatch
 
-                val ctFromCookie = cookieMap["_ct"]
-                    ?: Regex("""_ct=([a-zA-Z0-9_\-]+)""", RegexOption.IGNORE_CASE)
-                        .find(norm)?.groupValues?.getOrNull(1)
+                // _ct ve cf_clearance değerlerini SADECE HTML'den çıkar (derleme hatası yok)
+                val ctFromHtml = Regex("""_ct=([a-zA-Z0-9_\-]+)""", RegexOption.IGNORE_CASE)
+                    .find(norm)?.groupValues?.getOrNull(1)
+
+                val cfFromHtml = Regex("""cf_clearance=([a-zA-Z0-9_\-\.]+)""", RegexOption.IGNORE_CASE)
+                    .find(norm)?.groupValues?.getOrNull(1)
 
                 val csrfMatch = Regex(
                     """<meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']""",
@@ -333,11 +324,7 @@ class DiziPal12 : MainAPI() {
                         RegexOption.IGNORE_CASE
                     ).find(norm)?.groupValues?.getOrNull(1)
 
-                val cfClearance = cookieMap["cf_clearance"]
-                    ?: Regex("""cf_clearance=([a-zA-Z0-9_\-\.]+)""", RegexOption.IGNORE_CASE)
-                        .find(norm)?.groupValues?.getOrNull(1)
-
-                Log.d("DiziPal12", "ct=${ctFromCookie?.take(20)}... csrf=${csrfMatch?.take(20)}... cf=${cfClearance?.take(20)}...")
+                Log.d("DiziPal12", "ct=${ctFromHtml?.take(20)}... csrf=${csrfMatch?.take(20)}... cf=${cfFromHtml?.take(20)}...")
 
                 if (!cfgToSend.isNullOrBlank()) {
                     Log.d("DiziPal12", "cfg=${cfgToSend.take(40)}... POST → ajax-player-config")
@@ -355,11 +342,8 @@ class DiziPal12 : MainAPI() {
                         Log.d("DiziPal12", "POST → $apiUrl")
 
                         val cookieParts = mutableListOf<String>()
-                        ctFromCookie?.let { cookieParts += "_ct=$it" }
-                        cfClearance?.let { cookieParts += "cf_clearance=$it" }
-                        for ((k, v) in cookieMap) {
-                            if (k != "_ct" && k != "cf_clearance") cookieParts += "$k=$v"
-                        }
+                        ctFromHtml?.let { cookieParts += "_ct=$it" }
+                        cfFromHtml?.let { cookieParts += "cf_clearance=$it" }
                         val cookieHeader = cookieParts.joinToString("; ")
 
                         Log.d("DiziPal12", "Cookie başlığı: ${cookieHeader.take(200)}")
@@ -495,5 +479,203 @@ class DiziPal12 : MainAPI() {
             }
         }
         return true
+    }
+}
+
+// ================================================================================================
+// EXTRACTOR'LAR — DiziPal12 modülünde tanımlı olmalı
+// ================================================================================================
+
+class SuperAdjacentExtractor : ExtractorApi() {
+    override val name = "SuperAdjacent"
+    override val mainUrl = "https://superadjacentsoddenly.xyz"
+    override val requiresReferer = true
+
+    private val DIZIPAL_REFERER = "https://dizipal2147.com/"
+    private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val pageReferer = DIZIPAL_REFERER
+        try {
+            if (url.contains(".m3u8", ignoreCase = true)) {
+                emitLink(callback, url, pageReferer)
+                return
+            }
+
+            val pageText = app.get(
+                url,
+                referer = pageReferer,
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Origin" to pageReferer,
+                    "Referer" to pageReferer
+                )
+            ).text
+
+            val normalized = pageText.replace("\\/", "/").replace("&amp;", "&")
+            val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+?\.m3u8(?:\?[^\s"'\\<>]*)?)""")
+            val matches = m3u8Regex.findAll(normalized).map { it.groupValues[1] }.toList()
+
+            if (matches.isEmpty()) {
+                Log.w("SuperAdjacent", "Embed sayfasında m3u8 bulunamadı: $url")
+                return
+            }
+
+            val preferred = matches.sortedByDescending { link ->
+                when {
+                    !link.contains("?") && link.contains("index") -> 2
+                    !link.contains("?") -> 1
+                    else -> 0
+                }
+            }.first()
+
+            emitLink(callback, preferred, pageReferer)
+        } catch (e: Exception) {
+            Log.e("SuperAdjacent", "Hata: ${e.message}", e)
+        }
+    }
+
+    private suspend fun emitLink(callback: (ExtractorLink) -> Unit, m3u8Url: String, referer: String) {
+        val link = newExtractorLink(
+            source = this.name,
+            name = this.name,
+            url = m3u8Url,
+            type = ExtractorLinkType.M3U8
+        ) {
+            this.referer = referer
+            this.quality = Qualities.Unknown.value
+            this.headers = mapOf(
+                "User-Agent" to UA,
+                "Origin" to referer,
+                "Referer" to referer
+            )
+        }
+        callback.invoke(link)
+        Log.d("SuperAdjacent", "Link gönderildi: $m3u8Url | Referer: $referer")
+    }
+}
+
+class FormationFeedExtractor : ExtractorApi() {
+    override var name = "FormationFeed"
+    override var mainUrl = "https://formationfeed.net"
+    override val requiresReferer = true
+
+    private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val response = try {
+            app.get(
+                url,
+                referer = referer ?: "$mainUrl/",
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Accept" to "*/*"
+                )
+            ).text
+        } catch (e: Exception) {
+            return
+        }
+
+        val normalized = response.replace("\\/", "/").replace("&amp;", "&")
+
+        var m3u8Url = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
+            .find(normalized)?.groupValues?.get(1)
+
+        if (m3u8Url.isNullOrBlank()) {
+            val scriptContents = Regex("""<script[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+                .findAll(normalized)
+                .map { it.groupValues[1] }
+                .joinToString("\n")
+
+            m3u8Url = Regex("""file\s*:\s*["']([^"']*\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+                .find(scriptContents)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
+        }
+
+        if (!m3u8Url.isNullOrBlank()) {
+            val link = newExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = m3u8Url,
+                type = ExtractorLinkType.M3U8
+            ) {
+                this.referer = url
+                this.quality = Qualities.Unknown.value
+                this.headers = mapOf(
+                    "User-Agent" to UA,
+                    "Origin" to mainUrl,
+                    "Referer" to url
+                )
+            }
+            callback.invoke(link)
+        }
+    }
+}
+
+open class JwKaynak : ExtractorApi() {
+    override val name            = "PalPlayer"
+    override val mainUrl         = "https://formationfeed.net"
+    override val requiresReferer = true
+
+    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        val base = Regex("""^(https?://[^/]+)""").find(url)?.groupValues?.get(1) ?: mainUrl
+
+        val sayfa = app.get(
+            url,
+            referer = referer ?: "$base/",
+            headers = mapOf("Sec-Fetch-Dest" to "iframe")
+        ).text
+
+        val metin = if (sayfa.contains("eval(function(p,a,c,k,e")) {
+            runCatching { getAndUnpack(sayfa) }.getOrNull()?.let { sayfa + "\n" + it } ?: sayfa
+        } else {
+            sayfa
+        }
+
+        val kaynaklar = Regex("""sources\s*:\s*\[(.*?)]""", RegexOption.DOT_MATCHES_ALL).find(metin)?.groupValues?.get(1)
+        if (kaynaklar == null) {
+            Log.d("NeO_JwKaynak", "kaynak bulunamadı » $url")
+            return
+        }
+
+        Regex("""file\s*:\s*["']([^"']+)["']""").findAll(kaynaklar).forEach { eslesme ->
+            val dosya = eslesme.groupValues[1].replace("\\/", "/")
+            Log.d("NeO_JwKaynak", "$base » $dosya")
+
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name   = this.name,
+                    url    = dosya,
+                    type   = if (dosya.contains(".m3u8")) ExtractorLinkType.M3U8 else null
+                ) {
+                    this.referer = "$base/"
+                    this.quality = Qualities.Unknown.value
+                    this.headers = mapOf("Origin" to base)
+                }
+            )
+        }
+
+        Regex("""tracks\s*:\s*\[(.*?)]""", RegexOption.DOT_MATCHES_ALL).find(metin)?.groupValues?.get(1)?.let { izler ->
+            Regex("""\{[^}]*?file\s*:\s*["']([^"']+)["'][^}]*?}""").findAll(izler).forEach { iz ->
+                val blok  = iz.value
+                if (blok.contains("thumbnails")) return@forEach
+                val dosya = iz.groupValues[1].replace("\\/", "/")
+                val etiket = Regex("""label\s*:\s*["']([^"']+)["']""").find(blok)?.groupValues?.get(1) ?: "Türkçe"
+                subtitleCallback.invoke(newSubtitleFile(if (etiket.equals("Turkish", true)) "Türkçe" else etiket, dosya))
+            }
+        }
     }
 }
