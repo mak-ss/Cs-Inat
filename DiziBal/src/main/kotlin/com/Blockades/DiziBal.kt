@@ -56,7 +56,7 @@ class DiziBal : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    private val uaHeaders get() = browserHeaders
+    private val uaHeaders get() = mapOf("User-Agent" to UA)
 
     override val mainPage get() = mainPageOf(
         "$mainUrl/diziler?page=SAYFA" to "Popüler Diziler",
@@ -71,7 +71,7 @@ class DiziBal : MainAPI() {
         "$mainUrl/diziler?tur=macera&page=SAYFA" to "Macera",
         "$mainUrl/diziler?tur=belgesel&page=SAYFA" to "Belgesel",
         "$mainUrl/filmler?page=SAYFA" to "Filmler",
-    ).filter { Settings.rowEnabled(it.name) }
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data.replace("SAYFA", page.toString()), headers = uaHeaders).document
@@ -223,14 +223,13 @@ class DiziBal : MainAPI() {
         if (collected.isEmpty()) {
             throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
         }
-        val allowed = collected.filter { Settings.qualityAllowed(it.quality) }
+        val allowed = collected
         (allowed.ifEmpty { listOfNotNull(collected.minByOrNull { it.quality }) }).forEach(callback)
 
         player.optJSONArray("subs")?.let { subs ->
             (0 until subs.length()).mapNotNull { subs.optJSONObject(it) }.forEach { sub ->
                 val src = sub.optString("src").trim().takeIf { it.isNotEmpty() } ?: return@forEach
                 val code = sub.optString("lang").trim().ifEmpty { "tr" }
-                if (!Settings.subtitleAllowed(code)) return@forEach
                 val label = sub.optString("label").trim().ifEmpty { code }
                 subtitleCallback(newSubtitleFile(label, src))
             }
@@ -251,7 +250,9 @@ class DiziBal : MainAPI() {
         if (!isMovie && !SERIES_PATH.matches(href)) return null
         val title = selectFirst("h3")?.text()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val poster = fixUrlNull(
-            selectFirst("img")?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank { img.attr("src") }
+            }?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
         )
         val year = selectFirst("p")?.text()?.trim()?.toIntOrNull()
         val score = scoreOf(selectFirst("span.badge-rating")?.text())
@@ -287,7 +288,11 @@ class DiziBal : MainAPI() {
                 ?: return@mapNotNull null
             newEpisode(fixUrl(href)) {
                 this.name = title
-                this.posterUrl = fixUrlNull(card.selectFirst("img")?.posterSrcLazy())
+                this.posterUrl = fixUrlNull(
+                    card.selectFirst("img")?.let { img ->
+                        img.attr("data-src").ifBlank { img.attr("src") }
+                    }?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                )
                 this.season = match.groupValues[1].toIntOrNull()
                 this.episode = match.groupValues[2].toIntOrNull()
             }
@@ -315,7 +320,7 @@ class DiziBal : MainAPI() {
         text?.substringBefore('/')?.trim()?.replace(',', '.')?.toDoubleOrNull()?.let { Score.from10(it) }
 
     companion object {
-        /** Ana sayfa satırları; ayarlardan kapatılabilir. */
+        /** Ana sayfa satırları. */
         val ROWS = listOf(
             "Popüler Diziler", "Son Eklenenler", "En Yüksek Puan", "Dram", "Aksiyon",
             "Komedi", "Bilim Kurgu", "Gizem", "Suç", "Macera", "Belgesel", "Filmler",
