@@ -1,14 +1,19 @@
 package com.Blockades
 
+import android.annotation.SuppressLint
 import android.util.Log
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import org.jsoup.nodes.Element
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import android.util.Base64
+import kotlin.coroutines.resume
 
 class DiziPal12 : MainAPI() {
     override var mainUrl = "https://dizipalw2.com/"
@@ -19,20 +24,10 @@ class DiziPal12 : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
     override val mainPage = mainPageOf(
-        "$mainUrl/platform/netflix"      to "Netflix",
-        "$mainUrl/platform/prime-video"  to "Prime Video",
-        "$mainUrl/platform/disney"       to "Disney+",
-        "$mainUrl/platform/hbomax"       to "HBOMax",
-        "$mainUrl/platform/blutv"        to "BluTV",
-        "$mainUrl/platform/exxen"        to "Exxen",
-        "$mainUrl/platform/tabii"        to "Tabii",
-        "$mainUrl/platform/apple-tv"     to "Apple TV+",
-        "$mainUrl/platform/gain"         to "Gain",
-        "$mainUrl/platform/mubi"         to "Mubi",
-        "$mainUrl/platform/tod"          to "TOD",
-        "$mainUrl/platform/tv"           to "TV+",
-        "$mainUrl/platform/hulu"         to "Hulu",
-        "$mainUrl/platform/crunchyroll"  to "Crunchyroll"
+        "$mainUrl/trendler"      to "Trendler",
+        "$mainUrl/diziler"  to "Diziler",
+        "$mainUrl/filmler"       to "Filmler",
+        "$mainUrl/anime"  to "Anime"
     )
 
     private fun cleanPoster(vararg candidates: String?): String? {
@@ -175,12 +170,9 @@ class DiziPal12 : MainAPI() {
         }
 
         val episodes = mutableListOf<Episode>()
-        // HTML'de bölüm kartları farklı yapıda: a.episode-card-link yerine li.ep-item içindeki a'lar
         document.select("li.ep-item a[href*='-sezon-']").forEach { epAnchor ->
             val epHref = fixUrlNull(epAnchor.attr("href")) ?: return@forEach
             val epTitle = epAnchor.selectFirst("span.title")?.text()?.trim() ?: "Bölüm"
-
-            // Sezon ve bölüm numaralarını URL'den çıkar
             val seasonMatch = Regex("(\\d+)-sezon").find(epHref)
             val episodeMatch = Regex("(\\d+)-bolum").find(epHref)
             val epSeason = seasonMatch?.groupValues?.get(1)?.toIntOrNull()
@@ -210,24 +202,14 @@ class DiziPal12 : MainAPI() {
     ): Boolean {
         Log.d("DiziPal12", "loadLinks data=$data")
         return try {
+            // 1) Sayfayı normal şekilde çek ve doğrudan link var mı bak.
             val document = app.get(data).document
             val html = document.html()
 
-            // 1) Doğrudan iframe (bazı sayfalarda olabilir)
-            val iframeSrc = document.selectFirst("iframe#montana-frame")?.attr("src")
-                ?: document.selectFirst("iframe[src*='mntplayer']")?.attr("src")
-                ?: document.selectFirst("iframe[src*='vod.']")?.attr("src")
-                ?: document.selectFirst("iframe[src]")?.attr("src")
-
-            if (!iframeSrc.isNullOrBlank()) {
-                Log.d("DiziPal12", "iframeSrc=$iframeSrc")
-                MntPlayer12().getUrl(fixUrl(iframeSrc), mainUrl, subtitleCallback, callback)
-                return true
-            }
-
-            // 2) HTML içinde doğrudan m3u8
+            // Doğrudan m3u8
             val directM3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(html)?.value
             if (directM3u8 != null) {
+                Log.d("DiziPal12", "Found direct m3u8: $directM3u8")
                 callback.invoke(
                     newExtractorLink(
                         source = this.name,
@@ -242,20 +224,30 @@ class DiziPal12 : MainAPI() {
                 return true
             }
 
-            // 3) YENİ: Şifreli iframe verisini çöz (data-rm-k)
-            val encryptedDiv = document.selectFirst("div[data-rm-k]")
-            if (encryptedDiv != null) {
-                val ciphertextJson = encryptedDiv.text()
-                Log.d("DiziPal12", "Encrypted data found: $ciphertextJson")
-                val decryptedUrl = decryptIframeUrl(ciphertextJson)
-                if (decryptedUrl != null) {
-                    Log.d("DiziPal12", "Decrypted iframe URL: $decryptedUrl")
-                    MntPlayer12().getUrl(fixUrl(decryptedUrl), mainUrl, subtitleCallback, callback)
+            // Sayfada doğrudan iframe src'si varsa (örneğin mntplayer, vod.)
+            val iframeSrc = document.selectFirst("iframe#montana-frame")?.attr("src")
+                ?: document.selectFirst("iframe[src*='mntplayer']")?.attr("src")
+                ?: document.selectFirst("iframe[src*='vod.']")?.attr("src")
+                ?: document.selectFirst("iframe[src]")?.attr("src")
+
+            if (!iframeSrc.isNullOrBlank()) {
+                Log.d("DiziPal12", "Found iframeSrc: $iframeSrc")
+                MntPlayer12().getUrl(fixUrl(iframeSrc), mainUrl, subtitleCallback, callback)
+                return true
+            }
+
+            // 2) Şifreli data-rm-k varsa, WebView kullanarak JS'in çözmesini bekle.
+            if (document.selectFirst("div[data-rm-k]") != null) {
+                Log.d("DiziPal12", "data-rm-k found, using WebView to extract iframe url.")
+                val iframeUrl = getIframeUrlWithWebView(data)
+                if (iframeUrl != null) {
+                    Log.d("DiziPal12", "WebView extracted iframe URL: $iframeUrl")
+                    MntPlayer12().getUrl(fixUrl(iframeUrl), mainUrl, subtitleCallback, callback)
                     return true
                 }
             }
 
-            // 4) Eski yöntem: episodesData içindeki embed token (yedek)
+            // 3) Eski yöntem: episodesData içindeki embed token (yedek)
             val episodesDataMatch = Regex("""window\.episodesData\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
                 .find(html)?.groupValues?.getOrNull(1)
             if (episodesDataMatch != null) {
@@ -263,6 +255,7 @@ class DiziPal12 : MainAPI() {
                     ?: Regex("""/embed/\?token=([^"\\]+)""").find(episodesDataMatch)
                 if (tokenMatch != null) {
                     val embedUrl = "$mainUrl/embed/?token=${tokenMatch.groupValues[1]}"
+                    Log.d("DiziPal12", "Found embed token: $embedUrl")
                     MntPlayer12().getUrl(embedUrl, mainUrl, subtitleCallback, callback)
                     return true
                 }
@@ -277,55 +270,48 @@ class DiziPal12 : MainAPI() {
     }
 
     /**
-     * data-rm-k div'indeki JSON'dan şifreli iframe URL'sini çözer.
-     * JSON yapısı: {"ciphertext": "...", "iv": "...", "salt": "..."}
+     * WebView kullanarak sayfayı yükler ve JavaScript'in şifreli veriyi çözüp
+     * iframe'in src'sini ayarlamasını bekler.
      */
-    private fun decryptIframeUrl(jsonString: String): String? {
-        return try {
-            val json = JSONObject(jsonString)
-            val ciphertextB64 = json.getString("ciphertext")
-            val ivHex = json.getString("iv")
-            val saltHex = json.getString("salt")
+    @SuppressLint("SetJavaScriptEnabled")
+    private suspend fun getIframeUrlWithWebView(url: String): String? = suspendCancellableCoroutine { cont ->
+        val webView = WebView(appContext)
+        webView.settings.javaScriptEnabled = true
+        webView.settings.domStorageEnabled = true
+        webView.settings.userAgentString = USER_AGENT
 
-            // Base64 decode
-            val ciphertext = Base64.decode(ciphertextB64, Base64.DEFAULT)
-            val iv = hexStringToByteArray(ivHex)
-            val salt = hexStringToByteArray(saltHex)
-
-            // Not: Buradaki anahtar türetme yöntemi siteden siteye değişebilir.
-            // Elimizdeki verilerle kesin bir anahtar yok. Çoğu dizipal türevi sitede
-            // anahtar, salt'ın bir kısmı veya sabit bir string olabilir.
-            // Şimdilik bilinen bir yöntem olmadığı için, salt'ın ilk 16 byte'ını anahtar olarak deniyoruz.
-            // Eğer çalışmazsa, site JS'inden anahtar türetme mantığını bulmak gerekir.
-            val keyBytes = salt.copyOf(16) // Varsayım: AES-128
-
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            val secretKey = SecretKeySpec(keyBytes, "AES")
-            val ivSpec = IvParameterSpec(iv)
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
-
-            val decryptedBytes = cipher.doFinal(ciphertext)
-            val decryptedString = String(decryptedBytes, Charsets.UTF_8)
-
-            // Çözülen string genellikle bir URL veya URL içeren bir JSON olur.
-            // Basitçe URL regex'i ile çıkaralım.
-            val urlRegex = Regex("""https?://[^\s"']+""")
-            urlRegex.find(decryptedString)?.value
-        } catch (e: Exception) {
-            Log.e("DiziPal12", "decryptIframeUrl error: ${e.message}", e)
-            null
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                // Sayfa yüklendikten sonra iframe'in src'sini kontrol et.
+                // Biraz gecikme ekleyelim, çünkü JS'nin çalışması zaman alabilir.
+                view?.postDelayed({
+                    view.evaluateJavascript(
+                        "(function() { var iframe = document.querySelector('iframe'); return iframe ? iframe.src : null; })();"
+                    ) { value ->
+                        val iframeUrl = value?.replace("\"", "")?.takeIf { it.isNotBlank() && it != "null" }
+                        if (iframeUrl != null) {
+                            cont.resume(iframeUrl)
+                        } else {
+                            // Eğer iframe hala boşsa, biraz daha bekle.
+                            view.postDelayed({
+                                view.evaluateJavascript(
+                                    "(function() { var iframe = document.querySelector('iframe'); return iframe ? iframe.src : null; })();"
+                                ) { value2 ->
+                                    val iframeUrl2 = value2?.replace("\"", "")?.takeIf { it.isNotBlank() && it != "null" }
+                                    cont.resume(iframeUrl2)
+                                }
+                            }, 2000) // 2 saniye daha bekle
+                        }
+                    }
+                }, 3000) // İlk bekleme 3 saniye
+            }
         }
-    }
 
-    private fun hexStringToByteArray(hex: String): ByteArray {
-        val len = hex.length
-        val data = ByteArray(len / 2)
-        var i = 0
-        while (i < len) {
-            data[i / 2] = ((Character.digit(hex[i], 16) shl 4) +
-                    Character.digit(hex[i + 1], 16)).toByte()
-            i += 2
+        webView.loadUrl(url)
+
+        cont.invokeOnCancellation {
+            webView.destroy()
         }
-        return data
     }
 }
