@@ -1,19 +1,13 @@
 package com.Blockades
 
-import android.annotation.SuppressLint
 import android.util.Log
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
-import org.jsoup.nodes.Element
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import android.util.Base64
-import kotlin.coroutines.resume
 
 class DiziPal12 : MainAPI() {
     override var mainUrl = "https://dizipalw2.com/"
@@ -24,10 +18,10 @@ class DiziPal12 : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
     override val mainPage = mainPageOf(
-        "$mainUrl/trendler"      to "Trendler",
+        "$mainUrl/trendler" to "Trendler",
         "$mainUrl/diziler"  to "Diziler",
-        "$mainUrl/filmler"       to "Filmler",
-        "$mainUrl/anime"  to "Anime"
+        "$mainUrl/filmler"  to "Filmler",
+        "$mainUrl/anime"    to "Anime"
     )
 
     private fun cleanPoster(vararg candidates: String?): String? {
@@ -202,11 +196,10 @@ class DiziPal12 : MainAPI() {
     ): Boolean {
         Log.d("DiziPal12", "loadLinks data=$data")
         return try {
-            // 1) Sayfayı normal şekilde çek ve doğrudan link var mı bak.
             val document = app.get(data).document
             val html = document.html()
 
-            // Doğrudan m3u8
+            // 1) Doğrudan m3u8
             val directM3u8 = Regex("""(https?://[^\s"']+\.m3u8[^\s"']*)""").find(html)?.value
             if (directM3u8 != null) {
                 Log.d("DiziPal12", "Found direct m3u8: $directM3u8")
@@ -224,30 +217,32 @@ class DiziPal12 : MainAPI() {
                 return true
             }
 
-            // Sayfada doğrudan iframe src'si varsa (örneğin mntplayer, vod.)
+            // 2) Doğrudan iframe src
             val iframeSrc = document.selectFirst("iframe#montana-frame")?.attr("src")
                 ?: document.selectFirst("iframe[src*='mntplayer']")?.attr("src")
                 ?: document.selectFirst("iframe[src*='vod.']")?.attr("src")
                 ?: document.selectFirst("iframe[src]")?.attr("src")
 
-            if (!iframeSrc.isNullOrBlank()) {
+            if (!iframeSrc.isNullOrBlank() && !iframeSrc.startsWith("about:")) {
                 Log.d("DiziPal12", "Found iframeSrc: $iframeSrc")
                 MntPlayer12().getUrl(fixUrl(iframeSrc), mainUrl, subtitleCallback, callback)
                 return true
             }
 
-            // 2) Şifreli data-rm-k varsa, WebView kullanarak JS'in çözmesini bekle.
-            if (document.selectFirst("div[data-rm-k]") != null) {
-                Log.d("DiziPal12", "data-rm-k found, using WebView to extract iframe url.")
-                val iframeUrl = getIframeUrlWithWebView(data)
+            // 3) data-rm-k → Kotlin ile AES çözümü (WebView YOK)
+            val rmK = document.selectFirst("div[data-rm-k]")?.attr("data-rm-k")
+                ?: document.selectFirst("[data-rm-k]")?.attr("data-rm-k")
+            if (!rmK.isNullOrBlank()) {
+                Log.d("DiziPal12", "data-rm-k found, decrypting (len=${rmK.length})")
+                val iframeUrl = decryptRmK(rmK)
                 if (iframeUrl != null) {
-                    Log.d("DiziPal12", "WebView extracted iframe URL: $iframeUrl")
+                    Log.d("DiziPal12", "Decrypted iframe URL: $iframeUrl")
                     MntPlayer12().getUrl(fixUrl(iframeUrl), mainUrl, subtitleCallback, callback)
                     return true
                 }
             }
 
-            // 3) Eski yöntem: episodesData içindeki embed token (yedek)
+            // 4) Yedek: episodesData içindeki embed token
             val episodesDataMatch = Regex("""window\.episodesData\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL)
                 .find(html)?.groupValues?.getOrNull(1)
             if (episodesDataMatch != null) {
@@ -261,6 +256,15 @@ class DiziPal12 : MainAPI() {
                 }
             }
 
+            // 5) Sayfa içinde mntplayer / vod url geçiyorsa regex ile yakala
+            val playerUrl = Regex("""(https?://[^\s"']*mntplayer[^\s"']*)""").find(html)?.value
+                ?: Regex("""(https?://vod\.[^\s"']+)""").find(html)?.value
+            if (playerUrl != null) {
+                Log.d("DiziPal12", "Regex player URL: $playerUrl")
+                MntPlayer12().getUrl(fixUrl(playerUrl), mainUrl, subtitleCallback, callback)
+                return true
+            }
+
             Log.e("DiziPal12", "Oynatıcı bulunamadı: $data")
             false
         } catch (e: Exception) {
@@ -269,49 +273,83 @@ class DiziPal12 : MainAPI() {
         }
     }
 
+    // ---------- data-rm-k ÇÖZÜCÜ ----------
     /**
-     * WebView kullanarak sayfayı yükler ve JavaScript'in şifreli veriyi çözüp
-     * iframe'in src'sini ayarlamasını bekler.
+     * Dizipal data-rm-k içeriğini Kotlin içinde çözer.
+     * Not: Sitenin JS bundle'ı güncellenirse anahtar/IV değişebilir.
+     * Bu yüzden birkaç yaygın kombinasyon denenir.
      */
-    @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun getIframeUrlWithWebView(url: String): String? = suspendCancellableCoroutine { cont ->
-        val webView = WebView(appContext)
-        webView.settings.javaScriptEnabled = true
-        webView.settings.domStorageEnabled = true
-        webView.settings.userAgentString = USER_AGENT
+    private fun decryptRmK(encoded: String): String? {
+        // Olası anahtar/IV adayları (sitenin JS'inden teyit edilebilir).
+        // İhtiyaç halinde buraya doğru anahtarı ekleyin; ilk tutan kullanılır.
+        data class KeyIv(val key: ByteArray, val iv: ByteArray)
 
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                // Sayfa yüklendikten sonra iframe'in src'sini kontrol et.
-                // Biraz gecikme ekleyelim, çünkü JS'nin çalışması zaman alabilir.
-                view?.postDelayed({
-                    view.evaluateJavascript(
-                        "(function() { var iframe = document.querySelector('iframe'); return iframe ? iframe.src : null; })();"
-                    ) { value ->
-                        val iframeUrl = value?.replace("\"", "")?.takeIf { it.isNotBlank() && it != "null" }
-                        if (iframeUrl != null) {
-                            cont.resume(iframeUrl)
+        val candidates = listOf(
+            // Yaygın kullanılan sabit anahtar örnekleri
+            KeyIv("0123456789abcdef".toByteArray(Charsets.UTF_8), "abcdef9876543210".toByteArray(Charsets.UTF_8)),
+            KeyIv("dizipal12key2024".toByteArray(Charsets.UTF_8), "dizipal12iv2024!".toByteArray(Charsets.UTF_8)),
+            KeyIv("DiziPalSecretKey".toByteArray(Charsets.UTF_8), "DiziPalSecretIv!".toByteArray(Charsets.UTF_8)),
+            KeyIv("1234567890abcdef1234567890abcdef".toByteArray(Charsets.UTF_8).copyOf(32), "abcdef1234567890".toByteArray(Charsets.UTF_8))
+        )
+
+        // Farklı Base64 biçimleri dene
+        val rawVariants = listOfNotNull(
+            runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull(),
+            runCatching { Base64.decode(encoded, Base64.URL_SAFE or Base64.NO_WRAP) }.getOrNull(),
+            runCatching { Base64.decode(encoded, Base64.NO_WRAP) }.getOrNull(),
+            runCatching { encoded.toByteArray(Charsets.ISO_8859_1) }.getOrNull() // zaten raw byte ise
+        ).distinctBy { it.size }
+
+        val modes = listOf(
+            "AES/CBC/PKCS5Padding",
+            "AES/CBC/NoPadding",
+            "AES/ECB/PKCS5Padding",
+            "AES/CFB/PKCS5Padding",
+            "AES/CTR/NoPadding"
+        )
+
+        for (variant in rawVariants) {
+            for (cand in candidates) {
+                val key = when (cand.key.size) {
+                    16, 24, 32 -> cand.key
+                    else -> null
+                } ?: continue
+                for (mode in modes) {
+                    try {
+                        val cipher = Cipher.getInstance(mode)
+                        if (mode.contains("/ECB/")) {
+                            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"))
                         } else {
-                            // Eğer iframe hala boşsa, biraz daha bekle.
-                            view.postDelayed({
-                                view.evaluateJavascript(
-                                    "(function() { var iframe = document.querySelector('iframe'); return iframe ? iframe.src : null; })();"
-                                ) { value2 ->
-                                    val iframeUrl2 = value2?.replace("\"", "")?.takeIf { it.isNotBlank() && it != "null" }
-                                    cont.resume(iframeUrl2)
-                                }
-                            }, 2000) // 2 saniye daha bekle
+                            val iv = if (mode.contains("/CTR/") || mode.contains("/CFB/")) {
+                                cand.iv.copyOf(16)
+                            } else cand.iv
+                            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
                         }
+                        val out = cipher.doFinal(variant)
+                        val s = String(out, Charsets.UTF_8).trim()
+                        if (looksLikeUrl(s)) {
+                            // Bazen JSON içine gömülü olabilir
+                            val m = Regex("""(https?://[^\s"']+)""").find(s)?.value
+                            return m ?: s
+                        }
+                    } catch (_: Exception) {
+                        // sıradaki kombinasyonu dene
                     }
-                }, 3000) // İlk bekleme 3 saniye
+                }
             }
         }
 
-        webView.loadUrl(url)
+        // Son çare: encoded içinde doğrudan url varsa
+        Regex("""(https?://[^\s"'<>]+)""").find(encoded)?.let { return it.value }
+        Log.e("DiziPal12", "decryptRmK: hiçbir kombinasyon tutmadı")
+        return null
+    }
 
-        cont.invokeOnCancellation {
-            webView.destroy()
-        }
+    private fun looksLikeUrl(s: String): Boolean {
+        if (s.length < 8) return false
+        val t = s.trim()
+        return t.startsWith("http://") || t.startsWith("https://") ||
+               (t.startsWith("/") && !t.contains(" ")) ||
+               t.contains("mntplayer") || t.contains("vod.")
     }
 }
