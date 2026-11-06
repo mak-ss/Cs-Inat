@@ -34,14 +34,30 @@ class FormationFeedExtractor : ExtractorApi() {
         }
 
         val normalized = response.replace("\\/", "/").replace("&amp;", "&")
-        val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
-        val match = m3u8Regex.find(normalized)?.groupValues?.get(1)
 
-        if (!match.isNullOrBlank()) {
+        // 1. Önce HTML'de doğrudan m3u8 olup olmadığını dene (orijinal yöntem)
+        var m3u8Url = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
+            .find(normalized)?.groupValues?.get(1)
+
+        // 2. Bulunamazsa, <script> içinden oynatıcı yapılandırmasını çıkarmayı dene
+        // JW Player'ın tipik yapılandırma biçimi: sources: [{ file: "..." }]
+        if (m3u8Url.isNullOrBlank()) {
+            val scriptContents = Regex("""<script[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+                .findAll(normalized)
+                .map { it.groupValues[1] }
+                .joinToString("\n")
+
+            // file: "..." veya file: '...' biçimini eşleştir, değerin m3u8 içermesi gerekir
+            m3u8Url = Regex("""file\s*:\s*["']([^"']*\.m3u8[^"']*)["']""", RegexOption.IGNORE_CASE)
+                .find(scriptContents)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
+        }
+
+        if (!m3u8Url.isNullOrBlank()) {
             val link = newExtractorLink(
                 source = this.name,
                 name = this.name,
-                url = match,
+                url = m3u8Url,
                 type = ExtractorLinkType.M3U8
             ) {
                 this.referer = url
@@ -53,6 +69,10 @@ class FormationFeedExtractor : ExtractorApi() {
                 )
             }
             callback.invoke(link)
+        } else {
+            // Anahtar: m3u8 bulunamadığında günlüğe kaydet, sayfa yapısını analiz etmek için
+            // Logcat'te "FormationFeed: m3u8 bulunamadı, HTML uzunluğu: xxx" arayın
+            // Ardından response.take(3000) içeriğini çıkararak script içinde başka ipucu olup olmadığına bakın
         }
     }
 }
