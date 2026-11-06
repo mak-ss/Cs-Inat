@@ -288,20 +288,38 @@ class DiziPal2 : MainAPI() {
                 Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                     .findAll(norm).forEach { found += it.value }
 
-                // 2d) data-cfg varsa player/api dene (yedek yöntem)
+                // 2d) data-cfg VEYA meta[name=_bc] varsa player/api dene
                 val cfgMatch = Regex("""data-cfg=["']([^"']+)["']""")
                     .find(norm)?.groupValues?.getOrNull(1)
+
+                // <meta name="_bc" content="..."> — iki attribute sırasını da destekle
+                val bcMatch = Regex(
+                    """<meta\s+name=["']_bc["']\s+content=["']([^"']+)["']""",
+                    RegexOption.IGNORE_CASE
+                ).find(norm)?.groupValues?.getOrNull(1)
+                    ?: Regex(
+                        """<meta\s+content=["']([^"']+)["']\s+name=["']_bc["']""",
+                        RegexOption.IGNORE_CASE
+                    ).find(norm)?.groupValues?.getOrNull(1)
+
                 val contentIdMatch = Regex("""data-content-id=["']([^"']+)["']""")
                     .find(norm)?.groupValues?.getOrNull(1)
 
-                if (!cfgMatch.isNullOrBlank()) {
-                    Log.d("DiziPal2", "cfg=$cfgMatch, contentId=$contentIdMatch")
+                // Bölüm URL'inden content_id türet (örn: welcome-to-chippendales-1-sezon-1-bolum)
+                val derivedContentId = data.substringAfterLast("/bolum/")
+                    .substringBefore("?")
+                    .ifBlank { contentIdMatch ?: "" }
+
+                val cfgToSend = cfgMatch ?: bcMatch
+
+                if (!cfgToSend.isNullOrBlank()) {
+                    Log.d("DiziPal2", "cfg/bc=${cfgToSend.take(40)}... contentId=$derivedContentId")
                     try {
                         val apiResponse = app.post(
                             "$mainUrl/player/api",
                             data = mapOf(
-                                "cfg"        to cfgMatch,
-                                "content_id" to (contentIdMatch ?: ""),
+                                "cfg"        to cfgToSend,
+                                "content_id" to derivedContentId,
                                 "type"       to if (data.contains("/bolum/")) "episode" else "movie"
                             ),
                             referer = data,
@@ -313,7 +331,7 @@ class DiziPal2 : MainAPI() {
                             )
                         ).text
 
-                        Log.d("DiziPal2", "player/api yanıtı = $apiResponse")
+                        Log.d("DiziPal2", "player/api yanıtı = ${apiResponse.take(500)}")
                         val apiNorm = apiResponse.replace("\\/", "/").replace("&amp;", "&")
 
                         Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
@@ -339,17 +357,12 @@ class DiziPal2 : MainAPI() {
                         Log.e("DiziPal2", "player/api POST HATA » ${e.message}")
                     }
                 } else {
-                    Log.d("DiziPal2", "cfg yok, sadece iframe/m3u8 taraması yapılıyor")
+                    Log.d("DiziPal2", "cfg/_bc yok, sadece iframe/m3u8 taraması yapılıyor")
                 }
             }
         }
 
-        // Tekilleştir, boşları at, sırala:
-        //   1) superadjacentsoddenly/formationfeed (özel extractor)
-        //   2) imzasız index m3u8 (kararlı)
-        //   3) imzasız diğer m3u8
-        //   4) imzalı m3u8 (en düşük öncelik, süresi dolabilir)
-        //   5) diğer her şey
+        // Tekilleştir, boşları at, öncelik sırala
         val unique = found
             .filter { it.isNotBlank() }
             .distinct()
@@ -374,15 +387,12 @@ class DiziPal2 : MainAPI() {
         for (src in unique) {
             try {
                 when {
-                    // superadjacentsoddenly içeren HERŞEY (m3u8 olsun olmasın) → SuperAdjacentExtractor
                     src.contains("superadjacentsoddenly", true) ->
                         SuperAdjacentExtractor().getUrl(src, "$mainUrl/", subtitleCallback, callback)
 
-                    // formationfeed → FormationFeedExtractor
                     src.contains("formationfeed", true) ->
                         FormationFeedExtractor().getUrl(src, "$mainUrl/", subtitleCallback, callback)
 
-                    // Diğer m3u8'ler için doğrudan gönder (Origin/Referer düzeltilmiş)
                     src.contains(".m3u8", true) -> {
                         val origin = try {
                             val u = java.net.URI(src)
@@ -408,7 +418,6 @@ class DiziPal2 : MainAPI() {
                         )
                     }
 
-                    // Geri kalan her şey → JwKaynak
                     else -> JwKaynak().getUrl(src, "$mainUrl/", subtitleCallback, callback)
                 }
             } catch (e: Exception) {
