@@ -6,8 +6,8 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class DiziPal12 : MainAPI() {
-    override var mainUrl = "https://dizipal12.com.tr"
-    override var name = "DiziPal12"
+    override var mainUrl = "https://dizipalw2.com/"
+    override var name = "DiziPalw2"
     override val hasMainPage = true
     override var lang = "tr"
     override val hasQuickSearch = true
