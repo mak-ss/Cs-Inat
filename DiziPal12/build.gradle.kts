@@ -12,7 +12,7 @@ cloudstream {
      * 2: Slow
      * 3: Beta only
     **/
-    status  = 1
+    status  = 0
     tvTypes = listOf("TvSeries", "Movie")
     iconUrl = "https://files.sikayetvar.com/lg/cmp/35/358737.png?1755090746"  // ! GÜNCELLENDİ
 }
