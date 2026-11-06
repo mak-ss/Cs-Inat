@@ -9,7 +9,8 @@ class SuperAdjacentExtractor : ExtractorApi() {
     override val mainUrl = "https://superadjacentsoddenly.xyz"
     override val requiresReferer = true
 
-    // Tarayıcı kimliği (User-Agent)
+    // Dizipal ana alan adını referer olarak kullan
+    private val DIZIPAL_REFERER = "https://dizipal2147.com/"
     private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
     override suspend fun getUrl(
@@ -18,65 +19,69 @@ class SuperAdjacentExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        // Dizipal sayfasını Referer olarak ayarla (hotlink korumasını aşmak için kritik)
-        val pageReferer = referer ?: "https://dizipal2143.com/"
+        // Referer'ı zorunlu olarak Dizipal olarak ayarla, superadjacent alan adı değil
+        val pageReferer = DIZIPAL_REFERER
 
         try {
-            // Eğer link zaten bir m3u8 ise, doğrudan başlıklarla birlikte gönder
+            // URL zaten m3u8 ise (imzalı veya imzasız), doğrudan gönder ama başlıkları düzelt
             if (url.contains(".m3u8", ignoreCase = true)) {
-                val link = newExtractorLink(
-                    source = this.name,
-                    name = this.name,
-                    url = url,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    // Bu başlıklar 403 hatasını çözer
-                    this.referer = pageReferer
-                    this.quality = Qualities.Unknown.value
-                    this.headers = mapOf(
-                        "User-Agent" to UA,
-                        "Origin" to "https://dizipal2143.com", // Sunucunun beklediği Origin
-                        "Referer" to pageReferer
-                    )
-                }
-                callback.invoke(link)
-                Log.d("SuperAdjacent", "Link başarıyla gönderildi: $url")
+                emitLink(callback, url, pageReferer)
                 return
             }
 
-            // Eğer link bir embed sayfası ise (m3u8 değilse), sayfayı çekip içinden m3u8 ara
+            // Değilse, embed sayfasını çek ve içindeki m3u8'i çıkar
             val pageText = app.get(
                 url,
                 referer = pageReferer,
-                headers = mapOf("User-Agent" to UA, "Origin" to "https://dizipal2143.com")
+                headers = mapOf(
+                    "User-Agent" to UA,
+                    "Origin" to pageReferer,
+                    "Referer" to pageReferer
+                )
             ).text
 
             val normalized = pageText.replace("\\/", "/").replace("&amp;", "&")
-            val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*)""")
-            val m3u8 = m3u8Regex.find(normalized)?.groupValues?.getOrNull(1)
+            // İmzasız m3u8'i öncelikli olarak eşleştir
+            val m3u8Regex = Regex("""(https?://[^\s"'\\<>]+?\.m3u8(?:\?[^\s"'\\<>]*)?)""")
+            val matches = m3u8Regex.findAll(normalized).map { it.groupValues[1] }.toList()
 
-            if (m3u8 != null) {
-                val link = newExtractorLink(
-                    source = this.name,
-                    name = this.name,
-                    url = m3u8,
-                    type = ExtractorLinkType.M3U8
-                ) {
-                    this.referer = url
-                    this.quality = Qualities.Unknown.value
-                    this.headers = mapOf(
-                        "User-Agent" to UA,
-                        "Origin" to "https://dizipal2143.com",
-                        "Referer" to pageReferer
-                    )
-                }
-                callback.invoke(link)
-            } else {
+            if (matches.isEmpty()) {
                 Log.w("SuperAdjacent", "Embed sayfasında m3u8 bulunamadı: $url")
+                return
             }
 
+            // Öncelik sırası: imzasız index/m3u8 > imzalı master.m3u8
+            val preferred = matches.sortedByDescending { link ->
+                when {
+                    !link.contains("?") && link.contains("index") -> 2 // En yüksek öncelik: imzasız index
+                    !link.contains("?") -> 1 // İmzasız diğer
+                    else -> 0 // İmzalı en düşük
+                }
+            }.first()
+
+            emitLink(callback, preferred, pageReferer)
+
         } catch (e: Exception) {
-            Log.e("SuperAdjacent", "Hata oluştu: ${e.message}", e)
+            Log.e("SuperAdjacent", "Hata: ${e.message}", e)
         }
+    }
+
+    private fun emitLink(callback: (ExtractorLink) -> Unit, m3u8Url: String, referer: String) {
+        val link = newExtractorLink(
+            source = this.name,
+            name = this.name,
+            url = m3u8Url,
+            type = ExtractorLinkType.M3U8
+        ) {
+            this.referer = referer
+            this.quality = Qualities.Unknown.value
+            this.headers = mapOf(
+                "User-Agent" to UA,
+                "Origin" to referer,
+                "Referer" to referer
+            )
+        }
+        callback.invoke(link)
+        Log.d("SuperAdjacent", "Link gönderildi: $m3u8Url | Referer: $referer")
     }
 }
