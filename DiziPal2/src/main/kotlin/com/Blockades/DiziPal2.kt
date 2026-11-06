@@ -33,6 +33,9 @@ class DiziPal2 : MainAPI() {
         "${mainUrl}/kategori/belgesel"    to "Belgesel Filmleri",
     )
 
+    private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
     // ============================================================================================
     // ANA SAYFA
     // ============================================================================================
@@ -46,13 +49,11 @@ class DiziPal2 : MainAPI() {
             request.data == mainUrl || request.data == "$mainUrl/" -> {
                 val items = mutableListOf<SearchResponse>()
 
-                // Trend diziler
                 document.select("a.trending-item").forEach { item ->
                     if (item.attr("href").contains("/dizi/")) {
                         dizilerFromTrend(item)?.let { items.add(it) }
                     }
                 }
-                // Son eklenen diziler
                 document.select("ul.content-grid.large > li").forEach { li ->
                     li.selectFirst("a")?.let { a ->
                         if (a.attr("href").contains("/dizi/")) {
@@ -60,7 +61,6 @@ class DiziPal2 : MainAPI() {
                         }
                     }
                 }
-                // Son eklenen filmler
                 document.select("ul.content-grid:not(.large) > li").forEach { li ->
                     li.selectFirst("a")?.let { a ->
                         if (a.attr("href").contains("/film/")) {
@@ -86,9 +86,7 @@ class DiziPal2 : MainAPI() {
         }
     }
 
-    private fun dizilerFromCard(element: Element): SearchResponse? {
-        return element.diziler()
-    }
+    private fun dizilerFromCard(element: Element): SearchResponse? = element.diziler()
 
     private fun Element.sonBolumler(): SearchResponse? {
         val name    = this.selectFirst(".ep-title")?.text() ?: return null
@@ -243,7 +241,7 @@ class DiziPal2 : MainAPI() {
     }
 
     // ============================================================================================
-    // VİDEO LİNKLERİ — iframe / m3u8 / superadjacentsoddenly / formationfeed tarama
+    // VİDEO LİNKLERİ
     // ============================================================================================
     override suspend fun loadLinks(
         data: String,
@@ -263,7 +261,7 @@ class DiziPal2 : MainAPI() {
                     data,
                     referer = "$mainUrl/",
                     headers = mapOf(
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                        "User-Agent" to UA,
                         "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                     )
                 ).text
@@ -282,8 +280,8 @@ class DiziPal2 : MainAPI() {
                     .findAll(norm)
                     .forEach { found += it.groupValues[1] }
 
-                // 2b) Doğrudan m3u8 linkleri
-                Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
+                // 2b) Doğrudan m3u8 linkleri (imzalı + imzasız)
+                Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
                     .findAll(norm).forEach { found += it.value }
 
                 // 2c) superadjacentsoddenly / formationfeed URL'leri
@@ -308,7 +306,7 @@ class DiziPal2 : MainAPI() {
                             ),
                             referer = data,
                             headers = mapOf(
-                                "User-Agent"       to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
+                                "User-Agent"       to UA,
                                 "Accept"           to "application/json, text/plain, */*",
                                 "X-Requested-With" to "XMLHttpRequest",
                                 "Origin"           to mainUrl
@@ -318,7 +316,7 @@ class DiziPal2 : MainAPI() {
                         Log.d("DiziPal2", "player/api yanıtı = $apiResponse")
                         val apiNorm = apiResponse.replace("\\/", "/").replace("&amp;", "&")
 
-                        Regex("""https?://[^\s"'\\<>]+\.m3u8[^\s"'\\>]*""")
+                        Regex("""https?://[^\s"'\\<>]+\.m3u8(?:\?[^\s"'\\<>]*)?[^\s"'\\<>]*""")
                             .findAll(apiNorm).forEach { found += it.value }
                         Regex("""https?://[^\s"'\\<>]+(?:superadjacentsoddenly|formationfeed)[^\s"'\\<>]*""")
                             .findAll(apiNorm).forEach { found += it.value }
@@ -346,7 +344,26 @@ class DiziPal2 : MainAPI() {
             }
         }
 
-        val unique = found.distinct().filter { it.isNotBlank() }
+        // Tekilleştir, boşları at, sırala:
+        //   1) superadjacentsoddenly/formationfeed (özel extractor)
+        //   2) imzasız index m3u8 (kararlı)
+        //   3) imzasız diğer m3u8
+        //   4) imzalı m3u8 (en düşük öncelik, süresi dolabilir)
+        //   5) diğer her şey
+        val unique = found
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sortedByDescending { src ->
+                when {
+                    src.contains("superadjacentsoddenly", true) -> 5
+                    src.contains("formationfeed", true)         -> 4
+                    src.contains(".m3u8", true) && !src.contains("?") && src.contains("index") -> 3
+                    src.contains(".m3u8", true) && !src.contains("?") -> 2
+                    src.contains(".m3u8", true)                 -> 1
+                    else                                        -> 0
+                }
+            }
+
         if (unique.isEmpty()) {
             Log.w("DiziPal2", "Hiçbir kaynak bulunamadı: $data")
             return false
@@ -357,10 +374,15 @@ class DiziPal2 : MainAPI() {
         for (src in unique) {
             try {
                 when {
+                    // superadjacentsoddenly içeren HERŞEY (m3u8 olsun olmasın) → SuperAdjacentExtractor
                     src.contains("superadjacentsoddenly", true) ->
                         SuperAdjacentExtractor().getUrl(src, "$mainUrl/", subtitleCallback, callback)
+
+                    // formationfeed → FormationFeedExtractor
                     src.contains("formationfeed", true) ->
                         FormationFeedExtractor().getUrl(src, "$mainUrl/", subtitleCallback, callback)
+
+                    // Diğer m3u8'ler için doğrudan gönder (Origin/Referer düzeltilmiş)
                     src.contains(".m3u8", true) -> {
                         val origin = try {
                             val u = java.net.URI(src)
@@ -378,13 +400,15 @@ class DiziPal2 : MainAPI() {
                                 this.referer = "$mainUrl/"
                                 this.quality = Qualities.Unknown.value
                                 this.headers = mapOf(
-                                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
+                                    "User-Agent" to UA,
                                     "Origin" to origin,
                                     "Referer" to "$mainUrl/"
                                 )
                             }
                         )
                     }
+
+                    // Geri kalan her şey → JwKaynak
                     else -> JwKaynak().getUrl(src, "$mainUrl/", subtitleCallback, callback)
                 }
             } catch (e: Exception) {
