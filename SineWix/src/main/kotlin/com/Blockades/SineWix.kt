@@ -3,6 +3,7 @@ package com.Blockades
 
 import android.util.Log
 import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.fasterxml.jackson.module.kotlin.readValue
@@ -68,69 +69,142 @@ class SineWix : MainAPI() {
         "user-agent" to "EasyPlex (Android 13; SM-A546E; samsung; tr)"
     )
 
-    // Jackson ObjectMapper'ı tek bir yerde tanımlayıp, bilinmeyen özellikleri yoksayacak şekilde ayarlıyoruz.
-    // FAIL_ON_TRAILING_TOKENS özelliği, JSON olmayan bir yanıt geldiğinde (HTML gibi) hata fırlatmasını engeller.
     private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build()).apply {
         configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        configure(DeserializationFeature.FAIL_ON_TRAILING_TOKENS, true) 
     }
 
-    // Güvenli okuma fonksiyonu: Eğer yanıt JSON değilse null döner, uygulama çökmez.
     private inline fun <reified T> safeReadValue(text: String): T? {
         return try {
             mapper.readValue<T>(text)
         } catch (e: Exception) {
-            Log.e("SineWix", "JSON ayrıştırma hatası: ${e.message} \n Yanıt: ${text.take(100)}...")
+            Log.e("SineWix", "JSON Hatası: ${e.message}")
             null
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}/${key}?page=$page"
-        val text = app.get(url, headers = headers).text
+        Log.d("SineWixDebug", "İstek: $url")
         
-        val result = safeReadValue<SineSonuc>(text)
-        val home = result?.data?.mapNotNull { it.toMainPageResult() } ?: emptyList()
+        try {
+            val responseText = app.get(url, headers = headers).text
+            val rootNode = mapper.readTree(responseText)
 
-        return newHomePageResponse(request.name, home)
-    }
-
-    private fun SineData.toMainPageResult(): SearchResponse? {
-        val title = this.title ?: this.name
-        val posterUrl = this.posterPath
-        val score = this.vote
-        val href: String
-        when (this.type) {
-            "movie" -> {
-                href = "${mainUrl}/media/detail/${this.id}/${key}"
-                return newMovieSearchResponse(title!!, href, TvType.Movie) {
-                    this.posterUrl = posterUrl
-                    this.score = Score.from10(score)
-                }
+            // Bazen API hata döndürürse kontrol et
+            if (rootNode.isMissingNode || rootNode.isNull) {
+                return newHomePageResponse(request.name, emptyList())
             }
 
-            "serie" -> {
-                href = "${mainUrl}/series/show/${this.id}/${key}"
-                return newTvSeriesSearchResponse(title!!, href, TvType.TvSeries) {
-                    this.posterUrl = posterUrl
-                    this.score = Score.from10(score)
-                }
+            // API "data" veya "results" anahtarı kullanıyor olabilir, ikisini de kontrol et
+            val dataNode = when {
+                rootNode.has("data") -> rootNode.get("data")
+                rootNode.has("results") -> rootNode.get("results")
+                rootNode.isArray -> rootNode // Eğer direkt dizi dönüyorsa
+                else -> null
             }
 
-            else -> {
-                href = "${mainUrl}/animes/show/${this.id}/${key}"
-                return newAnimeSearchResponse(title!!, href, TvType.Anime) {
-                    this.posterUrl = posterUrl
-                    this.score = Score.from10(score)
+            val homeList = mutableListOf<SearchResponse>()
+            
+            if (dataNode != null && dataNode.isArray) {
+                for (item in dataNode) {
+                    val searchRes = item.toSearchResponse()
+                    if (searchRes != null) {
+                        homeList.add(searchRes)
+                    }
+                }
+            } else if (dataNode != null && dataNode.isObject) {
+                // Bazen "Top 10" verisi obje içinde "movies", "series" gibi alt başlıklarla gelebilir
+                val fields = dataNode.fields()
+                while (fields.hasNext()) {
+                    val field = fields.next()
+                    if (field.value.isArray) {
+                        for (item in field.value) {
+                            val searchRes = item.toSearchResponse()
+                            if (searchRes != null) homeList.add(searchRes)
+                        }
+                    }
                 }
             }
+            
+            Log.d("SineWixDebug", "Çekilen içerik sayısı: ${homeList.size}")
+            return newHomePageResponse(request.name, homeList)
+
+        } catch (e: Exception) {
+            Log.e("SineWixDebug", "Ana sayfa yüklenirken hata: ${e.message}")
+            return newHomePageResponse(request.name, emptyList())
         }
     }
 
+    // JsonNode üzerinden dinamik olarak veri okuma (Hatalara karşı en dayanıklı yöntem)
+    private fun JsonNode.toSearchResponse(): SearchResponse? {
+        try {
+            val id = this.findValue("id")?.asText()
+            val type = this.findValue("type")?.asText() ?: "movie"
+            val title = this.findValue("title")?.asText() 
+                     ?: this.findValue("name")?.asText() 
+                     ?: return null // Başlık yoksa atla
+            
+            val posterUrl = this.findValue("posterPath")?.asText() 
+                         ?: this.findValue("poster_path")?.asText()
+            val vote = this.findValue("vote")?.asDouble() 
+                    ?: this.findValue("vote_average")?.asDouble()
+
+            if (id == null) return null
+
+            return when (type) {
+                "movie" -> {
+                    val href = "${mainUrl}/media/detail/${id}/${key}"
+                    newMovieSearchResponse(title, href, TvType.Movie) {
+                        this.posterUrl = posterUrl
+                        this.score = Score.from10(vote)
+                    }
+                }
+                "serie", "series" -> {
+                    val href = "${mainUrl}/series/show/${id}/${key}"
+                    newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                        this.posterUrl = posterUrl
+                        this.score = Score.from10(vote)
+                    }
+                }
+                else -> { // Anime vb.
+                    val href = "${mainUrl}/animes/show/${id}/${key}"
+                    newAnimeSearchResponse(title, href, TvType.Anime) {
+                        this.posterUrl = posterUrl
+                        this.score = Score.from10(vote)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
+    // JsonNode içinde istenen key'i büyük/küçük harf duyarsız arayan yardımcı fonksiyon
+    private fun JsonNode.findValue(keyName: String): JsonNode? {
+        val fields = this.fields()
+        while (fields.hasNext()) {
+            val entry = fields.next()
+            if (entry.key.equals(keyName, ignoreCase = true)) {
+                return entry.value
+            }
+        }
+        return null
+    }
+
     override suspend fun search(query: String): List<SearchResponse>? {
-        val text = app.get("${mainUrl}/search/${query}/${key}", headers = headers).text
-        val result = safeReadValue<SineSearch>(text)
-        return result?.search?.mapNotNull { it.toMainPageResult() }
+        return try {
+            val text = app.get("${mainUrl}/search/${query}/${key}", headers = headers).text
+            val rootNode = mapper.readTree(text)
+            val resultsNode = rootNode.get("search") ?: rootNode.get("data") ?: rootNode
+            
+            if (resultsNode.isArray) {
+                resultsNode.mapNotNull { it.toSearchResponse() }
+            } else {
+                emptyList()
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
@@ -144,91 +218,79 @@ class SineWix : MainAPI() {
     }
 
     private suspend fun movieDetail(url: String): LoadResponse? {
-        val text = app.get(url, headers = headers).text
-        val result = safeReadValue<SineMovie>(text) ?: return null
-        
-        val originalName = result.originalName
-        val name = result.title
-        val title = "$originalName - $name"
-        val poster = result.backdropPath
-        val description = result.overview
-        val year = result.releaseDate?.split("-")?.first()?.toIntOrNull()
-        val tags = result.genres?.map { it.name }
-        val rating = result.vote
-        val duration = result.runtime?.toInt()
-        val actors = result.cast?.map { Actor(it.name!!, it.profilePath) }
-        val trailer = result.trailer
+        return try {
+            val text = app.get(url, headers = headers).text
+            val result = safeReadValue<SineMovie>(text) ?: return null
+            
+            val originalName = result.originalName ?: ""
+            val name = result.title ?: ""
+            val title = if (originalName.isNotBlank() && originalName != name) "$originalName - $name" else name
+            val videoLink = result.videos?.getOrNull(0)?.link ?: return null
 
-        val videoLink = result.videos?.getOrNull(0)?.link ?: return null
-
-        return newMovieLoadResponse(
-            title,
-            videoLink,
-            TvType.Movie,
-            videoLink
-        ) {
-            this.posterUrl = poster
-            this.plot = description
-            this.year = year
-            this.tags = tags as List<String>?
-            this.score = Score.from10(rating)
-            this.duration = duration
-            addActors(actors)
-            addTrailer("https://www.youtube.com/embed/${trailer}")
+            newMovieLoadResponse(
+                title,
+                videoLink,
+                TvType.Movie,
+                videoLink
+            ) {
+                this.posterUrl = result.backdropPath ?: result.posterPath
+                this.plot = result.overview
+                this.year = result.releaseDate?.split("-")?.first()?.toIntOrNull()
+                this.tags = result.genres?.map { it.name ?: "" }
+                this.score = Score.from10(result.vote)
+                this.duration = result.runtime?.toInt()
+                addActors(result.cast?.map { Actor(it.name ?: "", it.profilePath) })
+                if (result.trailer != null) {
+                    addTrailer("https://www.youtube.com/embed/${result.trailer}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SineWix", "Film detay hatası: ${e.message}")
+            null
         }
     }
 
     private suspend fun serieDetail(url: String): LoadResponse? {
-        val text = app.get(url, headers = headers).text
-        val result = safeReadValue<SineSerie>(text) ?: return null
-        
-        val originalName = result.originalName ?: ""
-        val name = result.name ?: ""
-        val title = "$originalName - $name"
-        val poster = result.backdropPath
-        val description = result.overview
-        val year = result.releaseDate?.split("-")?.first()?.toIntOrNull()
-        val tags = result.genres?.map { it }
-        val rating = result.vote
-        val actors = result.cast?.map { Actor(it.name!!, it.profilePath) }
-        val trailer = result.trailer
+        return try {
+            val text = app.get(url, headers = headers).text
+            val result = safeReadValue<SineSerie>(text) ?: return null
+            
+            val originalName = result.originalName ?: ""
+            val name = result.name ?: ""
+            val title = if (originalName.isNotBlank() && originalName != name) "$originalName - $name" else name
 
-        val episodes = mutableListOf<Episode>()
-        result.seasons?.forEach {
-            val seasonNumber = it.seasonNumber
-            it.episodes?.forEach { ep ->
-                if (!ep.videos.isNullOrEmpty()) {
-                    val sineVideo = ep.videos[0]
-                    episodes.add(newEpisode(sineVideo.link) {
-                        this.name = ep.name
-                        this.season = seasonNumber
-                        this.episode = ep.episodeNumber
-                        this.posterUrl = ep.stillPath
-                    })
+            val episodes = mutableListOf<Episode>()
+            result.seasons?.forEach { season ->
+                val seasonNumber = season.seasonNumber
+                season.episodes?.forEach { ep ->
+                    val videoLink = ep.videos?.getOrNull(0)?.link
+                    if (!videoLink.isNullOrEmpty()) {
+                        episodes.add(newEpisode(videoLink) {
+                            this.name = ep.name
+                            this.season = seasonNumber
+                            this.episode = ep.episodeNumber
+                            this.posterUrl = ep.stillPath
+                        })
+                    }
                 }
             }
-        }
 
-        if (url.contains("/series/show/")) {
-            return newTvSeriesLoadResponse(title.trim(), url, TvType.TvSeries, episodes) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-                this.tags = tags
-                this.score = Score.from10(rating)
-                addActors(actors)
-                addTrailer(trailer)
+            val type = if (url.contains("/series/show/")) TvType.TvSeries else TvType.Anime
+            
+            return newTvSeriesLoadResponse(title.trim(), url, type, episodes) {
+                this.posterUrl = result.backdropPath ?: result.posterPath
+                this.year = result.releaseDate?.split("-")?.first()?.toIntOrNull()
+                this.plot = result.overview
+                this.tags = result.genres?.map { it ?: "" }
+                this.score = Score.from10(result.vote)
+                addActors(result.cast?.map { Actor(it.name ?: "", it.profilePath) })
+                if (result.trailer != null) {
+                    addTrailer("https://www.youtube.com/embed/${result.trailer}")
+                }
             }
-        } else {
-            return newTvSeriesLoadResponse(title.trim(), url, TvType.Anime, episodes) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-                this.tags = tags
-                this.score = Score.from10(rating)
-                addActors(actors)
-                addTrailer(trailer)
-            }
+        } catch (e: Exception) {
+            Log.e("SineWix", "Dizi detay hatası: ${e.message}")
+            null
         }
     }
 
