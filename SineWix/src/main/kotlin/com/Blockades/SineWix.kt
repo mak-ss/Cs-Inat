@@ -1,3 +1,4 @@
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
 import android.util.Log
@@ -17,7 +18,6 @@ class SineVix : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    private val tmdbApiKey = "500330721680edb6d5f7f12ba7cd9023"
     private val ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val headers = mapOf(
         "User-Agent" to ua,
@@ -29,12 +29,11 @@ class SineVix : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // FilmModu ana sayfası çok karmaşık olduğu için varsayılan olarak popüler filmleri çekelim
-        // Eğer arama yapılacaksa search() fonksiyonu kullanılacak
         val home = mutableListOf<SearchResponse>()
         
         try {
             val res = app.get(mainUrl, headers = headers).text
+            // Kotlin'de tırnakları doğru kaçırmak için üçlü tırnak (raw string) kullanıyoruz
             val regex = Regex("""<div class="col-md-2 col-xs-6 movie">[\s\S]*?<a href="([^"]+)">([^<]+)<\/a>""")
             regex.findAll(res).forEach { match ->
                 val url = match.groupValues[1]
@@ -58,7 +57,8 @@ class SineVix : MainAPI() {
             regex.findAll(res).forEach { match ->
                 val url = match.groupValues[1]
                 val title = match.groupValues[2].trim()
-                // FilmModu'da dizi/film ayrımı URL'den yapılabilir, genelde /film/ veya /dizi/
+                
+                // FilmModu'da dizi/film ayrımı URL'den yapılabilir
                 val type = if (url.contains("/dizi/")) TvType.TvSeries else TvType.Movie
                 
                 if (type == TvType.Movie) {
@@ -77,31 +77,13 @@ class SineVix : MainAPI() {
         return try {
             val res = app.get(url, headers = headers).text
             
-            // Başlık ve Poster Çekme
+            // Başlık ve Poster Çekme (Raw string ile hata önlendi)
             val titleMatch = Regex("""<h1[^>]*>([^<]+)</h1>""").find(res)
             val title = titleMatch?.groupValues?.get(1)?.trim() ?: "Bilinmeyen Başlık"
             
             val posterMatch = Regex("""<img[^>]+src="([^"]+)"[^>]+class="img-responsive"""">""").find(res)
             val poster = posterMatch?.groupValues?.get(1)
 
-            // Alternatif Sayfalar (Dublaj / Altyazı)
-            val altPages = mutableListOf<Pair<String, String>>()
-            val altRegex = Regex("""<a href="([^"]+)" type="button" class="btn [^"]*">([^<]+)<\/a>""")
-            altRegex.findAll(res).forEach { match ->
-                val aUrl = match.groupValues[1]
-                val aName = match.groupValues[2].trim()
-                if (!aName.contains("Fragman")) {
-                    altPages.add(aUrl to aName)
-                }
-            }
-            
-            if (altPages.isEmpty()) {
-                altPages.add(url to "Türkçe")
-            }
-
-            // Bu kısımda FilmModu'nun video linklerini direkt çekemiyoruz, 
-            // loadLinks fonksiyonunda sayfaya gidip kaynakları çekeceğiz.
-            // O yüzden geçici olarak sayfa URL'sini data olarak veriyoruz.
             val type = if (url.contains("/dizi/")) TvType.TvSeries else TvType.Movie
             
             if (type == TvType.Movie) {
@@ -110,8 +92,7 @@ class SineVix : MainAPI() {
                     this.plot = "FilmModu üzerinden çekilen içerik."
                 }
             } else {
-                // Dizi ise bölümleri çekmek gerekir (FilmModu dizi yapısı karmaşık olabilir)
-                // Basitlik açısından tek bir bölüm olarak ekliyoruz.
+                // Dizi ise bölümleri ekle
                 val episodes = listOf(newEpisode(url) { this.name = "Bölüm 1" })
                 newTvSeriesLoadResponse(title, url, type, episodes) {
                     this.posterUrl = poster
@@ -131,13 +112,13 @@ class SineVix : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         try {
-            // data değişkeni burada filmin sayfa URL'si oluyor
             val pageUrl = data
             val res = app.get(pageUrl, headers = headers).text
             
-            // Alternatif Sayfaları Bul
+            // Alternatif Sayfaları Bul (Dublaj / Altyazı)
             val altPages = mutableListOf<Pair<String, String>>()
             val altRegex = Regex("""<a href="([^"]+)" type="button" class="btn [^"]*">([^<]+)<\/a>""")
+            
             altRegex.findAll(res).forEach { match ->
                 val aUrl = match.groupValues[1]
                 val aName = match.groupValues[2].trim()
@@ -145,11 +126,13 @@ class SineVix : MainAPI() {
                     altPages.add(aUrl to aName)
                 }
             }
+            
             if (altPages.isEmpty()) altPages.add(pageUrl to "Türkçe")
 
             for ((altUrl, altName) in altPages) {
                 val aRes = app.get(altUrl, headers = headers).text
                 
+                // Video ID ve Tipini Bul (Raw string kullanıldı)
                 val idMatch = Regex("""var videoId = '(\d+)';""").find(aRes)
                 val typeMatch = Regex("""var videoType = '([^']*)';""").find(aRes)
                 
