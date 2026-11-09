@@ -10,9 +10,9 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
 import java.net.URLEncoder
 
-class SineVix : MainAPI() {
+class SineWix : MainAPI() {
     override var mainUrl = "https://www.filmmodu.one"
-    override var name = "SineVix"
+    override var name = "SineWix"
     override val hasMainPage = true
     override var lang = "tr"
     override val hasQuickSearch = true
@@ -33,7 +33,6 @@ class SineVix : MainAPI() {
         
         try {
             val res = app.get(mainUrl, headers = headers).text
-            // Kotlin'de tırnakları doğru kaçırmak için üçlü tırnak (raw string) kullanıyoruz
             val regex = Regex("""<div class="col-md-2 col-xs-6 movie">[\s\S]*?<a href="([^"]+)">([^<]+)<\/a>""")
             regex.findAll(res).forEach { match ->
                 val url = match.groupValues[1]
@@ -41,7 +40,7 @@ class SineVix : MainAPI() {
                 home.add(newMovieSearchResponse(title, url, TvType.Movie))
             }
         } catch (e: Exception) {
-            Log.e("SineVix", "Ana sayfa hatası: ${e.message}")
+            Log.e("SineWix", "Ana sayfa hatası: ${e.message}")
         }
 
         return newHomePageResponse(request.name, home)
@@ -58,7 +57,6 @@ class SineVix : MainAPI() {
                 val url = match.groupValues[1]
                 val title = match.groupValues[2].trim()
                 
-                // FilmModu'da dizi/film ayrımı URL'den yapılabilir
                 val type = if (url.contains("/dizi/")) TvType.TvSeries else TvType.Movie
                 
                 if (type == TvType.Movie) {
@@ -68,7 +66,7 @@ class SineVix : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("SineVix", "Arama hatası: ${e.message}")
+            Log.e("SineWix", "Arama hatası: ${e.message}")
         }
         return results
     }
@@ -77,7 +75,6 @@ class SineVix : MainAPI() {
         return try {
             val res = app.get(url, headers = headers).text
             
-            // Başlık ve Poster Çekme (Raw string ile hata önlendi)
             val titleMatch = Regex("""<h1[^>]*>([^<]+)</h1>""").find(res)
             val title = titleMatch?.groupValues?.get(1)?.trim() ?: "Bilinmeyen Başlık"
             
@@ -92,7 +89,6 @@ class SineVix : MainAPI() {
                     this.plot = "FilmModu üzerinden çekilen içerik."
                 }
             } else {
-                // Dizi ise bölümleri ekle
                 val episodes = listOf(newEpisode(url) { this.name = "Bölüm 1" })
                 newTvSeriesLoadResponse(title, url, type, episodes) {
                     this.posterUrl = poster
@@ -100,7 +96,7 @@ class SineVix : MainAPI() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("SineVix", "Detay yükleme hatası: ${e.message}")
+            Log.e("SineWix", "Detay yükleme hatası: ${e.message}")
             null
         }
     }
@@ -115,7 +111,6 @@ class SineVix : MainAPI() {
             val pageUrl = data
             val res = app.get(pageUrl, headers = headers).text
             
-            // Alternatif Sayfaları Bul (Dublaj / Altyazı)
             val altPages = mutableListOf<Pair<String, String>>()
             val altRegex = Regex("""<a href="([^"]+)" type="button" class="btn [^"]*">([^<]+)<\/a>""")
             
@@ -132,7 +127,6 @@ class SineVix : MainAPI() {
             for ((altUrl, altName) in altPages) {
                 val aRes = app.get(altUrl, headers = headers).text
                 
-                // Video ID ve Tipini Bul (Raw string kullanıldı)
                 val idMatch = Regex("""var videoId = '(\d+)';""").find(aRes)
                 val typeMatch = Regex("""var videoType = '([^']*)';""").find(aRes)
                 
@@ -161,8 +155,8 @@ class SineVix : MainAPI() {
                         
                         callback.invoke(
                             newExtractorLink(
-                                source = "SineVix",
-                                name = "SineVix - $label [$altName]",
+                                source = "SineWix",
+                                name = "SineWix - $label [$altName]",
                                 url = srcUrl,
                                 type = ExtractorLinkType.M3U8
                             ) {
@@ -180,7 +174,7 @@ class SineVix : MainAPI() {
             }
             return true
         } catch (e: Exception) {
-            Log.e("SineVix", "Link çıkarma hatası: ${e.message}")
+            Log.e("SineWix", "Link çıkarma hatası: ${e.message}")
             return false
         }
     }
