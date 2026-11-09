@@ -68,14 +68,29 @@ class SineWix : MainAPI() {
         "user-agent" to "EasyPlex (Android 13; SM-A546E; samsung; tr)"
     )
 
+    // Jackson ObjectMapper'ı tek bir yerde tanımlayıp, bilinmeyen özellikleri yoksayacak şekilde ayarlıyoruz.
+    // FAIL_ON_TRAILING_TOKENS özelliği, JSON olmayan bir yanıt geldiğinde (HTML gibi) hata fırlatmasını engeller.
+    private val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build()).apply {
+        configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        configure(DeserializationFeature.FAIL_ON_TRAILING_TOKENS, true) 
+    }
+
+    // Güvenli okuma fonksiyonu: Eğer yanıt JSON değilse null döner, uygulama çökmez.
+    private inline fun <reified T> safeReadValue(text: String): T? {
+        return try {
+            mapper.readValue<T>(text)
+        } catch (e: Exception) {
+            Log.e("SineWix", "JSON ayrıştırma hatası: ${e.message} \n Yanıt: ${text.take(100)}...")
+            null
+        }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}/${key}?page=$page"
-        val document = app.get(url, headers = headers).document
-        val objectMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-        objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        val result: SineSonuc = objectMapper.readValue(document.body().text())
-
-        val home = result.data.mapNotNull { it.toMainPageResult() }
+        val text = app.get(url, headers = headers).text
+        
+        val result = safeReadValue<SineSonuc>(text)
+        val home = result?.data?.mapNotNull { it.toMainPageResult() } ?: emptyList()
 
         return newHomePageResponse(request.name, home)
     }
@@ -113,14 +128,10 @@ class SineWix : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        val document = app.get("${mainUrl}/search/${query}/${key}", headers = headers).document
-        val objectMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-        objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        val result: SineSearch = objectMapper.readValue(document.body().text())
-
-        return result.search?.mapNotNull { it.toMainPageResult() }
+        val text = app.get("${mainUrl}/search/${query}/${key}", headers = headers).text
+        val result = safeReadValue<SineSearch>(text)
+        return result?.search?.mapNotNull { it.toMainPageResult() }
     }
-
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
@@ -133,10 +144,9 @@ class SineWix : MainAPI() {
     }
 
     private suspend fun movieDetail(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers).document
-        val objectMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-        objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        val result: SineMovie = objectMapper.readValue(document.body().text())
+        val text = app.get(url, headers = headers).text
+        val result = safeReadValue<SineMovie>(text) ?: return null
+        
         val originalName = result.originalName
         val name = result.title
         val title = "$originalName - $name"
@@ -149,11 +159,13 @@ class SineWix : MainAPI() {
         val actors = result.cast?.map { Actor(it.name!!, it.profilePath) }
         val trailer = result.trailer
 
+        val videoLink = result.videos?.getOrNull(0)?.link ?: return null
+
         return newMovieLoadResponse(
             title,
-            result.videos?.get(0)?.link!!,
+            videoLink,
             TvType.Movie,
-            result.videos[0].link!!
+            videoLink
         ) {
             this.posterUrl = poster
             this.plot = description
@@ -167,10 +179,9 @@ class SineWix : MainAPI() {
     }
 
     private suspend fun serieDetail(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers).document
-        val objectMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-        objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
-        val result: SineSerie = objectMapper.readValue(document.body().text())
+        val text = app.get(url, headers = headers).text
+        val result = safeReadValue<SineSerie>(text) ?: return null
+        
         val originalName = result.originalName ?: ""
         val name = result.name ?: ""
         val title = "$originalName - $name"
@@ -185,9 +196,7 @@ class SineWix : MainAPI() {
         val episodes = mutableListOf<Episode>()
         result.seasons?.forEach {
             val seasonNumber = it.seasonNumber
-            Log.d("SWX", "seasonNumber » $seasonNumber")
             it.episodes?.forEach { ep ->
-                Log.d("SWX", "ep » $ep")
                 if (!ep.videos.isNullOrEmpty()) {
                     val sineVideo = ep.videos[0]
                     episodes.add(newEpisode(sineVideo.link) {
