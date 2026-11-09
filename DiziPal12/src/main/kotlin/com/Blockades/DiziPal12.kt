@@ -9,7 +9,7 @@ import org.jsoup.nodes.Element
 // ANA API
 // ================================================================================================
 class DiziPal12 : MainAPI() {
-    override var mainUrl              = "https://dizipal2147.com"
+    override var mainUrl              = "https://dizipal2148.com"
     override var name                 = "DiziPal12"
     override val hasMainPage          = true
     override var lang                 = "tr"
@@ -563,7 +563,7 @@ class SuperAdjacentExtractor : ExtractorApi() {
 
 class FormationFeedExtractor : ExtractorApi() {
     override var name = "FormationFeed"
-    override var mainUrl = "https://formationfeed.net"
+    override var mainUrl = "https://dizipal2148.com"
     override val requiresReferer = true
 
     private val UA = "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 " +
