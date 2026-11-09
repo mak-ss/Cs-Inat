@@ -84,36 +84,36 @@ class SineWix : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}/${key}?page=$page"
-        Log.d("SineWixDebug", "İstek: $url")
+        Log.d("SineWixDebug", "İstek URL: $url")
         
         try {
             val responseText = app.get(url, headers = headers).text
-            val rootNode = mapper.readTree(responseText)
-
-            // Bazen API hata döndürürse kontrol et
-            if (rootNode.isMissingNode || rootNode.isNull) {
+            
+            // Eğer gelen yanıt JSON değilse (HTML hata sayfası vs) boş dön
+            if (!responseText.trim().startsWith("{")) {
+                Log.e("SineWixDebug", "JSON bekleniyordu ancak HTML geldi: ${responseText.take(100)}")
                 return newHomePageResponse(request.name, emptyList())
             }
 
-            // API "data" veya "results" anahtarı kullanıyor olabilir, ikisini de kontrol et
+            val rootNode = mapper.readTree(responseText)
+
+            // API "data" veya "results" anahtarı kullanıyor olabilir
             val dataNode = when {
                 rootNode.has("data") -> rootNode.get("data")
                 rootNode.has("results") -> rootNode.get("results")
-                rootNode.isArray -> rootNode // Eğer direkt dizi dönüyorsa
                 else -> null
             }
 
             val homeList = mutableListOf<SearchResponse>()
             
             if (dataNode != null && dataNode.isArray) {
+                // Normal liste (Array)
                 for (item in dataNode) {
                     val searchRes = item.toSearchResponse()
-                    if (searchRes != null) {
-                        homeList.add(searchRes)
-                    }
+                    if (searchRes != null) homeList.add(searchRes)
                 }
             } else if (dataNode != null && dataNode.isObject) {
-                // Bazen "Top 10" verisi obje içinde "movies", "series" gibi alt başlıklarla gelebilir
+                // İç içe liste (Örn: {"movies": [...], "series": [...]})
                 val fields = dataNode.fields()
                 while (fields.hasNext()) {
                     val field = fields.next()
@@ -126,7 +126,7 @@ class SineWix : MainAPI() {
                 }
             }
             
-            Log.d("SineWixDebug", "Çekilen içerik sayısı: ${homeList.size}")
+            Log.d("SineWixDebug", "Başarıyla çekilen içerik sayısı: ${homeList.size}")
             return newHomePageResponse(request.name, homeList)
 
         } catch (e: Exception) {
@@ -135,11 +135,11 @@ class SineWix : MainAPI() {
         }
     }
 
-    // JsonNode üzerinden dinamik olarak veri okuma (Hatalara karşı en dayanıklı yöntem)
+    // API'den gelen veriyi dinamik olarak işleyen yardımcı fonksiyon
     private fun JsonNode.toSearchResponse(): SearchResponse? {
         try {
             val id = this.findValue("id")?.asText()
-            val type = this.findValue("type")?.asText() ?: "movie"
+            val type = this.findValue("type")?.asText()?.lowercase() ?: "movie"
             val title = this.findValue("title")?.asText() 
                      ?: this.findValue("name")?.asText() 
                      ?: return null // Başlık yoksa atla
@@ -179,7 +179,7 @@ class SineWix : MainAPI() {
         }
     }
 
-    // JsonNode içinde istenen key'i büyük/küçük harf duyarsız arayan yardımcı fonksiyon
+    // JSON içindeki değişken isimlerini büyük/küçük harf duyarsız bulan yardımcı fonksiyon
     private fun JsonNode.findValue(keyName: String): JsonNode? {
         val fields = this.fields()
         while (fields.hasNext()) {
@@ -194,6 +194,8 @@ class SineWix : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse>? {
         return try {
             val text = app.get("${mainUrl}/search/${query}/${key}", headers = headers).text
+            if (!text.trim().startsWith("{")) return emptyList()
+
             val rootNode = mapper.readTree(text)
             val resultsNode = rootNode.get("search") ?: rootNode.get("data") ?: rootNode
             
@@ -236,13 +238,11 @@ class SineWix : MainAPI() {
                 this.posterUrl = result.backdropPath ?: result.posterPath
                 this.plot = result.overview
                 this.year = result.releaseDate?.split("-")?.first()?.toIntOrNull()
-                this.tags = result.genres?.map { it.name ?: "" }
+                this.tags = result.genres?.mapNotNull { it.name }
                 this.score = Score.from10(result.vote)
                 this.duration = result.runtime?.toInt()
                 addActors(result.cast?.map { Actor(it.name ?: "", it.profilePath) })
-                if (result.trailer != null) {
-                    addTrailer("https://www.youtube.com/embed/${result.trailer}")
-                }
+                result.trailer?.let { addTrailer("https://www.youtube.com/embed/$it") }
             }
         } catch (e: Exception) {
             Log.e("SineWix", "Film detay hatası: ${e.message}")
@@ -281,12 +281,10 @@ class SineWix : MainAPI() {
                 this.posterUrl = result.backdropPath ?: result.posterPath
                 this.year = result.releaseDate?.split("-")?.first()?.toIntOrNull()
                 this.plot = result.overview
-                this.tags = result.genres?.map { it ?: "" }
+                this.tags = result.genres?.mapNotNull { it }
                 this.score = Score.from10(result.vote)
                 addActors(result.cast?.map { Actor(it.name ?: "", it.profilePath) })
-                if (result.trailer != null) {
-                    addTrailer("https://www.youtube.com/embed/${result.trailer}")
-                }
+                result.trailer?.let { addTrailer("https://www.youtube.com/embed/$it") }
             }
         } catch (e: Exception) {
             Log.e("SineWix", "Dizi detay hatası: ${e.message}")
