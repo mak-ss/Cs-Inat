@@ -58,30 +58,28 @@ class DiziPal2 : MainAPI() {
 
         val cards = mutableListOf<SearchResponse>()
 
-        // Yeni yapı: .homepage-card, .trend-card; eski .ip-card fallback
+        // Yeni yapı: .homepage-card, .trend-card
         val items = doc.select(
-            ".homepage-card[href], .trend-card[href], .ip-card a[href], .ip-trend-card a[href]"
+            ".homepage-card[href], .trend-card[href]"
         ).filter { a ->
             val h = a.attr("href")
             h.contains("/dizi/") || h.contains("/film/")
         }.distinctBy { it.attr("href") }
 
-        items.forEach { el ->
-            val a = if (el.tagName() == "a") el else el.selectFirst("a[href]") ?: return@forEach
+        items.forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
 
             val container = a.closest(".homepage-card")
                 ?: a.closest(".trend-card")
-                ?: a.closest(".ip-card")
-                ?: a.closest(".ip-trend-card")
                 ?: a
 
-            val poster = container.selectFirst("img")?.let {
-                it.attr("data-src").ifBlank { it.attr("src") }
+            // POSTER: önce data-src (lazy-load), yoksa src
+            val poster = container.selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank { img.attr("src") }
             }?.let(::fixUrlNull)
 
             val title = container.selectFirst(
-                ".homepage-card-title, .trend-card-title, .ip-card-title, .ip-trend-title"
+                ".homepage-card-title, .trend-card-title"
             )?.text()?.trim()
                 ?: container.selectFirst("img")?.attr("alt")?.trim()
                 ?: a.attr("title").ifBlank { a.text() }.ifBlank {
@@ -106,33 +104,29 @@ class DiziPal2 : MainAPI() {
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
         val out = mutableListOf<SearchResponse>()
 
-        doc.select(".homepage-card[href], .trend-card[href], .ip-card a[href], .ip-trend-card a[href]")
-            .forEach { el ->
-                val a = if (el.tagName() == "a") el else el.selectFirst("a[href]") ?: return@forEach
-                val href = normalizeHref(a.attr("href")) ?: return@forEach
-                if (!href.contains("/dizi/") && !href.contains("/film/")) return@forEach
+        doc.select(".homepage-card[href], .trend-card[href]").forEach { a ->
+            val href = normalizeHref(a.attr("href")) ?: return@forEach
+            if (!href.contains("/dizi/") && !href.contains("/film/")) return@forEach
 
-                val container = a.closest(".homepage-card")
-                    ?: a.closest(".trend-card")
-                    ?: a.closest(".ip-card")
-                    ?: a.closest(".ip-trend-card")
-                    ?: a
+            val container = a.closest(".homepage-card")
+                ?: a.closest(".trend-card")
+                ?: a
 
-                val poster = container.selectFirst("img")?.let {
-                    it.attr("data-src").ifBlank { it.attr("src") }
-                }?.let(::fixUrlNull)
+            val poster = container.selectFirst("img")?.let { img ->
+                img.attr("data-src").ifBlank { img.attr("src") }
+            }?.let(::fixUrlNull)
 
-                val title = container.selectFirst(
-                    ".homepage-card-title, .trend-card-title, .ip-card-title, .ip-trend-title"
-                )?.text()?.trim()
-                    ?: container.selectFirst("img")?.attr("alt")?.trim()
-                    ?: href.substringAfterLast("/").replace("-", " ").trim()
+            val title = container.selectFirst(
+                ".homepage-card-title, .trend-card-title"
+            )?.text()?.trim()
+                ?: container.selectFirst("img")?.attr("alt")?.trim()
+                ?: href.substringAfterLast("/").replace("-", " ").trim()
 
-                when {
-                    href.contains("/dizi/") -> out += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
-                    href.contains("/film/") -> out += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
-                }
+            when {
+                href.contains("/dizi/") -> out += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
+                href.contains("/film/") -> out += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
             }
+        }
 
         return out.distinctBy { it.url }
     }
@@ -147,10 +141,10 @@ class DiziPal2 : MainAPI() {
         val poster = fixUrlNull(
             doc.selectFirst("[property='og:image']")?.attr("content")
                 ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
-                ?: doc.selectFirst(".dp-sidebar-poster img, .dp-poster-small img, .series-poster img")?.attr("src")
+                ?: doc.selectFirst(".series-poster img, .dp-sidebar-poster img, .dp-poster-small img")?.attr("src")
         )
 
-        val title = doc.selectFirst(".dp-series-title, .series-title, h1")?.text()?.trim()
+        val title = doc.selectFirst(".series-title, .dp-series-title, h1")?.text()?.trim()
             ?.removeSuffix(" izle")
             ?: doc.selectFirst("meta[property='og:title']")?.attr("content")?.substringBefore("|")?.trim()
             ?: doc.title().substringBefore("|").trim()
@@ -160,7 +154,7 @@ class DiziPal2 : MainAPI() {
                 val slug = url.substringAfter("/dizi/").substringBefore("/").substringBefore("?")
                 val eps = mutableListOf<Episode>()
 
-                // 1) window.episodesData JSON'u (en güvenilir)
+                // 1) window.episodesData JSON'u
                 val dataJson = Regex(
                     """window\.episodesData\s*=\s*(\{.*?\});""",
                     RegexOption.DOT_MATCHES_ALL
@@ -193,7 +187,7 @@ class DiziPal2 : MainAPI() {
                     }.onFailure { Log.e("DZP", "episodesData parse hatası: ${it.message}") }
                 }
 
-                // 2) HTML'deki statik bölüm linkleri (fallback)
+                // 2) HTML fallback
                 if (eps.isEmpty()) {
                     doc.select("""a[href*="/sezon/"][href*="-bolum"]""").forEach { a ->
                         val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -222,11 +216,9 @@ class DiziPal2 : MainAPI() {
     }
 
     private fun parseSeasonEpisode(href: String, textRaw: String): Pair<Int?, Int?> {
-        // Yeni format: /dizi/<slug>/1-sezon/16-bolum
         Regex("""(\d+)-sezon/(\d+)-bolum""", RegexOption.IGNORE_CASE).find(href)?.let {
             return it.groupValues[1].toIntOrNull() to it.groupValues[2].toIntOrNull()
         }
-        // Eski format: -1-sezon-16-bolum
         Regex("""-(\d+)-sezon-(\d+)-bolum""", RegexOption.IGNORE_CASE).find(href)?.let {
             return it.groupValues[1].toIntOrNull() to it.groupValues[2].toIntOrNull()
         }
@@ -257,21 +249,17 @@ class DiziPal2 : MainAPI() {
             return false
         }
 
-        // 1) Player iframe'lerini gez
+        // 1) Player iframe'leri
         val iframes = page.select("iframe[src], amp-iframe[src]")
         for (ifr in iframes) {
             val src = normalizeHref(ifr.attr("src")) ?: continue
             Log.d("DZP", "iframe: $src")
 
-            // Montana / mntplayer özel çözücü
             if (src.contains("mntplayer.com") || src.contains("montana") || src.contains("vod.")) {
                 if (resolveMontana(src, callback)) return true
             }
 
-            // Genel extractor
             if (loadExtractor(src, data, subtitleCallback, callback)) return true
-
-            // Iframe gövdesinde m3u8/mp4 avla
             if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
         }
 
@@ -285,7 +273,7 @@ class DiziPal2 : MainAPI() {
         return false
     }
 
-    /** Montana / mntplayer iframe'ini çöz: iframe HTML'inde .m3u8 avla. */
+    /** Montana / mntplayer iframe'ini çöz. */
     private suspend fun resolveMontana(
         iframeUrl: String,
         callback: (ExtractorLink) -> Unit
@@ -308,10 +296,8 @@ class DiziPal2 : MainAPI() {
 
         var found = false
 
-        // 1) Doğrudan m3u8
         if (pushM3u8s(html, referer = iframeUrl, callback)) found = true
 
-        // 2) "file":"...m3u8" gibi JS config içinde
         Regex("""["'](?:file|src|url|hls)["']\s*:\s*["']([^"']*\.m3u8[^"']*)["']""")
             .findAll(html).map { it.groupValues[1] }.distinct().forEach { m3u ->
                 runCatching {
@@ -325,7 +311,6 @@ class DiziPal2 : MainAPI() {
                 }
             }
 
-        // 3) mntplayer özel path
         Regex("""https?://[^\s"'<>]*mntplayer[^\s"'<>]*\.m3u8[^\s"'<>]*""")
             .findAll(html).map { it.value }.distinct().forEach { m3u ->
                 runCatching {
@@ -339,7 +324,6 @@ class DiziPal2 : MainAPI() {
                 }
             }
 
-        // 4) atob() ile gizlenmiş olabilir
         Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""")
             .findAll(html).mapNotNull {
                 runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull()
@@ -350,7 +334,6 @@ class DiziPal2 : MainAPI() {
         return found
     }
 
-    /** Verilen sayfayı indirip: şifre çöz, <script> ve gövde içinden .m3u8/.mp4 çıkar. */
     private suspend fun extractFromPageUrl(
         url: String,
         referer: String,
@@ -390,7 +373,6 @@ class DiziPal2 : MainAPI() {
         return false
     }
 
-    /** JS içinde gizlenmiş bağlantıları (.m3u8 / atob) avla. */
     private suspend fun huntInScripts(
         doc: Document,
         referer: String,
@@ -436,7 +418,6 @@ class DiziPal2 : MainAPI() {
         return found
     }
 
-    /** Metin içindeki .m3u8 linklerini ExtractorLink listesine çevir. */
     private suspend fun pushM3u8s(
         text: String,
         referer: String,
@@ -458,7 +439,6 @@ class DiziPal2 : MainAPI() {
         return any
     }
 
-    /** Metin içindeki .mp4 linklerini ekle (yalın). */
     private suspend fun pushMp4s(
         text: String,
         referer: String,
@@ -479,7 +459,6 @@ class DiziPal2 : MainAPI() {
         return any
     }
 
-    /** Sayfadaki data-rm-k JSON'unu ve appCKey'i kullanarak AES/CBC/PKCS5 çöz (varsa). */
     private fun decryptFromPage(doc: Document): String? {
         val encDiv = doc.select("""div[data-rm-k]""").firstOrNull() ?: return null
         val json = encDiv.text().trim().ifBlank { return null }
