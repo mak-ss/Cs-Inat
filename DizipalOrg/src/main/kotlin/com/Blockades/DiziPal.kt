@@ -20,7 +20,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipalorijinal22.vip"
-    override var name                 = "DiziPalOrg"
+    override var name                 = "DiziPal"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -64,18 +64,21 @@ class DiziPal : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Platform sayfası mı?
+        // Platform sayfası mı kontrolü
         val isPlatform = request.data.contains("/platform/")
         val url = if (isPlatform) {
             request.data.platformPagePath(page)
         } else {
             request.data.addPagePath(page)
         }
+        
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
 
         val cards = mutableListOf<SearchResponse>()
 
-        val items = doc.select(".ip-card a[href], .ip-trend-card a[href]")
+        // SEÇİCİ GENİŞLETİLDİ: Platform sayfaları farklı class kullanıyor olabilir
+        // .ip-card ve .ip-trend-card'a ek olarak, genel kart yapılarını da hedef alıyoruz
+        val items = doc.select(".ip-card a[href], .ip-trend-card a[href], .platform-card a[href], .film-card a[href], .dizi-card a[href], .poster a[href]")
             .filter { a ->
                 val h = a.attr("href")
                 h.contains("/dizi/") || h.contains("/film/")
@@ -84,12 +87,23 @@ class DiziPal : MainAPI() {
 
         items.forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
-            val container = a.closest(".ip-card") ?: a.closest(".ip-trend-card")
+            
+            // Container'ı daha esnek bul (a'nın kendisi veya en yakın kart class'ı)
+            val container = a.closest(".ip-card") 
+                ?: a.closest(".ip-trend-card") 
+                ?: a.closest(".platform-card")
+                ?: a.closest(".film-card")
+                ?: a.closest(".dizi-card")
+                ?: a.closest("article")
+                ?: a.parent()
+
+            // Poster'ı bul (data-src veya src)
             val poster = container?.selectFirst("img")?.let {
                 it.attr("data-src").ifBlank { it.attr("src") }
             }?.let(::fixUrlNull)
 
-            val title = container?.selectFirst(".ip-card-title, .ip-trend-title")?.text()?.trim()
+            // Başlığı bul (class'lar esnek)
+            val title = container?.selectFirst(".ip-card-title, .ip-trend-title, .title, .tt, h2, h3")?.text()?.trim()
                 ?: container?.selectFirst("img")?.attr("alt")?.trim()
                 ?: a.attr("title").ifBlank { a.text() }.ifBlank {
                     href.substringAfterLast("/").replace("-", " ").trim()
@@ -101,6 +115,9 @@ class DiziPal : MainAPI() {
                 cards += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
             }
         }
+
+        // Log ekleyelim görmek için
+        Log.e("DZP", "getMainPage: ${request.name} -> ${cards.size} kart bulundu")
 
         val hasNext = doc.select(".pagination a, a[rel=next]").isNotEmpty()
         return newHomePageResponse(request.name, cards, hasNext = hasNext)
@@ -593,7 +610,6 @@ class DiziPal : MainAPI() {
         }
     }
 
-    /** Platform sayfaları için sayfalama: ?page=2 veya /page/2/ formatını dener. */
     private fun String.platformPagePath(page: Int): String {
         if (page <= 1) return this
         return if (this.contains("?")) {
