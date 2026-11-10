@@ -158,9 +158,6 @@ class DiziPal : MainAPI() {
                 }
 
                 Log.e("DZP", "load(): $title -> ${eps.size} bölüm")
-                eps.take(3).forEach { ep ->
-                    Log.e("DZP", "  - ${ep.name} | data=${ep.data}")
-                }
 
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps.distinctBy { it.data }) {
                     this.posterUrl = poster
@@ -257,11 +254,10 @@ class DiziPal : MainAPI() {
     ): Boolean {
         Log.e("DZP", "=== loadLinks ÇAĞRILDI ===")
         Log.e("DZP", "data=$data")
-        Log.e("DZP", "isCasting=$isCasting")
 
         // 1) Doğrudan bölüm/film sayfasında ara
         if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
-            Log.e("DZP", "✓ Bölüm sayfasından link bulundu")
+            Log.e("DZP", "✓ Sayfadan link bulundu")
             return true
         }
 
@@ -271,7 +267,6 @@ class DiziPal : MainAPI() {
         }.getOrNull()
 
         if (page != null) {
-            // EP_SLUG'u JS'ten çıkar
             val pageHtml = page.html()
             val slugFromJs = Regex("""(?:var|let|const)\s+EP_SLUG\s*=\s*["']([^"']+)["']""")
                 .find(pageHtml)?.groupValues?.getOrNull(1)
@@ -279,11 +274,14 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "EP_SLUG=$slugFromJs")
 
-            // 3) /api/embed.php çağır (asıl player linkleri burada)
+            // 3) /api/embed.php çağır (doğru domain ile)
+            val isFilm = data.contains("/film/")
+            val typeParam = if (isFilm) "&type=film" else ""
             val embedUrls = listOf(
-                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl&cb=3",
+                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com$typeParam&cb=3",
+                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl$typeParam&cb=3",
                 "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com&cb=3",
-                "$mainUrl/api/embed.php?slug=$slugFromJs"
+                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl&cb=3"
             ).distinct()
 
             for (embedUrl in embedUrls) {
@@ -326,8 +324,7 @@ class DiziPal : MainAPI() {
             return false
         }
         val body = res.text
-        val contentType = res.headers["content-type"] ?: "?"
-        Log.e("DZP", "Yanıt: ${body.length} byte, content-type=$contentType")
+        Log.e("DZP", "Yanıt: ${body.length} byte, content-type=${res.headers["content-type"]}")
 
         // JSON yanıtı mı?
         val trimmed = body.trim()
@@ -336,7 +333,6 @@ class DiziPal : MainAPI() {
             if (pushHlsProxy(body, referer, callback)) return true
             if (pushM3u8s(body, referer, callback)) return true
             if (pushMp4s(body, referer, callback)) return true
-            // JSON içinde başka URL'ler olabilir
             Regex("""https?://[^\s"'<>]+""").findAll(body).map { it.value }.distinct().forEach { u ->
                 if (loadExtractor(u, referer, subtitleCallback, callback)) return true
             }
@@ -423,13 +419,13 @@ class DiziPal : MainAPI() {
      * Dizipal proxy çözücü:
      *   https://dizipalorijinal22.vip/api/hls.php?url=<URL_ENCODED_M3U8>&psess=...
      * 'url' parametresini URL-decode edip asıl m3u8 linkini çıkarır.
+     * M3u8Helper başarısızsa ham m3u8 URL'sini M3U8 olarak verir.
      */
     private suspend fun pushHlsProxy(
         text: String,
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.e("DZP", "pushHlsProxy: text.length=${text.length}")
         var any = false
 
         val proxies = Regex("""https?://[^\s"'<>]*hls\.php\?url=[^\s"'<>]+""")
@@ -437,6 +433,8 @@ class DiziPal : MainAPI() {
             .map { it.value }
             .distinct()
             .toList()
+
+        if (proxies.isEmpty()) return false
 
         Log.e("DZP", "pushHlsProxy: ${proxies.size} proxy bulundu")
 
@@ -449,27 +447,37 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "Proxy çözüldü -> $realM3u8")
 
-            val candidates = listOf(proxy, referer, "$mainUrl/").distinct()
-            for (ref in candidates) {
-                val ok = runCatching {
-                    M3u8Helper.generateM3u8(
-                        source    = name,
-                        streamUrl = realM3u8,
-                        referer   = ref,
-                        name      = name,
-                        headers   = mapOf(
-                            "Referer" to "$mainUrl/",
-                            "Origin"  to mainUrl,
-                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-                        )
-                    ).forEach(callback)
-                    true
-                }.getOrElse {
-                    Log.e("DZP", "M3u8Helper hatası (ref=$ref): ${it.message}")
-                    false
-                }
-                if (ok) { any = true; break }
+            // 1) ÖNCE M3u8Helper dene
+            val m3u8Result = runCatching {
+                M3u8Helper.generateM3u8(
+                    source    = name,
+                    streamUrl = realM3u8,
+                    referer   = "$mainUrl/",
+                    name      = name
+                )
+            }.getOrElse {
+                Log.e("DZP", "M3u8Helper exception: ${it.message}")
+                emptyList()
             }
+
+            Log.e("DZP", "M3u8Helper sonucu: ${m3u8Result.size} link")
+
+            if (m3u8Result.isNotEmpty()) {
+                m3u8Result.forEach(callback)
+                any = true
+                continue
+            }
+
+            // 2) M3u8Helper başarısızsa: ham m3u8 URL'sini M3U8 olarak ver
+            Log.e("DZP", "M3u8Helper boş -> fallback: ham m3u8 URL'si")
+            callback(
+                newExtractorLink(
+                    source = name,
+                    name   = name,
+                    url    = realM3u8
+                )
+            )
+            any = true
         }
 
         return any
