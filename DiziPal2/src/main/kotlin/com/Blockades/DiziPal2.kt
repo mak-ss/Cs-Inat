@@ -54,7 +54,36 @@ class DiziPal2 : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data.addPagePath(page)
-        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+
+        // TEŞHİS 1: İstek yapılıyor mu, HTML geliyor mu?
+        val res = try {
+            app.get(
+                url,
+                interceptor = interceptor,
+                referer = "$mainUrl/",
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8"
+                )
+            )
+        } catch (e: Exception) {
+            Log.e("DZP", "getMainPage istek hatası: ${e.message}")
+            return newHomePageResponse(request.name, emptyList(), hasNext = false)
+        }
+
+        val doc = res.document
+        val html = doc.html()
+
+        // TEŞHİS 2: Ne geliyor?
+        Log.d("DZP", "=== getMainPage URL: $url")
+        Log.d("DZP", "=== HTML uzunluk: ${html.length}")
+        Log.d("DZP", "=== HTML başlangıç: ${html.take(800)}")
+        Log.d("DZP", "=== .homepage-card sayısı: " + doc.select(".homepage-card").size)
+        Log.d("DZP", "=== .trend-card sayısı: " + doc.select(".trend-card").size)
+        Log.d("DZP", "=== a[href*=/dizi/] sayısı: " + doc.select("a[href*=/dizi/]").size)
+        Log.d("DZP", "=== a[href*=/film/] sayısı: " + doc.select("a[href*=/film/]").size)
+        Log.d("DZP", "=== img sayısı: " + doc.select("img").size)
 
         val cards = mutableListOf<SearchResponse>()
 
@@ -66,22 +95,43 @@ class DiziPal2 : MainAPI() {
             h.contains("/dizi/") || h.contains("/film/")
         }.distinctBy { it.attr("href") }
 
-        items.forEach { a ->
+        // Fallback: eğer yeni selector boş dönerse, tüm /dizi/ ve /film/ linklerini dene
+        val finalItems = if (items.isEmpty()) {
+            Log.w("DZP", "Yeni selector boş, fallback link taraması yapılıyor")
+            doc.select("a[href*=/dizi/], a[href*=/film/]")
+                .filter { a ->
+                    val h = a.attr("href")
+                    (h.contains("/dizi/") && !h.contains("/sezon/") && !h.contains("-bolum")) ||
+                    (h.contains("/film/") && !h.contains("-bolum"))
+                }
+                .distinctBy { it.attr("href") }
+        } else items
+
+        Log.d("DZP", "=== İşlenecek kart sayısı: ${finalItems.size}")
+
+        finalItems.forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
 
             val container = a.closest(".homepage-card")
                 ?: a.closest(".trend-card")
+                ?: a.parent()?.closest(".homepage-card")
+                ?: a.parent()
                 ?: a
 
-            // POSTER: önce data-src (lazy-load), yoksa src
-            val poster = container.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifBlank { img.attr("src") }
-            }?.let(::fixUrlNull)
+            // POSTER: önce data-src, sonra src
+            val img = container.selectFirst("img")
+            val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }
+                ?.let(::fixUrlNull)
+
+            // TEŞHİS 3: Poster geliyor mu?
+            if (poster == null) {
+                Log.w("DZP", "Poster yok: href=$href img=${img?.attr("src")} data-src=${img?.attr("data-src")}")
+            }
 
             val title = container.selectFirst(
                 ".homepage-card-title, .trend-card-title"
             )?.text()?.trim()
-                ?: container.selectFirst("img")?.attr("alt")?.trim()
+                ?: img?.attr("alt")?.trim()
                 ?: a.attr("title").ifBlank { a.text() }.ifBlank {
                     href.substringAfterLast("/").replace("-", " ").trim()
                 }
@@ -93,6 +143,8 @@ class DiziPal2 : MainAPI() {
             }
         }
 
+        Log.d("DZP", "=== Toplam kart: ${cards.size}")
+
         val hasNext = doc.select(".pagination a, a[rel=next], .section-more-btn").isNotEmpty()
         return newHomePageResponse(request.name, cards, hasNext = hasNext)
     }
@@ -101,25 +153,39 @@ class DiziPal2 : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/arama?q=${query.encodeURL()}"
-        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+        val doc = try {
+            app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+        } catch (e: Exception) {
+            Log.e("DZP", "search hatası: ${e.message}")
+            return emptyList()
+        }
+
+        Log.d("DZP", "=== search URL: $url, HTML uzunluk: ${doc.html().length}")
+
         val out = mutableListOf<SearchResponse>()
 
-        doc.select(".homepage-card[href], .trend-card[href]").forEach { a ->
+        val items = doc.select(".homepage-card[href], .trend-card[href]").let {
+            if (it.isEmpty()) doc.select("a[href*=/dizi/], a[href*=/film/]") else it
+        }
+
+        items.forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
             if (!href.contains("/dizi/") && !href.contains("/film/")) return@forEach
+            if (href.contains("/sezon/") || href.contains("-bolum")) return@forEach
 
             val container = a.closest(".homepage-card")
                 ?: a.closest(".trend-card")
+                ?: a.parent()
                 ?: a
 
-            val poster = container.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifBlank { img.attr("src") }
-            }?.let(::fixUrlNull)
+            val img = container.selectFirst("img")
+            val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }
+                ?.let(::fixUrlNull)
 
             val title = container.selectFirst(
                 ".homepage-card-title, .trend-card-title"
             )?.text()?.trim()
-                ?: container.selectFirst("img")?.attr("alt")?.trim()
+                ?: img?.attr("alt")?.trim()
                 ?: href.substringAfterLast("/").replace("-", " ").trim()
 
             when {
@@ -128,6 +194,7 @@ class DiziPal2 : MainAPI() {
             }
         }
 
+        Log.d("DZP", "=== search sonuç: ${out.size}")
         return out.distinctBy { it.url }
     }
 
@@ -136,13 +203,22 @@ class DiziPal2 : MainAPI() {
     /* -------------------- Load (details) -------------------- */
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+        val doc = try {
+            app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
+        } catch (e: Exception) {
+            Log.e("DZP", "load hatası: ${e.message}")
+            return null
+        }
+
+        Log.d("DZP", "=== load URL: $url, HTML uzunluk: ${doc.html().length}")
 
         val poster = fixUrlNull(
             doc.selectFirst("[property='og:image']")?.attr("content")
                 ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
                 ?: doc.selectFirst(".series-poster img, .dp-sidebar-poster img, .dp-poster-small img")?.attr("src")
         )
+
+        Log.d("DZP", "=== load poster: $poster")
 
         val title = doc.selectFirst(".series-title, .dp-series-title, h1")?.text()?.trim()
             ?.removeSuffix(" izle")
@@ -159,6 +235,8 @@ class DiziPal2 : MainAPI() {
                     """window\.episodesData\s*=\s*(\{.*?\});""",
                     RegexOption.DOT_MATCHES_ALL
                 ).find(doc.html())?.groupValues?.getOrNull(1)
+
+                Log.d("DZP", "=== episodesData bulundu mu: ${dataJson != null}, uzunluk: ${dataJson?.length}")
 
                 if (!dataJson.isNullOrBlank()) {
                     runCatching {
@@ -200,6 +278,8 @@ class DiziPal2 : MainAPI() {
                     }
                 }
 
+                Log.d("DZP", "=== load bölüm sayısı: ${eps.size}")
+
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps.distinctBy { it.data }) {
                     this.posterUrl = poster
                 }
@@ -240,7 +320,7 @@ class DiziPal2 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DZP", "loadLinks: $data")
+        Log.d("DZP", "=== loadLinks başladı: $data")
 
         val page = try {
             app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
@@ -249,27 +329,53 @@ class DiziPal2 : MainAPI() {
             return false
         }
 
+        val html = page.html()
+        Log.d("DZP", "=== loadLinks HTML uzunluk: ${html.length}, başlık: ${page.title()}")
+        Log.d("DZP", "=== iframe sayısı: " + page.select("iframe").size)
+
+        page.select("iframe").forEach { ifr ->
+            Log.d("DZP", "=== iframe src: " + ifr.attr("src"))
+        }
+
         // 1) Player iframe'leri
         val iframes = page.select("iframe[src], amp-iframe[src]")
         for (ifr in iframes) {
             val src = normalizeHref(ifr.attr("src")) ?: continue
-            Log.d("DZP", "iframe: $src")
+            Log.d("DZP", "=== iframe işleniyor: $src")
 
             if (src.contains("mntplayer.com") || src.contains("montana") || src.contains("vod.")) {
-                if (resolveMontana(src, callback)) return true
+                if (resolveMontana(src, callback)) {
+                    Log.d("DZP", "=== resolveMontana başarılı")
+                    return true
+                }
             }
 
-            if (loadExtractor(src, data, subtitleCallback, callback)) return true
-            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
+            if (loadExtractor(src, data, subtitleCallback, callback)) {
+                Log.d("DZP", "=== loadExtractor başarılı: $src")
+                return true
+            }
+            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) {
+                Log.d("DZP", "=== extractFromPageUrl başarılı: $src")
+                return true
+            }
         }
 
         // 2) Sayfanın kendisinde
-        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) return true
+        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
+            Log.d("DZP", "=== extractFromPageUrl (ana sayfa) başarılı")
+            return true
+        }
 
-        val html = page.html()
-        if (pushM3u8s(html, referer = "$mainUrl/", callback)) return true
-        if (pushMp4s(html, referer = "$mainUrl/", callback)) return true
+        if (pushM3u8s(html, referer = "$mainUrl/", callback)) {
+            Log.d("DZP", "=== pushM3u8s (html) başarılı")
+            return true
+        }
+        if (pushMp4s(html, referer = "$mainUrl/", callback)) {
+            Log.d("DZP", "=== pushMp4s (html) başarılı")
+            return true
+        }
 
+        Log.w("DZP", "=== Hiçbir link bulunamadı")
         return false
     }
 
@@ -290,9 +396,12 @@ class DiziPal2 : MainAPI() {
                 )
             ).text
         }.getOrNull() ?: run {
-            Log.e("DZP", "resolveMontana: iframe indirilemedi")
+            Log.e("DZP", "resolveMontana: iframe indirilemedi: $iframeUrl")
             return false
         }
+
+        Log.d("DZP", "resolveMontana HTML uzunluk: ${html.length}")
+        Log.d("DZP", "resolveMontana HTML başlangıç: ${html.take(500)}")
 
         var found = false
 
@@ -300,6 +409,7 @@ class DiziPal2 : MainAPI() {
 
         Regex("""["'](?:file|src|url|hls)["']\s*:\s*["']([^"']*\.m3u8[^"']*)["']""")
             .findAll(html).map { it.groupValues[1] }.distinct().forEach { m3u ->
+                Log.d("DZP", "resolveMontana file config: $m3u")
                 runCatching {
                     M3u8Helper.generateM3u8(
                         source    = name,
@@ -313,6 +423,7 @@ class DiziPal2 : MainAPI() {
 
         Regex("""https?://[^\s"'<>]*mntplayer[^\s"'<>]*\.m3u8[^\s"'<>]*""")
             .findAll(html).map { it.value }.distinct().forEach { m3u ->
+                Log.d("DZP", "resolveMontana mntplayer: $m3u")
                 runCatching {
                     M3u8Helper.generateM3u8(
                         source    = name,
@@ -328,6 +439,7 @@ class DiziPal2 : MainAPI() {
             .findAll(html).mapNotNull {
                 runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull()
             }.forEach { decoded ->
+                Log.d("DZP", "resolveMontana atob decoded: ${decoded.take(200)}")
                 if (pushM3u8s(decoded, referer = iframeUrl, callback)) found = true
             }
 
@@ -426,6 +538,7 @@ class DiziPal2 : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
             .findAll(text).map { it.value }.distinct().forEach { m3u ->
+                Log.d("DZP", "pushM3u8s bulundu: $m3u")
                 runCatching {
                     M3u8Helper.generateM3u8(
                         source    = name,
