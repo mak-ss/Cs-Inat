@@ -1,4 +1,4 @@
-# ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
 import android.util.Log
@@ -17,7 +17,7 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class DiziPal : MainAPI() {
+class DiziPal2 : MainAPI() {
     override var mainUrl              = "https://dizipal2152.com/"
     override var name                 = "DiziPal2"
     override val hasMainPage          = true
@@ -325,7 +325,7 @@ class DiziPal : MainAPI() {
                 }
             }
 
-        // 3) mntplayer özel path (vod.mntplayer.com/.../master.m3u8 veya video.m3u8)
+        // 3) mntplayer özel path
         Regex("""https?://[^\s"'<>]*mntplayer[^\s"'<>]*\.m3u8[^\s"'<>]*""")
             .findAll(html).map { it.value }.distinct().forEach { m3u ->
                 runCatching {
