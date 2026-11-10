@@ -46,25 +46,26 @@ class DiziPal2 : MainAPI() {
 
     /* -------------------- MainPage -------------------- */
 
-    // Platformları da ana sayfaya kategori olarak ekliyoruz.
-    // Not: Site yapısına göre bu URL'lerin çalıştığından emin olmalıyız.
     override val mainPage = mainPageOf(
-        "$mainUrl/diziler"          to "Diziler",
-        "$mainUrl/filmler"          to "Filmler",
-        "$mainUrl/bolumler"         to "Son Bölümler",
-        "$mainUrl/platform/netflix" to "Netflix",
-        "$mainUrl/platform/disney"  to "Disney+",
-        "$mainUrl/platform/gain"    to "Gain",
-        "$mainUrl/platform/blutv"   to "BluTV",
-        "$mainUrl/platform/exxen"   to "Exxen",
-        "$mainUrl/platform/prime-video" to "Prime Video",
-        "$mainUrl/platform/tabii"   to "Tabii",
-        "$mainUrl/platform/apple-tv" to "Apple TV+",
-        "$mainUrl/platform/hbomax"  to "HBO Max",
-        "$mainUrl/platform/mubi"    to "Mubi",
-        "$mainUrl/platform/tod"     to "TOD",
-        "$mainUrl/platform/tv"      to "TV+",
-        "$mainUrl/platform/hulu"    to "Hulu"
+        // Ana kategoriler (silinmedi)
+        "$mainUrl/diziler"               to "Diziler",
+        "$mainUrl/filmler"               to "Filmler",
+        "$mainUrl/bolumler"              to "Son Bölümler",
+        // Tüm platformlar
+        "$mainUrl/platform/blutv"        to "BluTV",
+        "$mainUrl/platform/crunchyroll"  to "Crunchyroll",
+        "$mainUrl/platform/netflix"      to "Netflix",
+        "$mainUrl/platform/exxen"        to "Exxen",
+        "$mainUrl/platform/prime-video"  to "Prime Video",
+        "$mainUrl/platform/tabii"        to "Tabii",
+        "$mainUrl/platform/apple-tv"     to "Apple TV+",
+        "$mainUrl/platform/disney"       to "Disney+",
+        "$mainUrl/platform/hbomax"       to "HBO Max",
+        "$mainUrl/platform/gain"         to "Gain",
+        "$mainUrl/platform/mubi"         to "Mubi",
+        "$mainUrl/platform/tod"          to "TOD",
+        "$mainUrl/platform/tv"           to "TV+",
+        "$mainUrl/platform/hulu"         to "Hulu"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -96,7 +97,6 @@ class DiziPal2 : MainAPI() {
 
         val cards = mutableListOf<SearchResponse>()
 
-        // Yeni yapı: .homepage-card, .trend-card
         val items = doc.select(
             ".homepage-card[href], .trend-card[href]"
         ).filter { a ->
@@ -104,7 +104,6 @@ class DiziPal2 : MainAPI() {
             h.contains("/dizi/") || h.contains("/film/")
         }.distinctBy { it.attr("href") }
 
-        // Fallback: yeni selector boşsa, tüm dizi/film linklerini dene
         val finalItems = if (items.isEmpty()) {
             Log.w("DZP", "Yeni selector boş, fallback link taraması yapılıyor")
             doc.select("a[href*=/dizi/], a[href*=/film/]")
@@ -237,7 +236,6 @@ class DiziPal2 : MainAPI() {
                 val slug = url.substringAfter("/dizi/").substringBefore("/").substringBefore("?")
                 val eps = mutableListOf<Episode>()
 
-                // 1) window.episodesData JSON'u
                 val dataJson = Regex(
                     """window\.episodesData\s*=\s*(\{.*?\});""",
                     RegexOption.DOT_MATCHES_ALL
@@ -272,7 +270,6 @@ class DiziPal2 : MainAPI() {
                     }.onFailure { Log.e("DZP", "episodesData parse hatası: ${it.message}") }
                 }
 
-                // 2) HTML fallback
                 if (eps.isEmpty()) {
                     doc.select("""a[href*="/sezon/"][href*="-bolum"]""").forEach { a ->
                         val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -344,7 +341,6 @@ class DiziPal2 : MainAPI() {
             Log.d("DZP", "=== iframe src: " + ifr.attr("src"))
         }
 
-        // 1) Player iframe'leri
         val iframes = page.select("iframe[src], amp-iframe[src]")
         for (ifr in iframes) {
             val src = normalizeHref(ifr.attr("src")) ?: continue
@@ -367,7 +363,6 @@ class DiziPal2 : MainAPI() {
             }
         }
 
-        // 2) Sayfanın kendisinde
         if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
             Log.d("DZP", "=== extractFromPageUrl (ana sayfa) başarılı")
             return true
@@ -386,7 +381,6 @@ class DiziPal2 : MainAPI() {
         return false
     }
 
-    /** Montana / mntplayer iframe'ini çöz. */
     private suspend fun resolveMontana(
         iframeUrl: String,
         callback: (ExtractorLink) -> Unit
