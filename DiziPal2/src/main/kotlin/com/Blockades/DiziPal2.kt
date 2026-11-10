@@ -47,11 +47,9 @@ class DiziPal2 : MainAPI() {
     /* -------------------- MainPage -------------------- */
 
     override val mainPage = mainPageOf(
-        // Ana kategoriler (silinmedi)
         "$mainUrl/diziler"               to "Diziler",
         "$mainUrl/filmler"               to "Filmler",
         "$mainUrl/bolumler"              to "Son Bölümler",
-        // Tüm platformlar
         "$mainUrl/platform/blutv"        to "BluTV",
         "$mainUrl/platform/crunchyroll"  to "Crunchyroll",
         "$mainUrl/platform/netflix"      to "Netflix",
@@ -88,24 +86,16 @@ class DiziPal2 : MainAPI() {
         }
 
         val doc = res.document
-        val html = doc.html()
-
-        Log.d("DZP", "=== getMainPage URL: $url")
-        Log.d("DZP", "=== HTML uzunluk: ${html.length}")
-        Log.d("DZP", "=== .homepage-card sayısı: " + doc.select(".homepage-card").size)
-        Log.d("DZP", "=== .trend-card sayısı: " + doc.select(".trend-card").size)
-
         val cards = mutableListOf<SearchResponse>()
 
-        val items = doc.select(
-            ".homepage-card[href], .trend-card[href]"
-        ).filter { a ->
-            val h = a.attr("href")
-            h.contains("/dizi/") || h.contains("/film/")
-        }.distinctBy { it.attr("href") }
+        val items = doc.select(".homepage-card[href], .trend-card[href]")
+            .filter { a ->
+                val h = a.attr("href")
+                h.contains("/dizi/") || h.contains("/film/")
+            }
+            .distinctBy { it.attr("href") }
 
         val finalItems = if (items.isEmpty()) {
-            Log.w("DZP", "Yeni selector boş, fallback link taraması yapılıyor")
             doc.select("a[href*=/dizi/], a[href*=/film/]")
                 .filter { a ->
                     val h = a.attr("href")
@@ -115,14 +105,10 @@ class DiziPal2 : MainAPI() {
                 .distinctBy { it.attr("href") }
         } else items
 
-        Log.d("DZP", "=== İşlenecek kart sayısı: ${finalItems.size}")
-
         finalItems.forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
-
             val container = a.closest(".homepage-card")
                 ?: a.closest(".trend-card")
-                ?: a.parent()?.closest(".homepage-card")
                 ?: a.parent()
                 ?: a
 
@@ -130,17 +116,11 @@ class DiziPal2 : MainAPI() {
             val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }
                 ?.let(::fixUrlNull)
 
-            if (poster == null) {
-                Log.w("DZP", "Poster yok: href=$href")
-            }
-
             val title = container.selectFirst(
                 ".homepage-card-title, .trend-card-title"
             )?.text()?.trim()
                 ?: img?.attr("alt")?.trim()
-                ?: a.attr("title").ifBlank { a.text() }.ifBlank {
-                    href.substringAfterLast("/").replace("-", " ").trim()
-                }
+                ?: href.substringAfterLast("/").replace("-", " ").trim()
 
             if (href.contains("/dizi/")) {
                 cards += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
@@ -148,8 +128,6 @@ class DiziPal2 : MainAPI() {
                 cards += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
             }
         }
-
-        Log.d("DZP", "=== Toplam kart: ${cards.size}")
 
         val hasNext = doc.select(".pagination a, a[rel=next], .section-more-btn").isNotEmpty()
         return newHomePageResponse(request.name, cards, hasNext = hasNext)
@@ -162,14 +140,10 @@ class DiziPal2 : MainAPI() {
         val doc = try {
             app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
         } catch (e: Exception) {
-            Log.e("DZP", "search hatası: ${e.message}")
             return emptyList()
         }
 
-        Log.d("DZP", "=== search URL: $url, HTML uzunluk: ${doc.html().length}")
-
         val out = mutableListOf<SearchResponse>()
-
         val items = doc.select(".homepage-card[href], .trend-card[href]").let {
             if (it.isEmpty()) doc.select("a[href*=/dizi/], a[href*=/film/]") else it
         }
@@ -200,31 +174,25 @@ class DiziPal2 : MainAPI() {
             }
         }
 
-        Log.d("DZP", "=== search sonuç: ${out.size}")
         return out.distinctBy { it.url }
     }
 
     override suspend fun quickSearch(query: String) = search(query)
 
-    /* -------------------- Load (details) -------------------- */
+    /* -------------------- Load -------------------- */
 
     override suspend fun load(url: String): LoadResponse? {
         val doc = try {
             app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
         } catch (e: Exception) {
-            Log.e("DZP", "load hatası: ${e.message}")
             return null
         }
-
-        Log.d("DZP", "=== load URL: $url, HTML uzunluk: ${doc.html().length}")
 
         val poster = fixUrlNull(
             doc.selectFirst("[property='og:image']")?.attr("content")
                 ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
                 ?: doc.selectFirst(".series-poster img, .dp-sidebar-poster img, .dp-poster-small img")?.attr("src")
         )
-
-        Log.d("DZP", "=== load poster: $poster")
 
         val title = doc.selectFirst(".series-title, .dp-series-title, h1")?.text()?.trim()
             ?.removeSuffix(" izle")
@@ -241,8 +209,6 @@ class DiziPal2 : MainAPI() {
                     RegexOption.DOT_MATCHES_ALL
                 ).find(doc.html())?.groupValues?.getOrNull(1)
 
-                Log.d("DZP", "=== episodesData bulundu mu: ${dataJson != null}, uzunluk: ${dataJson?.length}")
-
                 if (!dataJson.isNullOrBlank()) {
                     runCatching {
                         @Suppress("UNCHECKED_CAST")
@@ -255,11 +221,9 @@ class DiziPal2 : MainAPI() {
                                 val epNum = epStr.toIntOrNull()
                                 val epTitle = info["title"]?.toString()?.trim()
                                     ?: epNum?.let { "$it. Bölüm" } ?: "Bölüm"
-
                                 val href = if (epNum != null)
                                     "$mainUrl/dizi/$slug/${seasonNum}-sezon/${epNum}-bolum"
                                 else "$mainUrl/dizi/$slug"
-
                                 eps += newEpisode(href) {
                                     name = epTitle
                                     this.season = seasonNum
@@ -267,7 +231,7 @@ class DiziPal2 : MainAPI() {
                                 }
                             }
                         }
-                    }.onFailure { Log.e("DZP", "episodesData parse hatası: ${it.message}") }
+                    }.onFailure { Log.e("DZP", "episodesData parse: ${it.message}") }
                 }
 
                 if (eps.isEmpty()) {
@@ -281,8 +245,6 @@ class DiziPal2 : MainAPI() {
                         }
                     }
                 }
-
-                Log.d("DZP", "=== load bölüm sayısı: ${eps.size}")
 
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps.distinctBy { it.data }) {
                     this.posterUrl = poster
@@ -314,7 +276,7 @@ class DiziPal2 : MainAPI() {
         return s to e
     }
 
-    /* -------------------- Links (player) -------------------- */
+    /* -------------------- loadLinks -------------------- */
 
     data class EncPayload(val ciphertext: String, val iv: String, val salt: String)
 
@@ -324,7 +286,7 @@ class DiziPal2 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DZP", "=== loadLinks başladı: $data")
+        Log.d("DZP", "loadLinks: $data")
 
         val page = try {
             app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
@@ -334,53 +296,151 @@ class DiziPal2 : MainAPI() {
         }
 
         val html = page.html()
-        Log.d("DZP", "=== loadLinks HTML uzunluk: ${html.length}, başlık: ${page.title()}")
-        Log.d("DZP", "=== iframe sayısı: " + page.select("iframe").size)
+        Log.d("DZP", "iframes: ${page.select("iframe").size}")
 
-        page.select("iframe").forEach { ifr ->
-            Log.d("DZP", "=== iframe src: " + ifr.attr("src"))
-        }
+        // 0) Sayfada doğrudan m3u8 var mı?
+        if (pushM3u8s(html, referer = "$mainUrl/", callback)) return true
 
-        val iframes = page.select("iframe[src], amp-iframe[src]")
-        for (ifr in iframes) {
+        // 1) Player iframe'leri
+        for (ifr in page.select("iframe[src], amp-iframe[src]")) {
             val src = normalizeHref(ifr.attr("src")) ?: continue
-            Log.d("DZP", "=== iframe işleniyor: $src")
+            Log.d("DZP", "iframe: $src")
 
+            // mntplayer özel extractor
             if (src.contains("mntplayer.com") || src.contains("montana") || src.contains("vod.")) {
+                if (resolveMntPlayer(src, data, subtitleCallback, callback)) {
+                    Log.d("DZP", "resolveMntPlayer başarılı")
+                    return true
+                }
                 if (resolveMontana(src, callback)) {
-                    Log.d("DZP", "=== resolveMontana başarılı")
+                    Log.d("DZP", "resolveMontana başarılı")
                     return true
                 }
             }
 
-            if (loadExtractor(src, data, subtitleCallback, callback)) {
-                Log.d("DZP", "=== loadExtractor başarılı: $src")
-                return true
-            }
-            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) {
-                Log.d("DZP", "=== extractFromPageUrl başarılı: $src")
-                return true
-            }
+            if (loadExtractor(src, data, subtitleCallback, callback)) return true
+            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
         }
 
-        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
-            Log.d("DZP", "=== extractFromPageUrl (ana sayfa) başarılı")
-            return true
-        }
+        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) return true
+        if (pushMp4s(html, referer = "$mainUrl/", callback)) return true
 
-        if (pushM3u8s(html, referer = "$mainUrl/", callback)) {
-            Log.d("DZP", "=== pushM3u8s (html) başarılı")
-            return true
-        }
-        if (pushMp4s(html, referer = "$mainUrl/", callback)) {
-            Log.d("DZP", "=== pushMp4s (html) başarılı")
-            return true
-        }
-
-        Log.w("DZP", "=== Hiçbir link bulunamadı")
         return false
     }
 
+    /**
+     * mntplayer/vod iframe'ini çöz:
+     * - HTML içinde /p/<token>/master.m3u8 ara
+     * - /p/<token> varsa master.m3u8 türet ve doğrula
+     * - Harici script'leri de tara
+     */
+    private suspend fun resolveMntPlayer(
+        iframeUrl: String,
+        pageReferer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val mainHtml = runCatching {
+            app.get(
+                iframeUrl,
+                referer = pageReferer,
+                interceptor = interceptor,
+                headers = mapOf(
+                    "Accept" to "text/html,application/xhtml+xml,*/*;q=0.8",
+                    "Sec-Fetch-Dest" to "iframe",
+                    "Sec-Fetch-Mode" to "navigate",
+                    "Sec-Fetch-Site" to "cross-site"
+                )
+            ).text
+        }.getOrNull() ?: return false
+
+        Log.d("DZP", "mnt mainHtml len=${mainHtml.length}")
+
+        // 1) Doğrudan m3u8
+        if (pushM3u8s(mainHtml, referer = iframeUrl, callback)) return true
+
+        val baseOrigin = "https://vod.mntplayer.com:8443"
+
+        // 2) HTML içinde /p/<token>
+        val tokens = mutableSetOf<String>()
+        Regex("""/p/[A-Za-z0-9_\-=.]+""").findAll(mainHtml).forEach { m ->
+            if (m.value.length > 20) tokens += m.value
+        }
+
+        for (tok in tokens) {
+            val masterUrl = "$baseOrigin$tok/master.m3u8"
+            val ok = runCatching {
+                app.get(masterUrl, referer = iframeUrl, interceptor = interceptor).text.contains("#EXTM3U")
+            }.getOrDefault(false)
+            if (ok) {
+                Log.d("DZP", "mnt master bulundu: $masterUrl")
+                M3u8Helper.generateM3u8(
+                    source    = name,
+                    streamUrl = masterUrl,
+                    referer   = iframeUrl,
+                    name      = name
+                ).forEach(callback)
+                return true
+            }
+        }
+
+        // 3) Harici script'ler
+        val scriptUrls = Regex("""<script[^>]+src=["']([^"']+)["']""")
+            .findAll(mainHtml)
+            .map { fixUrl(it.groupValues[1]) }
+            .distinct()
+            .toList()
+
+        for (sUrl in scriptUrls) {
+            val js = runCatching {
+                app.get(sUrl, referer = iframeUrl, interceptor = interceptor).text
+            }.getOrNull() ?: continue
+
+            // Direkt /p/.../master.m3u8
+            Regex("""/p/[A-Za-z0-9_\-=.]+/master\.m3u8""").findAll(js).forEach { m ->
+                val url = "$baseOrigin${m.value}"
+                Log.d("DZP", "mnt js master: $url")
+                M3u8Helper.generateM3u8(
+                    source    = name,
+                    streamUrl = url,
+                    referer   = iframeUrl,
+                    name      = name
+                ).forEach(callback)
+                return true
+            }
+
+            // Sadece /p/<token>
+            Regex("""/p/[A-Za-z0-9_\-=.]+""").findAll(js).forEach { m ->
+                if (m.value.length < 20) return@forEach
+                val url = "$baseOrigin${m.value}/master.m3u8"
+                val ok = runCatching {
+                    app.get(url, referer = iframeUrl, interceptor = interceptor).text.contains("#EXTM3U")
+                }.getOrDefault(false)
+                if (ok) {
+                    Log.d("DZP", "mnt js token master: $url")
+                    M3u8Helper.generateM3u8(
+                        source    = name,
+                        streamUrl = url,
+                        referer   = iframeUrl,
+                        name      = name
+                    ).forEach(callback)
+                    return true
+                }
+            }
+        }
+
+        // 4) Nested iframe
+        for (m in Regex("""<iframe[^>]+src=["']([^"']+)["']""").findAll(mainHtml)) {
+            val n = fixUrl(m.groupValues[1])
+            if (n != iframeUrl && (n.contains("mntplayer") || n.contains("vod."))) {
+                if (resolveMntPlayer(n, iframeUrl, subtitleCallback, callback)) return true
+            }
+        }
+
+        return false
+    }
+
+    /** Eski montana çözücü (fallback). */
     private suspend fun resolveMontana(
         iframeUrl: String,
         callback: (ExtractorLink) -> Unit
@@ -396,56 +456,24 @@ class DiziPal2 : MainAPI() {
                     "Sec-Fetch-Mode" to "navigate"
                 )
             ).text
-        }.getOrNull() ?: run {
-            Log.e("DZP", "resolveMontana: iframe indirilemedi: $iframeUrl")
-            return false
-        }
+        }.getOrNull() ?: return false
 
-        Log.d("DZP", "resolveMontana HTML uzunluk: ${html.length}")
-        Log.d("DZP", "resolveMontana HTML başlangıç: ${html.take(500)}")
-
-        var found = false
-
-        if (pushM3u8s(html, referer = iframeUrl, callback)) found = true
+        if (pushM3u8s(html, referer = iframeUrl, callback)) return true
 
         Regex("""["'](?:file|src|url|hls)["']\s*:\s*["']([^"']*\.m3u8[^"']*)["']""")
-            .findAll(html).map { it.groupValues[1] }.distinct().forEach { m3u ->
-                Log.d("DZP", "resolveMontana file config: $m3u")
-                runCatching {
-                    M3u8Helper.generateM3u8(
-                        source    = name,
-                        streamUrl = fixUrl(m3u),
-                        referer   = iframeUrl,
-                        name      = name
-                    ).forEach(callback)
-                    found = true
-                }
+            .findAll(html).forEach { m ->
+                M3u8Helper.generateM3u8(
+                    source    = name,
+                    streamUrl = fixUrl(m.groupValues[1]),
+                    referer   = iframeUrl,
+                    name      = name
+                ).forEach(callback)
             }
 
-        Regex("""https?://[^\s"'<>]*mntplayer[^\s"'<>]*\.m3u8[^\s"'<>]*""")
-            .findAll(html).map { it.value }.distinct().forEach { m3u ->
-                Log.d("DZP", "resolveMontana mntplayer: $m3u")
-                runCatching {
-                    M3u8Helper.generateM3u8(
-                        source    = name,
-                        streamUrl = fixUrl(m3u),
-                        referer   = iframeUrl,
-                        name      = name
-                    ).forEach(callback)
-                    found = true
-                }
-            }
-
-        Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""")
-            .findAll(html).mapNotNull {
-                runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull()
-            }.forEach { decoded ->
-                Log.d("DZP", "resolveMontana atob decoded: ${decoded.take(200)}")
-                if (pushM3u8s(decoded, referer = iframeUrl, callback)) found = true
-            }
-
-        return found
+        return false
     }
+
+    /* -------------------- Yardımcı çözücüler -------------------- */
 
     private suspend fun extractFromPageUrl(
         url: String,
@@ -456,7 +484,6 @@ class DiziPal2 : MainAPI() {
         val res = try {
             app.get(url, referer = referer, interceptor = interceptor)
         } catch (e: Exception) {
-            Log.e("DZP", "extractFromPageUrl fetch hatası: ${e.message}")
             return false
         }
         val body = res.text
@@ -465,8 +492,8 @@ class DiziPal2 : MainAPI() {
         decryptFromPage(doc)?.let { dec ->
             if (pushM3u8s(dec, referer, callback)) return true
             if (pushMp4s(dec, referer, callback)) return true
-            Regex("""https?://[^\s"'<>]+""").findAll(dec).map { it.value }.distinct().forEach { u ->
-                if (loadExtractor(u, referer, subtitleCallback, callback)) return true
+            Regex("""https?://[^\s"'<>]+""").findAll(dec).forEach { m ->
+                if (loadExtractor(m.value, referer, subtitleCallback, callback)) return true
             }
         }
 
@@ -477,7 +504,7 @@ class DiziPal2 : MainAPI() {
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             if (loadExtractor(src, referer, subtitleCallback, callback)) return@forEach
-            val subRes  = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
+            val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
             if (pushM3u8s(subRes.text, url, callback)) return@forEach
             if (pushMp4s(subRes.text, url, callback)) return@forEach
             if (huntInScripts(subRes.document, src, callback)) return@forEach
@@ -492,9 +519,7 @@ class DiziPal2 : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var found = false
-        val scripts = doc.select("script")
-
-        for (s in scripts) {
+        for (s in doc.select("script")) {
             val code = if (s.hasAttr("src")) {
                 val src = fixUrl(s.attr("src"))
                 runCatching { app.get(src, referer = referer, interceptor = interceptor).text }.getOrNull()
@@ -505,11 +530,11 @@ class DiziPal2 : MainAPI() {
             if (pushM3u8s(code, referer, callback)) found = true
 
             Regex("""file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""")
-                .findAll(code).map { it.groupValues[1] }.distinct().forEach { m3u ->
+                .findAll(code).forEach { m ->
                     runCatching {
                         M3u8Helper.generateM3u8(
                             source    = name,
-                            streamUrl = fixUrl(m3u),
+                            streamUrl = fixUrl(m.groupValues[1]),
                             referer   = referer,
                             name      = name
                         ).forEach(callback)
@@ -520,14 +545,13 @@ class DiziPal2 : MainAPI() {
             Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""")
                 .findAll(code).mapNotNull {
                     runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull()
-                }.forEach { decoded ->
-                    if (pushM3u8s(decoded, referer, callback)) found = true
-                    if (pushMp4s(decoded, referer, callback)) found = true
+                }.forEach { dec ->
+                    if (pushM3u8s(dec, referer, callback)) found = true
+                    if (pushMp4s(dec, referer, callback)) found = true
                 }
 
             if (pushMp4s(code, referer, callback)) found = true
         }
-
         return found
     }
 
@@ -539,7 +563,6 @@ class DiziPal2 : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
             .findAll(text).map { it.value }.distinct().forEach { m3u ->
-                Log.d("DZP", "pushM3u8s bulundu: $m3u")
                 runCatching {
                     M3u8Helper.generateM3u8(
                         source    = name,
@@ -586,10 +609,8 @@ class DiziPal2 : MainAPI() {
             val keyStr = String(Base64.getDecoder().decode(appKeyB64), Charset.forName("UTF-8")).trim()
             val keyBytes = if (keyStr.matches(Regex("^[0-9a-fA-F]{32,64}$")))
                 keyStr.hexToBytes() else keyStr.toByteArray(Charsets.UTF_8)
-
             val ivBytes   = payload.iv.hexToBytes()
             val cipherBin = Base64.getDecoder().decode(payload.ciphertext)
-
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(ivBytes))
             String(cipher.doFinal(cipherBin), Charsets.UTF_8)
