@@ -255,13 +255,11 @@ class DiziPal : MainAPI() {
         Log.e("DZP", "=== loadLinks ÇAĞRILDI ===")
         Log.e("DZP", "data=$data")
 
-        // 1) Doğrudan bölüm/film sayfasında ara
         if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
             Log.e("DZP", "✓ Sayfadan link bulundu")
             return true
         }
 
-        // 2) Bölüm sayfasını çek, embed.php'yi çağır
         val page = runCatching {
             app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
         }.getOrNull()
@@ -274,7 +272,6 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "EP_SLUG=$slugFromJs")
 
-            // 3) /api/embed.php çağır (doğru domain ile)
             val isFilm = data.contains("/film/")
             val typeParam = if (isFilm) "&type=film" else ""
             val embedUrls = listOf(
@@ -292,7 +289,6 @@ class DiziPal : MainAPI() {
                 }
             }
 
-            // 4) Sayfadaki iframe'leri dene
             page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
                 val src = normalizeHref(ifr.attr("src")) ?: return@forEach
                 Log.e("DZP", "iframe: $src")
@@ -300,7 +296,6 @@ class DiziPal : MainAPI() {
                 if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
             }
 
-            // 5) Son çare: HTML içinde
             if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
             if (pushM3u8s(pageHtml, referer = "$mainUrl/", callback)) return true
             if (pushMp4s(pageHtml, referer = "$mainUrl/", callback)) return true
@@ -326,7 +321,6 @@ class DiziPal : MainAPI() {
         val body = res.text
         Log.e("DZP", "Yanıt: ${body.length} byte, content-type=${res.headers["content-type"]}")
 
-        // JSON yanıtı mı?
         val trimmed = body.trim()
         if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
             Log.e("DZP", "JSON yanıt: ${body.take(300)}")
@@ -416,10 +410,7 @@ class DiziPal : MainAPI() {
     }
 
     /**
-     * Dizipal proxy çözücü:
-     *   https://dizipalorijinal22.vip/api/hls.php?url=<URL_ENCODED_M3U8>&psess=...
-     * 'url' parametresini URL-decode edip asıl m3u8 linkini çıkarır.
-     * M3u8Helper başarısızsa ham m3u8 URL'sini M3U8 olarak verir.
+     * Dizipal proxy çözücü. M3u8Helper başarısızsa referer/headers ile ham link verir.
      */
     private suspend fun pushHlsProxy(
         text: String,
@@ -447,7 +438,7 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "Proxy çözüldü -> $realM3u8")
 
-            // 1) ÖNCE M3u8Helper dene
+            // 1) M3u8Helper dene (referer ile)
             val m3u8Result = runCatching {
                 M3u8Helper.generateM3u8(
                     source    = name,
@@ -468,14 +459,21 @@ class DiziPal : MainAPI() {
                 continue
             }
 
-            // 2) M3u8Helper başarısızsa: ham m3u8 URL'sini M3U8 olarak ver
-            Log.e("DZP", "M3u8Helper boş -> fallback: ham m3u8 URL'si")
+            // 2) Fallback: referer ve headers ile ham m3u8 URL'si
+            Log.e("DZP", "M3u8Helper boş -> fallback (referer+headers ile)")
             callback(
                 newExtractorLink(
                     source = name,
                     name   = name,
                     url    = realM3u8
-                )
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.headers = mapOf(
+                        "Referer" to "$mainUrl/",
+                        "Origin"  to mainUrl,
+                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                    )
+                }
             )
             any = true
         }
@@ -518,7 +516,9 @@ class DiziPal : MainAPI() {
                         source = name,
                         name   = name,
                         url    = fixUrl(link)
-                    )
+                    ) {
+                        this.referer = referer
+                    }
                 )
                 any = true
             }
@@ -526,7 +526,9 @@ class DiziPal : MainAPI() {
     }
 
     private fun decryptFromPage(doc: Document): String? {
-        val encDiv = doc.select("""div[data-rm-k]""").firstOrNull() ?: return null
+        val encDiv = doc.select("""div[data-drm-k]""").firstOrNull()
+            ?: doc.select("""div[data-rm-k]""").firstOrNull()
+            ?: return null
         val json = encDiv.text().trim().ifBlank { return null }
         val payload = runCatching {
             jacksonObjectMapper().readValue<EncPayload>(json)
