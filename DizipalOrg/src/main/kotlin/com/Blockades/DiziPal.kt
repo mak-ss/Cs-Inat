@@ -11,6 +11,7 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import java.net.URLDecoder
 import java.nio.charset.Charset
 import java.util.Base64
 import javax.crypto.Cipher
@@ -364,25 +365,58 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /** Dizipal'in kendi m3u8 proxy'si: /api/hls.php?url=...&psess=... */
+    /**
+     * Dizipal'in kendi proxy'sini çözer:
+     *   https://dizipalorijinal22.vip/api/hls.php?url=<URL_ENCODED_M3U8>&psess=...
+     * 'url' parametresini URL-decode edip asıl m3u8 linkini çıkarır.
+     * Asıl linki M3u8Helper'a verir; referer olarak ana siteyi + proxy'yi dener.
+     */
     private suspend fun pushHlsProxy(
         text: String,
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var any = false
-        Regex("""https?://[^\s"'<>]*hls\.php\?url=[^\s"'<>]+""")
-            .findAll(text).map { it.value }.distinct().forEach { proxy ->
-                runCatching {
+
+        // 1) Proxy linklerini yakala
+        val proxies = Regex("""https?://[^\s"'<>]*hls\.php\?url=[^\s"'<>]+""")
+            .findAll(text)
+            .map { it.value }
+            .distinct()
+            .toList()
+
+        for (proxy in proxies) {
+            // 2) 'url' parametresini al
+            val encoded = Regex("""[?&]url=([^&]+)""")
+                .find(proxy)?.groupValues?.getOrNull(1) ?: continue
+
+            // 3) URL-decode
+            val realM3u8 = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: continue
+            if (!realM3u8.startsWith("http")) continue
+
+            Log.d("DZP", "Proxy çözüldü -> $realM3u8")
+
+            // 4) Asıl m3u8'i dene (referer: önce proxy, sonra site)
+            val candidates = listOf(proxy, referer, "$mainUrl/").distinct()
+            for (ref in candidates) {
+                val ok = runCatching {
                     M3u8Helper.generateM3u8(
                         source    = name,
-                        streamUrl = fixUrl(proxy),
-                        referer   = referer,
-                        name      = name
+                        streamUrl = realM3u8,
+                        referer   = ref,
+                        name      = name,
+                        headers   = mapOf(
+                            "Referer" to "$mainUrl/",
+                            "Origin"  to mainUrl,
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                        )
                     ).forEach(callback)
-                    any = true
-                }
+                    true
+                }.getOrDefault(false)
+                if (ok) { any = true; break }
             }
+        }
+
         return any
     }
 
@@ -394,6 +428,8 @@ class DiziPal : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
             .findAll(text).map { it.value }.distinct().forEach { m3u ->
+                // hls.php proxy'lerini burada tekrar işleme (pushHlsProxy hallediyor)
+                if (m3u.contains("hls.php")) return@forEach
                 runCatching {
                     M3u8Helper.generateM3u8(
                         source    = name,
