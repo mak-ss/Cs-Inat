@@ -1,4 +1,4 @@
-# ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
 import android.util.Log
@@ -19,7 +19,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipalorijinal22.vip"
-    override var name                 = "DiziPalOrg"
+    override var name                 = "DiziPal"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -58,7 +58,6 @@ class DiziPal : MainAPI() {
 
         val cards = mutableListOf<SearchResponse>()
 
-        // Site kartları: .ip-card (grid), .ip-trend-card (trend)
         val items = doc.select(".ip-card a[href], .ip-trend-card a[href]")
             .filter { a ->
                 val h = a.attr("href")
@@ -93,7 +92,6 @@ class DiziPal : MainAPI() {
     /* -------------------- Search -------------------- */
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Site arama: /arama?q=...  ( ?s= değil )
         val url = "$mainUrl/arama?q=${query.encodeURL()}"
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
         val out = mutableListOf<SearchResponse>()
@@ -138,7 +136,6 @@ class DiziPal : MainAPI() {
 
         return when {
             url.contains("/dizi/") -> {
-                // Bölümler AJAX ile gelir: /bolum_yukle.php?slug=<slug>&sezon=<n>
                 val slug = url.substringAfterLast("/").substringBefore("?")
                 val seasons = extractSeasons(doc)
 
@@ -147,7 +144,6 @@ class DiziPal : MainAPI() {
                     eps += fetchEpisodes(slug, s)
                 }
 
-                // AJAX çalışmazsa, sayfadaki statik linkleri de dene
                 if (eps.isEmpty()) {
                     doc.select("""a[href*="/bolum/"]""").forEach { a ->
                         val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -187,20 +183,17 @@ class DiziPal : MainAPI() {
         }
     }
 
-    /** Detay sayfasındaki sezon tab'larından sezon numaralarını çıkar. */
     private fun extractSeasons(doc: Document): List<Int> {
         val fromBtns = doc.select(".dp-season-btn, .bp-stab")
             .mapNotNull { it.attr("data-season").toIntOrNull() }
             .distinct()
         if (fromBtns.isNotEmpty()) return fromBtns.sorted()
 
-        // "1 Sezon" badge'inden
         val badge = doc.selectFirst(".dp-badge-season")?.text() ?: ""
         val n = Regex("""(\d+)""").find(badge)?.groupValues?.getOrNull(1)?.toIntOrNull()
         return if (n != null) (1..n).toList() else listOf(1)
     }
 
-    /** /bolum_yukle.php?slug=...&sezon=... JSON endpoint'inden bölümleri çek. */
     private suspend fun fetchEpisodes(slug: String, season: Int): List<Episode> {
         return try {
             val apiUrl = "$mainUrl/bolum_yukle.php?slug=${slug.encodeURL()}&sezon=$season"
@@ -239,7 +232,8 @@ class DiziPal : MainAPI() {
             return it.groupValues[1].toIntOrNull() to it.groupValues[2].toIntOrNull()
         }
         val text = textRaw.lowercase()
-            .replace('ö','o').replace('ü','u').replace('ı','i').replace('ş','s').replace('ç','c').replace('ğ','g')
+            .replace('ö','o').replace('ü','u').replace('ı','i')
+            .replace('ş','s').replace('ç','c').replace('ğ','g')
         val s = Regex("""(\d+)\s*\.?\s*sezon""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val e = Regex("""(\d+)\s*\.?\s*bolum""").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
         return s to e
@@ -257,11 +251,12 @@ class DiziPal : MainAPI() {
     ): Boolean {
         Log.d("DZP", "loadLinks: $data")
 
-        // 1) Sayfanın kendisinde ara
         if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) return true
 
-        // 2) Sayfadaki iframeleri tara
-        val page = app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
+        val page = runCatching {
+            app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
+        }.getOrNull() ?: return false
+
         val iframes = page.select("iframe[src], amp-iframe[src]")
         for (ifr in iframes) {
             val src = normalizeHref(ifr.attr("src")) ?: continue
@@ -270,15 +265,14 @@ class DiziPal : MainAPI() {
             if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
         }
 
-        // 3) Son çare: HTML içinde saklı bağlantılar
         val html = page.html()
+        if (pushHlsProxy(html, referer = "$mainUrl/", callback)) return true
         if (pushM3u8s(html, referer = "$mainUrl/", callback)) return true
         if (pushMp4s(html, referer = "$mainUrl/", callback)) return true
 
         return false
     }
 
-    /** Verilen sayfayı indirip: şifre çöz, <script> ve gövde içinden .m3u8/.mp4 çıkar. */
     private suspend fun extractFromPageUrl(
         url: String,
         referer: String,
@@ -295,6 +289,7 @@ class DiziPal : MainAPI() {
         val doc  = res.document
 
         decryptFromPage(doc)?.let { dec ->
+            if (pushHlsProxy(dec, referer, callback)) return true
             if (pushM3u8s(dec, referer, callback)) return true
             if (pushMp4s(dec, referer, callback)) return true
             Regex("""https?://[^\s"'<>]+""").findAll(dec).map { it.value }.distinct().forEach { u ->
@@ -302,6 +297,7 @@ class DiziPal : MainAPI() {
             }
         }
 
+        if (pushHlsProxy(body, referer, callback)) return true
         if (pushM3u8s(body, referer, callback)) return true
         if (pushMp4s(body, referer, callback)) return true
         if (huntInScripts(doc, url, callback)) return true
@@ -309,7 +305,10 @@ class DiziPal : MainAPI() {
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             if (loadExtractor(src, referer, subtitleCallback, callback)) return@forEach
-            val subRes  = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
+            val subRes = runCatching {
+                app.get(src, referer = url, interceptor = interceptor)
+            }.getOrNull() ?: return@forEach
+            if (pushHlsProxy(subRes.text, url, callback)) return@forEach
             if (pushM3u8s(subRes.text, url, callback)) return@forEach
             if (pushMp4s(subRes.text, url, callback)) return@forEach
             if (huntInScripts(subRes.document, src, callback)) return@forEach
@@ -318,7 +317,6 @@ class DiziPal : MainAPI() {
         return false
     }
 
-    /** JS içinde gizlenmiş bağlantıları (.m3u8 / atob) avla. */
     private suspend fun huntInScripts(
         doc: Document,
         referer: String,
@@ -335,6 +333,7 @@ class DiziPal : MainAPI() {
 
             if (code.isNullOrBlank()) continue
 
+            if (pushHlsProxy(code, referer, callback)) found = true
             if (pushM3u8s(code, referer, callback)) found = true
 
             Regex("""file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""")
@@ -354,6 +353,7 @@ class DiziPal : MainAPI() {
                 .findAll(code).mapNotNull {
                     runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull()
                 }.forEach { decoded ->
+                    if (pushHlsProxy(decoded, referer, callback)) found = true
                     if (pushM3u8s(decoded, referer, callback)) found = true
                     if (pushMp4s(decoded, referer, callback)) found = true
                 }
@@ -364,7 +364,28 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /** Metin içindeki .m3u8 linklerini ExtractorLink listesine çevir. */
+    /** Dizipal'in kendi m3u8 proxy'si: /api/hls.php?url=...&psess=... */
+    private suspend fun pushHlsProxy(
+        text: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var any = false
+        Regex("""https?://[^\s"'<>]*hls\.php\?url=[^\s"'<>]+""")
+            .findAll(text).map { it.value }.distinct().forEach { proxy ->
+                runCatching {
+                    M3u8Helper.generateM3u8(
+                        source    = name,
+                        streamUrl = fixUrl(proxy),
+                        referer   = referer,
+                        name      = name
+                    ).forEach(callback)
+                    any = true
+                }
+            }
+        return any
+    }
+
     private suspend fun pushM3u8s(
         text: String,
         referer: String,
@@ -373,18 +394,19 @@ class DiziPal : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
             .findAll(text).map { it.value }.distinct().forEach { m3u ->
-                M3u8Helper.generateM3u8(
-                    source    = name,
-                    streamUrl = fixUrl(m3u),
-                    referer   = referer,
-                    name      = name
-                ).forEach(callback)
-                any = true
+                runCatching {
+                    M3u8Helper.generateM3u8(
+                        source    = name,
+                        streamUrl = fixUrl(m3u),
+                        referer   = referer,
+                        name      = name
+                    ).forEach(callback)
+                    any = true
+                }
             }
         return any
     }
 
-    /** Metin içindeki .mp4 linklerini ekle (yalın). */
     private suspend fun pushMp4s(
         text: String,
         referer: String,
@@ -405,14 +427,17 @@ class DiziPal : MainAPI() {
         return any
     }
 
-    /** Sayfadaki data-rm-k JSON'unu ve appCKey'i kullanarak AES/CBC/PKCS5 çöz (varsa). */
     private fun decryptFromPage(doc: Document): String? {
         val encDiv = doc.select("""div[data-rm-k]""").firstOrNull() ?: return null
         val json = encDiv.text().trim().ifBlank { return null }
-        val payload = runCatching { jacksonObjectMapper().readValue<EncPayload>(json) }.getOrNull() ?: return null
+        val payload = runCatching {
+            jacksonObjectMapper().readValue<EncPayload>(json)
+        }.getOrNull() ?: return null
 
         val appKeyB64 = doc.select("script").asSequence()
-            .mapNotNull { Regex("""window\.appCKey\s*=\s*'([^']+)'""").find(it.data())?.groupValues?.getOrNull(1) }
+            .mapNotNull {
+                Regex("""window\.appCKey\s*=\s*'([^']+)'""").find(it.data())?.groupValues?.getOrNull(1)
+            }
             .firstOrNull() ?: return null
 
         return runCatching {
