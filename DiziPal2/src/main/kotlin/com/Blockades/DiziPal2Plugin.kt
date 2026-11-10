@@ -1,4 +1,3 @@
-
 package com.Blockades
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
