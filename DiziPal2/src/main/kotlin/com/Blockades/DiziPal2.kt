@@ -46,16 +46,30 @@ class DiziPal2 : MainAPI() {
 
     /* -------------------- MainPage -------------------- */
 
+    // Platformları da ana sayfaya kategori olarak ekliyoruz.
+    // Not: Site yapısına göre bu URL'lerin çalıştığından emin olmalıyız.
     override val mainPage = mainPageOf(
-        "$mainUrl/diziler"  to "Diziler",
-        "$mainUrl/filmler"  to "Filmler",
-        "$mainUrl/bolumler" to "Son Bölümler"
+        "$mainUrl/diziler"          to "Diziler",
+        "$mainUrl/filmler"          to "Filmler",
+        "$mainUrl/bolumler"         to "Son Bölümler",
+        "$mainUrl/platform/netflix" to "Netflix",
+        "$mainUrl/platform/disney"  to "Disney+",
+        "$mainUrl/platform/gain"    to "Gain",
+        "$mainUrl/platform/blutv"   to "BluTV",
+        "$mainUrl/platform/exxen"   to "Exxen",
+        "$mainUrl/platform/prime-video" to "Prime Video",
+        "$mainUrl/platform/tabii"   to "Tabii",
+        "$mainUrl/platform/apple-tv" to "Apple TV+",
+        "$mainUrl/platform/hbomax"  to "HBO Max",
+        "$mainUrl/platform/mubi"    to "Mubi",
+        "$mainUrl/platform/tod"     to "TOD",
+        "$mainUrl/platform/tv"      to "TV+",
+        "$mainUrl/platform/hulu"    to "Hulu"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = request.data.addPagePath(page)
 
-        // TEŞHİS 1: İstek yapılıyor mu, HTML geliyor mu?
         val res = try {
             app.get(
                 url,
@@ -75,15 +89,10 @@ class DiziPal2 : MainAPI() {
         val doc = res.document
         val html = doc.html()
 
-        // TEŞHİS 2: Ne geliyor?
         Log.d("DZP", "=== getMainPage URL: $url")
         Log.d("DZP", "=== HTML uzunluk: ${html.length}")
-        Log.d("DZP", "=== HTML başlangıç: ${html.take(800)}")
         Log.d("DZP", "=== .homepage-card sayısı: " + doc.select(".homepage-card").size)
         Log.d("DZP", "=== .trend-card sayısı: " + doc.select(".trend-card").size)
-        Log.d("DZP", "=== a[href*=/dizi/] sayısı: " + doc.select("a[href*=/dizi/]").size)
-        Log.d("DZP", "=== a[href*=/film/] sayısı: " + doc.select("a[href*=/film/]").size)
-        Log.d("DZP", "=== img sayısı: " + doc.select("img").size)
 
         val cards = mutableListOf<SearchResponse>()
 
@@ -95,7 +104,7 @@ class DiziPal2 : MainAPI() {
             h.contains("/dizi/") || h.contains("/film/")
         }.distinctBy { it.attr("href") }
 
-        // Fallback: eğer yeni selector boş dönerse, tüm /dizi/ ve /film/ linklerini dene
+        // Fallback: yeni selector boşsa, tüm dizi/film linklerini dene
         val finalItems = if (items.isEmpty()) {
             Log.w("DZP", "Yeni selector boş, fallback link taraması yapılıyor")
             doc.select("a[href*=/dizi/], a[href*=/film/]")
@@ -118,14 +127,12 @@ class DiziPal2 : MainAPI() {
                 ?: a.parent()
                 ?: a
 
-            // POSTER: önce data-src, sonra src
             val img = container.selectFirst("img")
             val poster = img?.let { it.attr("data-src").ifBlank { it.attr("src") } }
                 ?.let(::fixUrlNull)
 
-            // TEŞHİS 3: Poster geliyor mu?
             if (poster == null) {
-                Log.w("DZP", "Poster yok: href=$href img=${img?.attr("src")} data-src=${img?.attr("data-src")}")
+                Log.w("DZP", "Poster yok: href=$href")
             }
 
             val title = container.selectFirst(
