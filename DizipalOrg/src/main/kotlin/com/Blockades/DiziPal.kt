@@ -12,6 +12,7 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLDecoder
+import java.net.URLEncoder
 import java.nio.charset.Charset
 import java.util.Base64
 import javax.crypto.Cipher
@@ -410,8 +411,8 @@ class DiziPal : MainAPI() {
     }
 
     /**
-     * Dizipal proxy çözücü. ExtractorLink constructor'ını doğrudan kullanır
-     * (referer/headers kesin set edilsin diye).
+     * Dizipal proxy çözücü. 'psess' korunmalı → proxy linkinin KENDİSİ verilir.
+     * Asıl m3u8 (s8.superadjacentsoddenly.xyz) doğrudan erişilemez, sadece proxy üzerinden.
      */
     private suspend fun pushHlsProxy(
         text: String,
@@ -439,11 +440,11 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "Proxy çözüldü -> $realM3u8")
 
-            // 1) M3u8Helper dene
+            // 1) M3u8Helper'ı proxy linkinin kendisiyle çağır (psess korunur)
             val m3u8Result = runCatching {
                 M3u8Helper.generateM3u8(
                     source    = name,
-                    streamUrl = realM3u8,
+                    streamUrl = proxy,        // proxy linki, realM3u8 değil
                     referer   = "$mainUrl/",
                     name      = name
                 )
@@ -460,8 +461,8 @@ class DiziPal : MainAPI() {
                 continue
             }
 
-            // 2) FALLBACK: ExtractorLink constructor'ını doğrudan kullan
-            Log.e("DZP", "Fallback: ExtractorLink constructor ile referer+headers")
+            // 2) Fallback: proxy linkini doğrudan ExtractorLink olarak ver (psess korunur)
+            Log.e("DZP", "Fallback: proxy linki doğrudan veriliyor (psess korunur)")
             val headers = mapOf(
                 "Referer" to "$mainUrl/",
                 "Origin"  to mainUrl,
@@ -472,18 +473,18 @@ class DiziPal : MainAPI() {
                 ExtractorLink(
                     source  = name,
                     name    = name,
-                    url     = realM3u8,
+                    url     = proxy,          // proxy linki, realM3u8 değil
                     referer = "$mainUrl/",
                     quality = Qualities.Unknown.value,
                     headers = headers,
                     type    = ExtractorLinkType.M3U8
                 )
             }.getOrElse {
-                Log.e("DZP", "ExtractorLink constructor hatası: ${it.message}, newExtractorLink'e düşülüyor")
+                Log.e("DZP", "ExtractorLink constructor hatası: ${it.message}")
                 newExtractorLink(
                     source = name,
                     name   = name,
-                    url    = realM3u8
+                    url    = proxy
                 )
             }
 
