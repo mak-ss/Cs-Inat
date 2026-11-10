@@ -157,6 +157,11 @@ class DiziPal : MainAPI() {
                     }
                 }
 
+                Log.e("DZP", "load(): $title -> ${eps.size} bölüm")
+                eps.take(3).forEach { ep ->
+                    Log.e("DZP", "  - ${ep.name} | data=${ep.data}")
+                }
+
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps.distinctBy { it.data }) {
                     this.posterUrl = poster
                 }
@@ -250,27 +255,60 @@ class DiziPal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DZP", "loadLinks: $data")
+        Log.e("DZP", "=== loadLinks ÇAĞRILDI ===")
+        Log.e("DZP", "data=$data")
+        Log.e("DZP", "isCasting=$isCasting")
 
-        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) return true
-
-        val page = runCatching {
-            app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
-        }.getOrNull() ?: return false
-
-        val iframes = page.select("iframe[src], amp-iframe[src]")
-        for (ifr in iframes) {
-            val src = normalizeHref(ifr.attr("src")) ?: continue
-            Log.d("DZP", "iframe: $src")
-            if (loadExtractor(src, data, subtitleCallback, callback)) return true
-            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
+        // 1) Doğrudan bölüm/film sayfasında ara
+        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
+            Log.e("DZP", "✓ Bölüm sayfasından link bulundu")
+            return true
         }
 
-        val html = page.html()
-        if (pushHlsProxy(html, referer = "$mainUrl/", callback)) return true
-        if (pushM3u8s(html, referer = "$mainUrl/", callback)) return true
-        if (pushMp4s(html, referer = "$mainUrl/", callback)) return true
+        // 2) Bölüm sayfasını çek, embed.php'yi çağır
+        val page = runCatching {
+            app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
+        }.getOrNull()
 
+        if (page != null) {
+            // EP_SLUG'u JS'ten çıkar
+            val pageHtml = page.html()
+            val slugFromJs = Regex("""(?:var|let|const)\s+EP_SLUG\s*=\s*["']([^"']+)["']""")
+                .find(pageHtml)?.groupValues?.getOrNull(1)
+                ?: data.substringAfterLast("/").substringBefore("?")
+
+            Log.e("DZP", "EP_SLUG=$slugFromJs")
+
+            // 3) /api/embed.php çağır (asıl player linkleri burada)
+            val embedUrls = listOf(
+                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl&cb=3",
+                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com&cb=3",
+                "$mainUrl/api/embed.php?slug=$slugFromJs"
+            ).distinct()
+
+            for (embedUrl in embedUrls) {
+                Log.e("DZP", "embed.php deneniyor: $embedUrl")
+                if (extractFromPageUrl(embedUrl, referer = data, subtitleCallback, callback)) {
+                    Log.e("DZP", "✓ embed.php'den link bulundu")
+                    return true
+                }
+            }
+
+            // 4) Sayfadaki iframe'leri dene
+            page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
+                val src = normalizeHref(ifr.attr("src")) ?: return@forEach
+                Log.e("DZP", "iframe: $src")
+                if (loadExtractor(src, data, subtitleCallback, callback)) return true
+                if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
+            }
+
+            // 5) Son çare: HTML içinde
+            if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
+            if (pushM3u8s(pageHtml, referer = "$mainUrl/", callback)) return true
+            if (pushMp4s(pageHtml, referer = "$mainUrl/", callback)) return true
+        }
+
+        Log.e("DZP", "✗ loadLinks başarısız")
         return false
     }
 
@@ -280,22 +318,37 @@ class DiziPal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.e("DZP", "extractFromPageUrl: $url")
         val res = try {
             app.get(url, referer = referer, interceptor = interceptor)
         } catch (e: Exception) {
-            Log.e("DZP", "extractFromPageUrl fetch hatası: ${e.message}")
+            Log.e("DZP", "fetch hatası: ${e.message}")
             return false
         }
         val body = res.text
-        val doc  = res.document
+        val contentType = res.headers["content-type"] ?: "?"
+        Log.e("DZP", "Yanıt: ${body.length} byte, content-type=$contentType")
+
+        // JSON yanıtı mı?
+        val trimmed = body.trim()
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            Log.e("DZP", "JSON yanıt: ${body.take(300)}")
+            if (pushHlsProxy(body, referer, callback)) return true
+            if (pushM3u8s(body, referer, callback)) return true
+            if (pushMp4s(body, referer, callback)) return true
+            // JSON içinde başka URL'ler olabilir
+            Regex("""https?://[^\s"'<>]+""").findAll(body).map { it.value }.distinct().forEach { u ->
+                if (loadExtractor(u, referer, subtitleCallback, callback)) return true
+            }
+        }
+
+        val doc = res.document
 
         decryptFromPage(doc)?.let { dec ->
+            Log.e("DZP", "Şifre çözüldü: ${dec.length} byte")
             if (pushHlsProxy(dec, referer, callback)) return true
             if (pushM3u8s(dec, referer, callback)) return true
             if (pushMp4s(dec, referer, callback)) return true
-            Regex("""https?://[^\s"'<>]+""").findAll(dec).map { it.value }.distinct().forEach { u ->
-                if (loadExtractor(u, referer, subtitleCallback, callback)) return true
-            }
         }
 
         if (pushHlsProxy(body, referer, callback)) return true
@@ -305,6 +358,7 @@ class DiziPal : MainAPI() {
 
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
+            Log.e("DZP", "alt iframe: $src")
             if (loadExtractor(src, referer, subtitleCallback, callback)) return@forEach
             val subRes = runCatching {
                 app.get(src, referer = url, interceptor = interceptor)
@@ -366,37 +420,35 @@ class DiziPal : MainAPI() {
     }
 
     /**
-     * Dizipal'in kendi proxy'sini çözer:
+     * Dizipal proxy çözücü:
      *   https://dizipalorijinal22.vip/api/hls.php?url=<URL_ENCODED_M3U8>&psess=...
      * 'url' parametresini URL-decode edip asıl m3u8 linkini çıkarır.
-     * Asıl linki M3u8Helper'a verir; referer olarak ana siteyi + proxy'yi dener.
      */
     private suspend fun pushHlsProxy(
         text: String,
         referer: String,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.e("DZP", "pushHlsProxy: text.length=${text.length}")
         var any = false
 
-        // 1) Proxy linklerini yakala
         val proxies = Regex("""https?://[^\s"'<>]*hls\.php\?url=[^\s"'<>]+""")
             .findAll(text)
             .map { it.value }
             .distinct()
             .toList()
 
+        Log.e("DZP", "pushHlsProxy: ${proxies.size} proxy bulundu")
+
         for (proxy in proxies) {
-            // 2) 'url' parametresini al
             val encoded = Regex("""[?&]url=([^&]+)""")
                 .find(proxy)?.groupValues?.getOrNull(1) ?: continue
 
-            // 3) URL-decode
             val realM3u8 = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: continue
             if (!realM3u8.startsWith("http")) continue
 
-            Log.d("DZP", "Proxy çözüldü -> $realM3u8")
+            Log.e("DZP", "Proxy çözüldü -> $realM3u8")
 
-            // 4) Asıl m3u8'i dene (referer: önce proxy, sonra site)
             val candidates = listOf(proxy, referer, "$mainUrl/").distinct()
             for (ref in candidates) {
                 val ok = runCatching {
@@ -412,7 +464,10 @@ class DiziPal : MainAPI() {
                         )
                     ).forEach(callback)
                     true
-                }.getOrDefault(false)
+                }.getOrElse {
+                    Log.e("DZP", "M3u8Helper hatası (ref=$ref): ${it.message}")
+                    false
+                }
                 if (ok) { any = true; break }
             }
         }
@@ -428,7 +483,6 @@ class DiziPal : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
             .findAll(text).map { it.value }.distinct().forEach { m3u ->
-                // hls.php proxy'lerini burada tekrar işleme (pushHlsProxy hallediyor)
                 if (m3u.contains("hls.php")) return@forEach
                 runCatching {
                     M3u8Helper.generateM3u8(
