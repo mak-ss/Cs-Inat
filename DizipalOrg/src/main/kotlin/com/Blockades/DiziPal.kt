@@ -78,7 +78,7 @@ class DiziPal : MainAPI() {
             return fetchPlatformContent(url, doc, request.name)
         }
 
-        // --- ANA SAYFA İÇİN NORMAL MANTIK (DEĞİŞMEDİ) ---
+        // --- ANA SAYFA İÇİN NORMAL MANTIK ---
         val cards = mutableListOf<SearchResponse>()
         val items = doc.select(".ip-card a[href], .ip-trend-card a[href]")
             .filter { a ->
@@ -114,18 +114,16 @@ class DiziPal : MainAPI() {
     private suspend fun fetchPlatformContent(url: String, doc: Document, pageName: String): HomePageResponse {
         val cards = mutableListOf<SearchResponse>()
 
-        // 1. YÖNTEM: Sayfa kaynağında gizli JSON var mı? (__NEXT_DATA__ veya benzeri)
+        // 1. YÖNTEM: Sayfa kaynağında gizli JSON var mı?
         val scripts = doc.select("script")
         for (s in scripts) {
             val text = s.data()
-            // Eğer script içinde "/dizi/" veya "/film/" geçen JSON verisi varsa
             if (text.contains("\"/dizi/") || text.contains("\"/film/")) {
                 val matches = Regex(""""(?:href|url|link|slug)"\s*:\s*"([^"]*(?:/dizi/|/film/)[^"]*)"""").findAll(text)
                 for (m in matches) {
                     val href = normalizeHref(m.groupValues[1]) ?: continue
-                    // Başlık ve poster tahmini (JSON parse edilemediği için manuel)
                     val titleGuess = href.substringAfterLast("/").replace("-", " ").trim()
-                    val poster = null // JSON'dan çekmek zor, şimdilik null
+                    val poster = null
                     
                     if (href.contains("/dizi/")) {
                         cards += newTvSeriesSearchResponse(titleGuess, href, TvType.TvSeries) { this.posterUrl = poster }
@@ -136,13 +134,12 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // Eğer 1. yöntem işe yaradıysa dön
         if (cards.isNotEmpty()) {
             Log.e("DZP", "Platform ($pageName) -> Gizli JSON'dan ${cards.size} kart bulundu.")
             return newHomePageResponse(pageName, cards.distinctBy { it.url }, hasNext = false)
         }
 
-        // 2. YÖNTEM: HTML içinden genel link avcılığı (sayfa AJAX ile yükleniyorsa bile linkler HTML'de olabilir)
+        // 2. YÖNTEM: HTML içinden genel link avcılığı
         val links = doc.select("a[href*='/dizi/'], a[href*='/film/']")
         links.forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -167,8 +164,7 @@ class DiziPal : MainAPI() {
             return newHomePageResponse(pageName, cards.distinctBy { it.url }, hasNext = false)
         }
 
-        // 3. YÖNTEM: Site API'sini dene (Eğer sayfa AJAX kullanıyorsa, veriyi bir API'den çeker)
-        // Genelde platform sayfaları ?ajax=1 veya /api/filter gibi bir yerden çeker.
+        // 3. YÖNTEM: Site API'sini dene
         try {
             val apiUrl = url + (if (url.contains("?")) "&" else "?") + "ajax=1"
             val apiRes = app.get(apiUrl, interceptor = interceptor, referer = url).text
@@ -193,7 +189,6 @@ class DiziPal : MainAPI() {
     }
 
     /* -------------------- Search -------------------- */
-    // ... (ARAMA KISMI AYNI KALDI)
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/arama?q=${query.encodeURL()}"
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
@@ -408,7 +403,15 @@ class DiziPal : MainAPI() {
             if (pushHlsProxy(code, referer, callback)) found = true
             if (pushM3u8s(code, referer, callback)) found = true
             Regex("""file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""").findAll(code).map { it.groupValues[1] }.distinct().forEach { m3u ->
-                runCatching { M3u8Helper.generateM3u8(name, fixUrl(m3u), referer, name).forEach(callback); found = true }
+                runCatching { 
+                    M3u8Helper.generateM3u8(
+                        source = name, 
+                        streamUrl = fixUrl(m3u), 
+                        referer = referer, 
+                        name = name
+                    ).forEach(callback)
+                    found = true 
+                }
             }
             Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""").findAll(code).mapNotNull { runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull() }.forEach { decoded ->
                 if (pushHlsProxy(decoded, referer, callback)) found = true
@@ -427,8 +430,17 @@ class DiziPal : MainAPI() {
             val encoded = Regex("""[?&]url=([^&]+)""").find(proxy)?.groupValues?.getOrNull(1) ?: continue
             val realM3u8 = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: continue
             if (!realM3u8.startsWith("http")) continue
-            val m3u8Result = runCatching { M3u8Helper.generateM3u8(source = name, streamUrl = proxy, referer = "$mainUrl/", name = name) }.getOrElse { emptyList() }
+            val m3u8Result = runCatching { 
+                M3u8Helper.generateM3u8(
+                    source = name, 
+                    streamUrl = proxy, 
+                    referer = "$mainUrl/", 
+                    name = name
+                ) 
+            }.getOrElse { emptyList() }
+            
             if (m3u8Result.isNotEmpty()) { m3u8Result.forEach(callback); any = true; continue }
+            
             val headers = mapOf("Referer" to "$mainUrl/", "Origin" to mainUrl, "User-Agent" to "Mozilla/5.0")
             val link = runCatching { ExtractorLink(source = name, name = name, url = proxy, referer = "$mainUrl/", quality = Qualities.Unknown.value, headers = headers, type = ExtractorLinkType.M3U8) }.getOrElse { newExtractorLink(source = name, name = name, url = proxy) }
             callback(link)
@@ -441,7 +453,15 @@ class DiziPal : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(text).map { it.value }.distinct().forEach { m3u ->
             if (m3u.contains("hls.php")) return@forEach
-            runCatching { M3u8Helper.generateM3u8(name, fixUrl(m3u), referer, name).forEach(callback); any = true }
+            runCatching { 
+                M3u8Helper.generateM3u8(
+                    source = name, 
+                    streamUrl = fixUrl(m3u), 
+                    referer = referer, 
+                    name = name
+                ).forEach(callback)
+                any = true 
+            }
         }
         return any
     }
