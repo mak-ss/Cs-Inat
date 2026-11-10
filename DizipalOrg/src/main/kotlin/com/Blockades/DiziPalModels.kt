@@ -1,9 +1,7 @@
-# ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
 import com.fasterxml.jackson.annotation.JsonProperty
-
 
 data class SearchItem(
     @JsonProperty("id") val id: String,
