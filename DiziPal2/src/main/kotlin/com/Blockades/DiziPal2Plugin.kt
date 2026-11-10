@@ -1,16 +1,13 @@
+// DiziPal2Plugin.kt
 package com.Blockades
 
-import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import android.content.Context
 
 @CloudstreamPlugin
-class DiziPalPlugin : Plugin() {
+class DiziPal2Plugin: Plugin() {
     override fun load(context: Context) {
         registerMainAPI(DiziPal2())
-        registerExtractorAPI(DizipalPlayer2())
-        registerExtractorAPI(SuperAdjacentExtractor())
-        registerExtractorAPI(FormationFeedExtractor())
-        registerExtractorAPI(JwKaynak())
     }
 }
