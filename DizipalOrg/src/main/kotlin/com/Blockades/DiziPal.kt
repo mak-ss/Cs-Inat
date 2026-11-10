@@ -12,7 +12,6 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.net.URLDecoder
-import java.net.URLEncoder
 import java.nio.charset.Charset
 import java.util.Base64
 import javax.crypto.Cipher
@@ -21,7 +20,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipalorijinal22.vip"
-    override var name                 = "DiziPal"
+    override var name                 = "DiziPalOrg"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -49,13 +48,29 @@ class DiziPal : MainAPI() {
     /* -------------------- MainPage -------------------- */
 
     override val mainPage = mainPageOf(
-        "$mainUrl/diziler" to "Diziler",
-        "$mainUrl/filmler" to "Filmler",
-        "$mainUrl/"        to "Son Eklenenler"
+        "$mainUrl/diziler"  to "Diziler",
+        "$mainUrl/filmler"  to "Filmler",
+        "$mainUrl/trend"    to "Trend",
+        "$mainUrl/platform/netflix"        to "Netflix",
+        "$mainUrl/platform/disney-plus"    to "Disney+",
+        "$mainUrl/platform/prime-video"    to "Prime Video",
+        "$mainUrl/platform/max"            to "Max",
+        "$mainUrl/platform/blutv"          to "BluTV",
+        "$mainUrl/platform/exxen"          to "Exxen",
+        "$mainUrl/platform/gain"           to "Gain",
+        "$mainUrl/platform/tabii"          to "tabii",
+        "$mainUrl/platform/paramount-plus" to "Paramount+",
+        "$mainUrl/"          to "Son Eklenenler"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = request.data.addPagePath(page)
+        // Platform sayfası mı?
+        val isPlatform = request.data.contains("/platform/")
+        val url = if (isPlatform) {
+            request.data.platformPagePath(page)
+        } else {
+            request.data.addPagePath(page)
+        }
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
 
         val cards = mutableListOf<SearchResponse>()
@@ -121,7 +136,7 @@ class DiziPal : MainAPI() {
 
     override suspend fun quickSearch(query: String) = search(query)
 
-    /* -------------------- Load (details) -------------------- */
+    /* -------------------- Load (details) — DEĞİŞMEDİ -------------------- */
 
     override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
@@ -243,7 +258,7 @@ class DiziPal : MainAPI() {
         return s to e
     }
 
-    /* -------------------- Links (player) -------------------- */
+    /* -------------------- Links (player) — DEĞİŞMEDİ -------------------- */
 
     data class EncPayload(val ciphertext: String, val iv: String, val salt: String)
 
@@ -410,10 +425,6 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /**
-     * Dizipal proxy çözücü. 'psess' korunmalı → proxy linkinin KENDİSİ verilir.
-     * Asıl m3u8 (s8.superadjacentsoddenly.xyz) doğrudan erişilemez, sadece proxy üzerinden.
-     */
     private suspend fun pushHlsProxy(
         text: String,
         referer: String,
@@ -440,11 +451,10 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "Proxy çözüldü -> $realM3u8")
 
-            // 1) M3u8Helper'ı proxy linkinin kendisiyle çağır (psess korunur)
             val m3u8Result = runCatching {
                 M3u8Helper.generateM3u8(
                     source    = name,
-                    streamUrl = proxy,        // proxy linki, realM3u8 değil
+                    streamUrl = proxy,
                     referer   = "$mainUrl/",
                     name      = name
                 )
@@ -461,7 +471,6 @@ class DiziPal : MainAPI() {
                 continue
             }
 
-            // 2) Fallback: proxy linkini doğrudan ExtractorLink olarak ver (psess korunur)
             Log.e("DZP", "Fallback: proxy linki doğrudan veriliyor (psess korunur)")
             val headers = mapOf(
                 "Referer" to "$mainUrl/",
@@ -473,7 +482,7 @@ class DiziPal : MainAPI() {
                 ExtractorLink(
                     source  = name,
                     name    = name,
-                    url     = proxy,          // proxy linki, realM3u8 değil
+                    url     = proxy,
                     referer = "$mainUrl/",
                     quality = Qualities.Unknown.value,
                     headers = headers,
@@ -581,6 +590,18 @@ class DiziPal : MainAPI() {
         } else {
             val base = this.trimEnd('/')
             "$base/page/$page/"
+        }
+    }
+
+    /** Platform sayfaları için sayfalama: ?page=2 veya /page/2/ formatını dener. */
+    private fun String.platformPagePath(page: Int): String {
+        if (page <= 1) return this
+        return if (this.contains("?")) {
+            if (this.contains("page=")) this.replace(Regex("page=\\d+"), "page=$page")
+            else "$this&page=$page"
+        } else {
+            val base = this.trimEnd('/')
+            "$base?page=$page"
         }
     }
 
