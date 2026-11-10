@@ -1,10 +1,19 @@
-version = 13
+// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+version = 1
 
 cloudstream {
-    authors     = listOf("mebularts")
+    authors     = listOf("Blockades")
     language    = "tr"
-    description = "Dizipal sağlayıcısı"
-    status      = 1
-    tvTypes     = listOf("TvSeries", "Movie")
-    iconUrl     = "https://www.google.com/s2/favicons?domain=dizipal1103.com&sz=%size%"
+    description = "DiziPal2  en yeni dizileri güvenli ve hızlı şekilde sunar."
+
+    /**
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+    **/
+    status  = 1 // will be 3 if unspecified
+    tvTypes = listOf("Movie", "TvSeries")
+    iconUrl = "https://img.sur.ly/favicons/d/dizipal1.com.ico"
 }
