@@ -410,7 +410,8 @@ class DiziPal : MainAPI() {
     }
 
     /**
-     * Dizipal proxy çözücü. M3u8Helper başarısızsa referer/headers ile ham link verir.
+     * Dizipal proxy çözücü. ExtractorLink constructor'ını doğrudan kullanır
+     * (referer/headers kesin set edilsin diye).
      */
     private suspend fun pushHlsProxy(
         text: String,
@@ -438,7 +439,7 @@ class DiziPal : MainAPI() {
 
             Log.e("DZP", "Proxy çözüldü -> $realM3u8")
 
-            // 1) M3u8Helper dene (referer ile)
+            // 1) M3u8Helper dene
             val m3u8Result = runCatching {
                 M3u8Helper.generateM3u8(
                     source    = name,
@@ -459,22 +460,34 @@ class DiziPal : MainAPI() {
                 continue
             }
 
-            // 2) Fallback: referer ve headers ile ham m3u8 URL'si
-            Log.e("DZP", "M3u8Helper boş -> fallback (referer+headers ile)")
-            callback(
+            // 2) FALLBACK: ExtractorLink constructor'ını doğrudan kullan
+            Log.e("DZP", "Fallback: ExtractorLink constructor ile referer+headers")
+            val headers = mapOf(
+                "Referer" to "$mainUrl/",
+                "Origin"  to mainUrl,
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            )
+
+            val link = runCatching {
+                ExtractorLink(
+                    source  = name,
+                    name    = name,
+                    url     = realM3u8,
+                    referer = "$mainUrl/",
+                    quality = Qualities.Unknown.value,
+                    headers = headers,
+                    type    = ExtractorLinkType.M3U8
+                )
+            }.getOrElse {
+                Log.e("DZP", "ExtractorLink constructor hatası: ${it.message}, newExtractorLink'e düşülüyor")
                 newExtractorLink(
                     source = name,
                     name   = name,
                     url    = realM3u8
-                ) {
-                    this.referer = "$mainUrl/"
-                    this.headers = mapOf(
-                        "Referer" to "$mainUrl/",
-                        "Origin"  to mainUrl,
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-                    )
-                }
-            )
+                )
+            }
+
+            callback(link)
             any = true
         }
 
