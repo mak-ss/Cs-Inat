@@ -29,7 +29,6 @@ class Sinewix : MainAPI() {
         "Accept" to "application/json"
     )
 
-    // Poster isteklerinde de aynı başlıkları gönderiyoruz (Referer dahil)
     private val posterHeaders = sineHeaders + mapOf("Referer" to mainUrl)
 
     override val mainPage = mainPageOf(
@@ -100,7 +99,6 @@ class Sinewix : MainAPI() {
         return try {
             val responseText = app.get(url, headers = sineHeaders).text
 
-            // Bazı uç noktalar cevabı { data: {...} }, { show: {...} }, { info: {...} } şeklinde sarmalıyor.
             val wrapped = runCatching { parseJson<SineWixIcerikWrapper>(responseText) }.getOrNull()
             val it: SineWixIcerikler = wrapped?.data ?: wrapped?.show ?: wrapped?.movie
                 ?: wrapped?.info ?: wrapped?.result
@@ -140,7 +138,7 @@ class Sinewix : MainAPI() {
                             this.episode = episode.episodeNumber
                             this.posterUrl = episode.stillPath.toFullImageUrl()
                                 ?: episode.stillPathTv.toFullImageUrl()
-                            this.posterHeaders = posterHeaders
+                            // NOT: Episode sınıfında posterHeaders YOKTUR.
                         }
                     } ?: emptyList()
                 } ?: emptyList()
@@ -268,7 +266,6 @@ class Sinewix : MainAPI() {
         @JsonProperty("data") val data: List<SineWixYeniBolum>? = null
     )
 
-    // Detay uç noktaları sarmalı dönebilir; toleranslı wrapper
     data class SineWixIcerikWrapper(
         @JsonProperty("data") val data: SineWixIcerikler? = null,
         @JsonProperty("show") val show: SineWixIcerikler? = null,
