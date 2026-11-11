@@ -3,7 +3,7 @@ package com.Blockades
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
-import com.ulgencs3.sinewix.Sinewix // <-- doğru sınıfı import et
+import com.Blockades.Sinewix 
 
 @CloudstreamPlugin
 class SineWixPlugin : Plugin() {
