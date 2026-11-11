@@ -29,6 +29,9 @@ class Sinewix : MainAPI() {
         "Accept" to "application/json"
     )
 
+    // Poster isteklerinde de aynı başlıkları gönderiyoruz (Referer dahil)
+    private val posterHeaders = sineHeaders + mapOf("Referer" to mainUrl)
+
     override val mainPage = mainPageOf(
         "public/api/media/seriesEpisodesAll/$apiToken" to "Yeni Bölümler",
         "public/api/genres/latestseries/all/$apiToken" to "Son Diziler",
@@ -98,7 +101,6 @@ class Sinewix : MainAPI() {
             val responseText = app.get(url, headers = sineHeaders).text
 
             // Bazı uç noktalar cevabı { data: {...} }, { show: {...} }, { info: {...} } şeklinde sarmalıyor.
-            // Önce wrapper olarak dene; iç alanlar boşsa düz parse'a düş.
             val wrapped = runCatching { parseJson<SineWixIcerikWrapper>(responseText) }.getOrNull()
             val it: SineWixIcerikler = wrapped?.data ?: wrapped?.show ?: wrapped?.movie
                 ?: wrapped?.info ?: wrapped?.result
@@ -106,7 +108,7 @@ class Sinewix : MainAPI() {
 
             val title = it.name ?: it.title ?: return null
 
-            val poster = it.posterPath.toFullImageUrl()
+            val poster = it.effectivePoster.toFullImageUrl()
                 ?: it.backdropPath.toFullImageUrl()
                 ?: it.backdropPathTv.toFullImageUrl()
                 ?: ""
@@ -118,7 +120,6 @@ class Sinewix : MainAPI() {
             if (type == TvType.TvSeries || type == TvType.Anime) {
                 val episodes = it.seasons?.flatMap { season ->
                     season.episodes?.map { episode ->
-                        // videoları farklı alan adlarına toleranslı topla
                         val links = episode.videos?.mapNotNull { v -> v.effectiveLink?.takeIf { l -> l.isNotBlank() } }
                             ?: emptyList()
                         val videoLinks = links.joinToString("|")
@@ -139,12 +140,14 @@ class Sinewix : MainAPI() {
                             this.episode = episode.episodeNumber
                             this.posterUrl = episode.stillPath.toFullImageUrl()
                                 ?: episode.stillPathTv.toFullImageUrl()
+                            this.posterHeaders = posterHeaders
                         }
                     } ?: emptyList()
                 } ?: emptyList()
 
                 newTvSeriesLoadResponse(title, url, type, episodes) {
                     this.posterUrl = poster
+                    this.posterHeaders = posterHeaders
                     this.plot = it.overview
                     this.year = (it.releaseDate ?: it.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
                 }
@@ -160,6 +163,7 @@ class Sinewix : MainAPI() {
 
                 newMovieLoadResponse(title, url, type, videoLinks) {
                     this.posterUrl = poster
+                    this.posterHeaders = posterHeaders
                     this.plot = it.overview
                     this.year = (it.releaseDate ?: it.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
                 }
@@ -212,7 +216,7 @@ class Sinewix : MainAPI() {
 
     private fun SineWixIcerikler.toSearchResponse(url: String? = null): SearchResponse? {
         val title = name ?: title ?: return null
-        val poster = posterPath.toFullImageUrl()
+        val poster = effectivePoster.toFullImageUrl()
             ?: backdropPath.toFullImageUrl()
             ?: backdropPathTv.toFullImageUrl()
             ?: ""
@@ -226,9 +230,15 @@ class Sinewix : MainAPI() {
         }
 
         return if (type == TvType.Movie) {
-            newMovieSearchResponse(title, href, type) { this.posterUrl = poster }
+            newMovieSearchResponse(title, href, type) {
+                this.posterUrl = poster
+                this.posterHeaders = posterHeaders
+            }
         } else {
-            newTvSeriesSearchResponse(title, href, type) { this.posterUrl = poster }
+            newTvSeriesSearchResponse(title, href, type) {
+                this.posterUrl = poster
+                this.posterHeaders = posterHeaders
+            }
         }
     }
 
@@ -241,6 +251,7 @@ class Sinewix : MainAPI() {
 
         return newTvSeriesSearchResponse(displayTitle, href, TvType.TvSeries) {
             this.posterUrl = poster
+            this.posterHeaders = posterHeaders
         }
     }
 
@@ -272,6 +283,7 @@ class Sinewix : MainAPI() {
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("poster_path") val posterPath: String? = null,
         @JsonProperty("posterPath") val posterPathAlt: String? = null,
+        @JsonProperty("poster") val poster: String? = null,
         @JsonProperty("backdrop_path") val backdropPath: String? = null,
         @JsonProperty("backdrop_path_tv") val backdropPathTv: String? = null,
         @JsonProperty("vote_average") val voteAverage: Double? = null,
@@ -283,8 +295,7 @@ class Sinewix : MainAPI() {
         @JsonProperty("videos") val videos: List<SineWixVideo>? = null,
         @JsonProperty("link") val directLink: String? = null
     ) {
-        // Jackson posterPath yoksa posterPathAlt'ı otomatik doldurmuyor; getter ile birleştir
-        val effectivePoster: String? get() = posterPath ?: posterPathAlt
+        val effectivePoster: String? get() = posterPath ?: posterPathAlt ?: poster
     }
 
     data class SineWixYeniBolum(
@@ -324,7 +335,6 @@ class Sinewix : MainAPI() {
         @JsonProperty("file") val file: String? = null,
         @JsonProperty("server") val server: String? = null
     ) {
-        /** Alan adları farklıysa ilk dolu olanı döndürür. */
         val effectiveLink: String?
             get() = sequenceOf(link, url, src, file)
                 .firstOrNull { !it.isNullOrBlank() }
