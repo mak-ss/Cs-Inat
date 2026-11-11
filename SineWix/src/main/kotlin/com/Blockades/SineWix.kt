@@ -40,6 +40,18 @@ class Sinewix : MainAPI() {
         "public/api/genres/mediaLibrary/show/16/movie/$apiToken" to "Animasyonlar"
     )
 
+    /* ---------------- Poster URL yardımcı ---------------- */
+    private fun String?.toFullImageUrl(): String? {
+        if (this.isNullOrBlank()) return null
+        val t = this.trim()
+        return when {
+            t.startsWith("http://", true) || t.startsWith("https://", true) -> t
+            t.startsWith("//") -> "https:$t"
+            t.startsWith("/") -> "https://image.tmdb.org/t/p/w500$t"
+            else -> "https://image.tmdb.org/t/p/w500/$t"
+        }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         return try {
             val baseUrl = if (request.data.startsWith("http")) request.data else "$mainUrl/${request.data.removePrefix("/")}"
@@ -84,10 +96,21 @@ class Sinewix : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         return try {
             val responseText = app.get(url, headers = sineHeaders).text
-            val it = parseJson<SineWixIcerikler>(responseText)
+
+            // Bazı uç noktalar cevabı { data: {...} }, { show: {...} }, { info: {...} } şeklinde sarmalıyor.
+            // Önce wrapper olarak dene; iç alanlar boşsa düz parse'a düş.
+            val wrapped = runCatching { parseJson<SineWixIcerikWrapper>(responseText) }.getOrNull()
+            val it: SineWixIcerikler = wrapped?.data ?: wrapped?.show ?: wrapped?.movie
+                ?: wrapped?.info ?: wrapped?.result
+                ?: parseJson<SineWixIcerikler>(responseText)
 
             val title = it.name ?: it.title ?: return null
-            val poster = it.posterPath ?: it.backdropPath ?: it.backdropPathTv ?: ""
+
+            val poster = it.posterPath.toFullImageUrl()
+                ?: it.backdropPath.toFullImageUrl()
+                ?: it.backdropPathTv.toFullImageUrl()
+                ?: ""
+
             val type = if (url.contains("series/show") || url.contains("serie") || it.type == "serie") TvType.TvSeries
                        else if (url.contains("anime") || it.type == "anime") TvType.Anime
                        else TvType.Movie
@@ -95,8 +118,11 @@ class Sinewix : MainAPI() {
             if (type == TvType.TvSeries || type == TvType.Anime) {
                 val episodes = it.seasons?.flatMap { season ->
                     season.episodes?.map { episode ->
-                        val videoLinks = episode.videos?.mapNotNull { v -> v.link?.takeIf { l -> l.isNotBlank() } }
-                            ?.joinToString("|") ?: ""
+                        // videoları farklı alan adlarına toleranslı topla
+                        val links = episode.videos?.mapNotNull { v -> v.effectiveLink?.takeIf { l -> l.isNotBlank() } }
+                            ?: emptyList()
+                        val videoLinks = links.joinToString("|")
+
                         val rawEpName = episode.name?.trim() ?: ""
                         val cleanEpTitle = rawEpName
                             .replace(Regex("""^\s*\d+\.\s*Sezon\s*""", RegexOption.IGNORE_CASE), "")
@@ -111,7 +137,8 @@ class Sinewix : MainAPI() {
                             this.name = finalName
                             this.season = season.seasonNumber
                             this.episode = episode.episodeNumber
-                            this.posterUrl = episode.stillPath ?: episode.stillPathTv
+                            this.posterUrl = episode.stillPath.toFullImageUrl()
+                                ?: episode.stillPathTv.toFullImageUrl()
                         }
                     } ?: emptyList()
                 } ?: emptyList()
@@ -122,11 +149,15 @@ class Sinewix : MainAPI() {
                     this.year = (it.releaseDate ?: it.firstAirDate)?.split("-")?.firstOrNull()?.toIntOrNull()
                 }
             } else {
-                val videoLinks = it.videos?.mapNotNull { v -> v.link?.takeIf { l -> l.isNotBlank() } }
+                val movieVideos = it.videos
+                    ?.mapNotNull { v -> v.effectiveLink?.takeIf { l -> l.isNotBlank() } }
                     ?.takeIf { list -> list.isNotEmpty() }
                     ?.joinToString("|")
-                    ?: it.directLink
+
+                val videoLinks = movieVideos
+                    ?: it.directLink?.takeIf { l -> l.isNotBlank() }
                     ?: ""
+
                 newMovieLoadResponse(title, url, type, videoLinks) {
                     this.posterUrl = poster
                     this.plot = it.overview
@@ -177,9 +208,14 @@ class Sinewix : MainAPI() {
         return found
     }
 
+    /* ---------------- Arama / kartlar ---------------- */
+
     private fun SineWixIcerikler.toSearchResponse(url: String? = null): SearchResponse? {
         val title = name ?: title ?: return null
-        val poster = posterPath ?: backdropPath ?: backdropPathTv ?: ""
+        val poster = posterPath.toFullImageUrl()
+            ?: backdropPath.toFullImageUrl()
+            ?: backdropPathTv.toFullImageUrl()
+            ?: ""
         val type = if (this.type == "serie" || url?.contains("serie") == true) TvType.TvSeries
                    else if (this.type == "anime" || url?.contains("anime") == true || url?.contains("animes") == true) TvType.Anime
                    else TvType.Movie
@@ -190,19 +226,15 @@ class Sinewix : MainAPI() {
         }
 
         return if (type == TvType.Movie) {
-            newMovieSearchResponse(title, href, type) {
-                this.posterUrl = poster
-            }
+            newMovieSearchResponse(title, href, type) { this.posterUrl = poster }
         } else {
-            newTvSeriesSearchResponse(title, href, type) {
-                this.posterUrl = poster
-            }
+            newTvSeriesSearchResponse(title, href, type) { this.posterUrl = poster }
         }
     }
 
     private fun SineWixYeniBolum.toSearchResponse(): SearchResponse? {
         val title = showName ?: return null
-        val poster = posterPath ?: stillPath ?: ""
+        val poster = posterPath.toFullImageUrl() ?: stillPath.toFullImageUrl() ?: ""
         val displayTitle = "$title S${seasonNumber.toString().padStart(2, '0')}E${episodeNumber.toString().padStart(2, '0')}"
         val targetSerieId = serieId ?: id ?: return null
         val href = "$mainUrl/public/api/series/show/$targetSerieId/$apiToken"
@@ -211,6 +243,8 @@ class Sinewix : MainAPI() {
             this.posterUrl = poster
         }
     }
+
+    /* ---------------- Model sınıfları ---------------- */
 
     data class SineWixResponseHash(
         @JsonProperty("current_page") val currentPage: Int? = null,
@@ -223,11 +257,21 @@ class Sinewix : MainAPI() {
         @JsonProperty("data") val data: List<SineWixYeniBolum>? = null
     )
 
+    // Detay uç noktaları sarmalı dönebilir; toleranslı wrapper
+    data class SineWixIcerikWrapper(
+        @JsonProperty("data") val data: SineWixIcerikler? = null,
+        @JsonProperty("show") val show: SineWixIcerikler? = null,
+        @JsonProperty("movie") val movie: SineWixIcerikler? = null,
+        @JsonProperty("info") val info: SineWixIcerikler? = null,
+        @JsonProperty("result") val result: SineWixIcerikler? = null
+    )
+
     data class SineWixIcerikler(
         @JsonProperty("id") val id: Int? = null,
         @JsonProperty("name") val name: String? = null,
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("poster_path") val posterPath: String? = null,
+        @JsonProperty("posterPath") val posterPathAlt: String? = null,
         @JsonProperty("backdrop_path") val backdropPath: String? = null,
         @JsonProperty("backdrop_path_tv") val backdropPathTv: String? = null,
         @JsonProperty("vote_average") val voteAverage: Double? = null,
@@ -238,7 +282,10 @@ class Sinewix : MainAPI() {
         @JsonProperty("seasons") val seasons: List<SineWixSeason>? = null,
         @JsonProperty("videos") val videos: List<SineWixVideo>? = null,
         @JsonProperty("link") val directLink: String? = null
-    )
+    ) {
+        // Jackson posterPath yoksa posterPathAlt'ı otomatik doldurmuyor; getter ile birleştir
+        val effectivePoster: String? get() = posterPath ?: posterPathAlt
+    }
 
     data class SineWixYeniBolum(
         @JsonProperty("id") val id: Int? = null,
@@ -272,6 +319,14 @@ class Sinewix : MainAPI() {
 
     data class SineWixVideo(
         @JsonProperty("link") val link: String? = null,
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("src") val src: String? = null,
+        @JsonProperty("file") val file: String? = null,
         @JsonProperty("server") val server: String? = null
-    )
+    ) {
+        /** Alan adları farklıysa ilk dolu olanı döndürür. */
+        val effectiveLink: String?
+            get() = sequenceOf(link, url, src, file)
+                .firstOrNull { !it.isNullOrBlank() }
+    }
 }
