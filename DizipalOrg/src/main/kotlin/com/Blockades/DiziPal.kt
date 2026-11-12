@@ -1,5 +1,4 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-// HTML yapısına göre yeniden düzenlendi.
 package com.Blockades
 
 import android.util.Log
@@ -198,7 +197,6 @@ class DiziPal : MainAPI() {
     private fun extractSeasons(doc: Document): List<Int> {
         val fromBtns = doc.select(".r-sezonlar button.r-sezon")
             .mapNotNull { btn ->
-                // "1. Sezon" -> 1
                 Regex("""(\d+)""").find(btn.text())?.groupValues?.getOrNull(1)?.toIntOrNull()
             }
             .distinct()
@@ -207,7 +205,7 @@ class DiziPal : MainAPI() {
     }
 
     private suspend fun fetchEpisodes(slug: String, season: Int, doc: Document): List<Episode> {
-        // Önce sayfadaki bölüm linklerini topla (HTML'de tüm sezonlar olmayabilir)
+        // Önce sayfadaki bölüm linklerini topla
         val episodes = mutableListOf<Episode>()
         doc.select("a[href*='-sezon-'][href*='-bolum']").forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -267,11 +265,11 @@ class DiziPal : MainAPI() {
         val page = runCatching { app.get(data, interceptor = interceptor, referer = "$mainUrl/").document }.getOrNull()
             ?: return false
 
-        // 2. Doğrudan iframe kontrolü (HTML'deki gibi)
+        // 2. Doğrudan iframe kontrolü
         page.selectFirst("div.video-container iframe")?.let { iframe ->
             val src = normalizeHref(iframe.attr("src")) ?: return@let
             Log.e("DZP", "iframe bulundu: $src")
-            if (loadExtractor(src, data, subtitleCallback, callback)) {
+            if (extractFromIframe(src, data, subtitleCallback, callback)) {
                 Log.e("DZP", "✓ iframe'den link bulundu")
                 return true
             }
@@ -281,8 +279,7 @@ class DiziPal : MainAPI() {
         page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             Log.e("DZP", "iframe: $src")
-            if (loadExtractor(src, data, subtitleCallback, callback)) return true
-            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
+            if (extractFromIframe(src, data, subtitleCallback, callback)) return true
         }
 
         // 4. Sayfa kaynağında m3u8/mp4 ara
@@ -311,6 +308,41 @@ class DiziPal : MainAPI() {
         }
 
         Log.e("DZP", "✗ loadLinks başarısız")
+        return false
+    }
+
+    private suspend fun extractFromIframe(url: String, referer: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        // Önce doğrudan extractor dene
+        if (loadExtractor(url, referer, subtitleCallback, callback)) return true
+
+        // Iframe sayfasını çek ve içinden m3u8/mp4 ara
+        val res = runCatching { app.get(url, referer = referer, interceptor = interceptor) }.getOrNull() ?: return false
+        val body = res.text
+
+        // JSON veya m3u8 içeriyor mu?
+        if (body.trim().startsWith("{") || body.trim().startsWith("[")) {
+            if (pushHlsProxy(body, referer, callback)) return true
+            if (pushM3u8s(body, referer, callback)) return true
+            if (pushMp4s(body, referer, callback)) return true
+        }
+
+        val doc = res.document
+        if (pushHlsProxy(body, referer, callback)) return true
+        if (pushM3u8s(body, referer, callback)) return true
+        if (pushMp4s(body, referer, callback)) return true
+        if (huntInScripts(doc, url, callback)) return true
+
+        // Sayfadaki diğer iframe'leri kontrol et
+        doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
+            val src = normalizeHref(ifr.attr("src")) ?: return@forEach
+            if (loadExtractor(src, referer, subtitleCallback, callback)) return true
+            val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
+            if (pushHlsProxy(subRes.text, url, callback)) return true
+            if (pushM3u8s(subRes.text, url, callback)) return true
+            if (pushMp4s(subRes.text, url, callback)) return true
+            if (huntInScripts(subRes.document, src, callback)) return true
+        }
+
         return false
     }
 
