@@ -20,7 +20,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipalizm.com/"
-    override var name                 = "DiziPalizm"
+    override var name                 = "DiziPalOrg"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -61,7 +61,6 @@ class DiziPal : MainAPI() {
 
         val cards = mutableListOf<SearchResponse>()
 
-        // 1. Dizi/Film Kartları (r-card)
         doc.select("a.r-card").forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
             if (!href.contains("/dizi/") && !href.contains("/film/")) return@forEach
@@ -81,7 +80,6 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // 2. Bölüm Kartları (list-episodes) - Sadece Son Eklenen Bölümler için
         if (request.name == "Son Eklenen Bölümler") {
             doc.select("div.list-episodes").forEach { div ->
                 val a = div.selectFirst("a.r-still") ?: return@forEach
@@ -154,7 +152,6 @@ class DiziPal : MainAPI() {
                 for (s in seasons) {
                     eps += fetchEpisodes(slug, s, doc)
                 }
-                // Eğer API'den gelmezse, sayfadaki tüm bölüm linklerini topla
                 if (eps.isEmpty()) {
                     doc.select("a[href*='-sezon-'][href*='-bolum']").forEach { a ->
                         val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -179,7 +176,6 @@ class DiziPal : MainAPI() {
                 }
             }
             url.contains("-sezon-") && url.contains("-bolum") -> {
-                // Bölüm sayfası
                 val (s, e) = parseSeasonEpisode(url, doc.selectFirst("h1")?.text().orEmpty())
                 val ep = newEpisode(url) {
                     name = doc.selectFirst("h1")?.text()?.trim()
@@ -205,7 +201,6 @@ class DiziPal : MainAPI() {
     }
 
     private suspend fun fetchEpisodes(slug: String, season: Int, doc: Document): List<Episode> {
-        // Önce sayfadaki bölüm linklerini topla
         val episodes = mutableListOf<Episode>()
         doc.select("a[href*='-sezon-'][href*='-bolum']").forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
@@ -221,7 +216,6 @@ class DiziPal : MainAPI() {
         }
         if (episodes.isNotEmpty()) return episodes
 
-        // Eğer HTML'den gelmezse API'yi dene
         return try {
             val apiUrl = "$mainUrl/bolum_yukle.php?slug=${slug.encodeURL()}&sezon=$season"
             val json = app.get(apiUrl, interceptor = interceptor, referer = "$mainUrl/dizi/$slug", headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
@@ -265,28 +259,28 @@ class DiziPal : MainAPI() {
         val page = runCatching { app.get(data, interceptor = interceptor, referer = "$mainUrl/").document }.getOrNull()
             ?: return false
 
-        // 2. Doğrudan iframe kontrolü
+        // 2. Doğrudan iframe kontrolü (video-container içindeki)
         page.selectFirst("div.video-container iframe")?.let { iframe ->
             val src = normalizeHref(iframe.attr("src")) ?: return@let
-            Log.e("DZP", "iframe bulundu: $src")
-            if (extractFromIframe(src, data, subtitleCallback, callback)) {
-                Log.e("DZP", "✓ iframe'den link bulundu")
+            Log.e("DZP", "video-container iframe bulundu: $src")
+            if (extractVideoFromIframe(src, data, subtitleCallback, callback)) {
+                Log.e("DZP", "✓ iframe'den video bulundu")
                 return true
             }
         }
 
-        // 3. Diğer iframe'ler
+        // 3. Tüm iframe'leri kontrol et
         page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             Log.e("DZP", "iframe: $src")
-            if (extractFromIframe(src, data, subtitleCallback, callback)) return true
+            if (extractVideoFromIframe(src, data, subtitleCallback, callback)) return true
         }
 
         // 4. Sayfa kaynağında m3u8/mp4 ara
         val pageHtml = page.html()
-        if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
         if (pushM3u8s(pageHtml, referer = "$mainUrl/", callback)) return true
         if (pushMp4s(pageHtml, referer = "$mainUrl/", callback)) return true
+        if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
 
         // 5. Eski yöntemler (embed.php vb.)
         val slugFromJs = Regex("""(?:var|let|const)\s+EP_SLUG\s*=\s*["']([^"']+)["']""").find(pageHtml)?.groupValues?.getOrNull(1) ?: data.substringAfterLast("/").substringBefore("?")
@@ -311,33 +305,51 @@ class DiziPal : MainAPI() {
         return false
     }
 
-    private suspend fun extractFromIframe(url: String, referer: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun extractVideoFromIframe(url: String, referer: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        Log.e("DZP", "extractVideoFromIframe: $url")
+
         // Önce doğrudan extractor dene
-        if (loadExtractor(url, referer, subtitleCallback, callback)) return true
-
-        // Iframe sayfasını çek ve içinden m3u8/mp4 ara
-        val res = runCatching { app.get(url, referer = referer, interceptor = interceptor) }.getOrNull() ?: return false
-        val body = res.text
-
-        // JSON veya m3u8 içeriyor mu?
-        if (body.trim().startsWith("{") || body.trim().startsWith("[")) {
-            if (pushHlsProxy(body, referer, callback)) return true
-            if (pushM3u8s(body, referer, callback)) return true
-            if (pushMp4s(body, referer, callback)) return true
+        if (loadExtractor(url, referer, subtitleCallback, callback)) {
+            Log.e("DZP", "✓ loadExtractor başarılı: $url")
+            return true
         }
 
+        // Iframe sayfasını çek
+        val res = runCatching { app.get(url, referer = referer, interceptor = interceptor) }.getOrNull() ?: run {
+            Log.e("DZP", "Iframe sayfası çekilemedi: $url")
+            return false
+        }
+        val body = res.text
         val doc = res.document
-        if (pushHlsProxy(body, referer, callback)) return true
-        if (pushM3u8s(body, referer, callback)) return true
-        if (pushMp4s(body, referer, callback)) return true
+
+        // Twimg m3u8'leri direkt ara (Twitter video CDN)
+        Regex("""https?://video\.twimg\.com/[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(body).map { it.value }.distinct().forEach { m3u8 ->
+            Log.e("DZP", "Twimg m3u8 bulundu: $m3u8")
+            runCatching {
+                M3u8Helper.generateM3u8(
+                    source = name,
+                    streamUrl = m3u8,
+                    referer = url,
+                    name = name
+                ).forEach(callback)
+                return true
+            }
+        }
+
+        // Genel m3u8 ara
+        if (pushM3u8s(body, referer = url, callback)) return true
+        if (pushMp4s(body, referer = url, callback)) return true
+        if (pushHlsProxy(body, referer = url, callback)) return true
+
+        // Script'lerde ara
         if (huntInScripts(doc, url, callback)) return true
 
         // Sayfadaki diğer iframe'leri kontrol et
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
+            Log.e("DZP", "Nested iframe: $src")
             if (loadExtractor(src, referer, subtitleCallback, callback)) return true
             val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
-            if (pushHlsProxy(subRes.text, url, callback)) return true
             if (pushM3u8s(subRes.text, url, callback)) return true
             if (pushMp4s(subRes.text, url, callback)) return true
             if (huntInScripts(subRes.document, src, callback)) return true
@@ -351,31 +363,31 @@ class DiziPal : MainAPI() {
         val body = res.text
         val trimmed = body.trim()
         if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            if (pushHlsProxy(body, referer, callback)) return true
             if (pushM3u8s(body, referer, callback)) return true
             if (pushMp4s(body, referer, callback)) return true
+            if (pushHlsProxy(body, referer, callback)) return true
             Regex("""https?://[^\s"'<>]+""").findAll(body).map { it.value }.distinct().forEach { u ->
                 if (loadExtractor(u, referer, subtitleCallback, callback)) return true
             }
         }
         val doc = res.document
         decryptFromPage(doc)?.let { dec ->
-            if (pushHlsProxy(dec, referer, callback)) return true
             if (pushM3u8s(dec, referer, callback)) return true
             if (pushMp4s(dec, referer, callback)) return true
+            if (pushHlsProxy(dec, referer, callback)) return true
         }
-        if (pushHlsProxy(body, referer, callback)) return true
         if (pushM3u8s(body, referer, callback)) return true
         if (pushMp4s(body, referer, callback)) return true
+        if (pushHlsProxy(body, referer, callback)) return true
         if (huntInScripts(doc, url, callback)) return true
 
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             if (loadExtractor(src, referer, subtitleCallback, callback)) return@forEach
             val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
-            if (pushHlsProxy(subRes.text, url, callback)) return@forEach
             if (pushM3u8s(subRes.text, url, callback)) return@forEach
             if (pushMp4s(subRes.text, url, callback)) return@forEach
+            if (pushHlsProxy(subRes.text, url, callback)) return@forEach
             if (huntInScripts(subRes.document, src, callback)) return@forEach
         }
         return false
@@ -386,8 +398,25 @@ class DiziPal : MainAPI() {
         for (s in doc.select("script")) {
             val code = if (s.hasAttr("src")) runCatching { app.get(fixUrl(s.attr("src")), referer = referer, interceptor = interceptor).text }.getOrNull() else s.data()
             if (code.isNullOrBlank()) continue
-            if (pushHlsProxy(code, referer, callback)) found = true
+
+            // Twimg m3u8'leri
+            Regex("""https?://video\.twimg\.com/[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(code).map { it.value }.distinct().forEach { m3u8 ->
+                Log.e("DZP", "Script içinde twimg m3u8: $m3u8")
+                runCatching {
+                    M3u8Helper.generateM3u8(
+                        source = name,
+                        streamUrl = m3u8,
+                        referer = referer,
+                        name = name
+                    ).forEach(callback)
+                    found = true
+                }
+            }
+
             if (pushM3u8s(code, referer, callback)) found = true
+            if (pushMp4s(code, referer, callback)) found = true
+            if (pushHlsProxy(code, referer, callback)) found = true
+
             Regex("""file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""").findAll(code).map { it.groupValues[1] }.distinct().forEach { m3u ->
                 runCatching {
                     M3u8Helper.generateM3u8(
@@ -400,11 +429,10 @@ class DiziPal : MainAPI() {
                 }
             }
             Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""").findAll(code).mapNotNull { runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull() }.forEach { decoded ->
-                if (pushHlsProxy(decoded, referer, callback)) found = true
                 if (pushM3u8s(decoded, referer, callback)) found = true
                 if (pushMp4s(decoded, referer, callback)) found = true
+                if (pushHlsProxy(decoded, referer, callback)) found = true
             }
-            if (pushMp4s(code, referer, callback)) found = true
         }
         return found
     }
@@ -486,13 +514,6 @@ class DiziPal : MainAPI() {
             else if (this.endsWith("?") || this.endsWith("&")) this + "paged=$page"
             else "$this&paged=$page"
         } else { "$this".trimEnd('/') + "/page/$page/" }
-    }
-    private fun String.platformPagePath(page: Int): String {
-        if (page <= 1) return this
-        return if (this.contains("?")) {
-            if (this.contains("page=")) this.replace(Regex("page=\\d+"), "page=$page")
-            else "$this&page=$page"
-        } else { "$this".trimEnd('/') + "?page=$page" }
     }
     private fun normalizeHref(href: String?): String? = if (href.isNullOrBlank()) null else if (href.startsWith("http")) href else fixUrl(href)
     private fun String.hexToBytes(): ByteArray {
