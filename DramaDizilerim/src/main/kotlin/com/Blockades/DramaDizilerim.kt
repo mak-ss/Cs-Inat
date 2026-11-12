@@ -47,7 +47,7 @@ class DramaDizilerim : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    private val uaHeaders get() = browserHeaders
+    private val uaHeaders get() = BROWSER_HEADERS
 
     override val mainPage get() = ROWS.mapNotNull { name ->
         if (!Settings.rowEnabled(name)) return@mapNotNull null
@@ -223,7 +223,6 @@ class DramaDizilerim : MainAPI() {
         return getQualityFromName("${height}p")
     }
 
-
     companion object {
         /** Homepage rows in display order; every entry maps to a live listing page. */
         val ROWS = listOf(
@@ -244,5 +243,43 @@ class DramaDizilerim : MainAPI() {
         private const val CARD = "a.card-link, a.video-item-card, a.drama-card, a.video-link"
         private val SCORE = Regex("""(\d+(?:[.,]\d+)?)""")
         private val QUALITY = Regex("""(?:[_.]|q=)(\d{3,4})p?(?=[/&.]|$)""")
+
+        /** Tarayıcı benzeri istek başlıkları (eski `browserHeaders` yerine). */
+        private val BROWSER_HEADERS = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8",
+        )
     }
 }
+
+// ----------------------------------------------------------------------------
+// Yerel yardımcı fonksiyonlar (eskiden com.bigbull.common içindeydi)
+// ----------------------------------------------------------------------------
+
+/** `<script type="application/ld+json">` içinden `description` alanını çıkarır. */
+private fun Document.jsonLdDescription(): String? {
+    val scripts = select("script[type=application/ld+json]")
+    for (script in scripts) {
+        val raw = script.data().trim()
+        if (raw.isEmpty()) continue
+        // Bazı siteler tek bir JSON değil, JSON-LD dizisi koyar
+        val candidates = listOf(raw).ifEmpty { emptyList() }
+        for (json in candidates) {
+            val desc = runCatching {
+                val obj = JSONObject(json)
+                obj.optString("description").takeIf { it.isNotBlank() }
+                    ?: obj.optJSONObject("description")?.optString("text")
+            }.getOrNull()
+            if (!desc.isNullOrBlank()) return desc
+        }
+    }
+    return null
+}
+
+/** Resim etiketinden `src`, `data-src` veya `data-lazy-src` alanını döndürür. */
+private fun Element.posterSrcLazy(): String? =
+    attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+        ?: attr("data-src").takeIf { it.isNotBlank() }
+        ?: attr("data-lazy-src").takeIf { it.isNotBlank() }
