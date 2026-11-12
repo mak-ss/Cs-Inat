@@ -14,8 +14,8 @@ class DramaDizilerim : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/dizi" to "Tüm Diziler",
-        "${mainUrl}" to "Trend Diziler"
+        "${mainUrl}/diziler" to "Tüm Diziler",
+        "${mainUrl}/populer" to "Populer Diziler"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
