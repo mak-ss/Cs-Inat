@@ -38,7 +38,7 @@ import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
 class Dizilla : MainAPI() {
-    override var mainUrl = "https://dizilla.now"
+    override var mainUrl = "https://dizilla.la"
     override var name = "Dizilla"
     override val hasMainPage = true
     override var lang = "tr"
