@@ -41,7 +41,7 @@ import java.net.URLDecoder
  * HLS/MP4 adresini `/api/media?ticket=` olarak verir.
  */
 class DramaDizilerim : MainAPI() {
-    override var mainUrl = "https://dramadizilerim.com"
+    override var mainUrl = "https://dramadizilerim1.com"
     override var name = "DramaDizilerim"
     override var lang = "tr"
     override val hasMainPage = true
