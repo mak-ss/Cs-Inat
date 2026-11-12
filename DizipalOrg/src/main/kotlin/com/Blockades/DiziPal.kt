@@ -1,4 +1,5 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// HTML yapısına göre yeniden düzenlendi.
 package com.Blockades
 
 import android.util.Log
@@ -20,7 +21,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipalizm.com/"
-    override var name                 = "DiziPalOrg"
+    override var name                 = "DiziPalizm"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -48,109 +49,31 @@ class DiziPal : MainAPI() {
     /* -------------------- MainPage -------------------- */
 
     override val mainPage = mainPageOf(
-        "$mainUrl/diziler"  to "Diziler",
-        "$mainUrl/filmler"  to "Filmler",
-        "$mainUrl/trend"    to "Trend",
-        "$mainUrl/platform/netflix"        to "Netflix",
-        "$mainUrl/platform/disney-plus"    to "Disney+",
-        "$mainUrl/platform/prime-video"    to "Prime Video",
-        "$mainUrl/platform/max"            to "Max",
-        "$mainUrl/platform/blutv"          to "BluTV",
-        "$mainUrl/platform/exxen"          to "Exxen",
-        "$mainUrl/platform/gain"           to "Gain",
-        "$mainUrl/platform/tabii"          to "tabii",
-        "$mainUrl/platform/paramount-plus" to "Paramount+",
-        "$mainUrl/"          to "Son Eklenenler"
+        "$mainUrl/tum-bolumler/" to "Son Eklenen Bölümler",
+        "$mainUrl/dizi-arsivi/?filtrele=tarih&sirala=DESC" to "Son Eklenen Diziler",
+        "$mainUrl/asya-dizileri/" to "Asya Dizileri",
+        "$mainUrl/diziler" to "Tüm Diziler",
+        "$mainUrl/filmler" to "Filmler"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val isPlatform = request.data.contains("/platform/")
-        val url = if (isPlatform) {
-            request.data.platformPagePath(page)
-        } else {
-            request.data.addPagePath(page)
-        }
-        
+        val url = if (page <= 1) request.data else request.data.addPagePath(page)
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
 
-        // Eğer platform sayfasıysa özel fonksiyona yönlendir
-        if (isPlatform) {
-            return fetchPlatformContent(url, doc, request.name)
-        }
-
-        // --- ANA SAYFA İÇİN NORMAL MANTIK ---
         val cards = mutableListOf<SearchResponse>()
-        val items = doc.select(".ip-card a[href], .ip-trend-card a[href]")
-            .filter { a ->
-                val h = a.attr("href")
-                h.contains("/dizi/") || h.contains("/film/")
-            }
-            .distinctBy { it.attr("href") }
 
-        items.forEach { a ->
+        // 1. Dizi/Film Kartları (r-card)
+        doc.select("a.r-card").forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
-            val container = a.closest(".ip-card") ?: a.closest(".ip-trend-card")
-            val poster = container?.selectFirst("img")?.let {
+            if (!href.contains("/dizi/") && !href.contains("/film/")) return@forEach
+
+            val poster = a.selectFirst("img")?.let {
                 it.attr("data-src").ifBlank { it.attr("src") }
             }?.let(::fixUrlNull)
 
-            val title = container?.selectFirst(".ip-card-title, .ip-trend-title")?.text()?.trim()
-                ?: container?.selectFirst("img")?.attr("alt")?.trim()
-                ?: a.attr("title").ifBlank { a.text() }.ifBlank {
-                    href.substringAfterLast("/").replace("-", " ").trim()
-                }
-
-            if (href.contains("/dizi/")) {
-                cards += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
-            } else {
-                cards += newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
-            }
-        }
-        val hasNext = doc.select(".pagination a, a[rel=next]").isNotEmpty()
-        return newHomePageResponse(request.name, cards, hasNext = hasNext)
-    }
-
-    /* -------------------- PLATFORM İÇERİK ÇEKME -------------------- */
-    private suspend fun fetchPlatformContent(url: String, doc: Document, pageName: String): HomePageResponse {
-        val cards = mutableListOf<SearchResponse>()
-
-        // 1. YÖNTEM: Sayfa kaynağında gizli JSON var mı?
-        val scripts = doc.select("script")
-        for (s in scripts) {
-            val text = s.data()
-            if (text.contains("\"/dizi/") || text.contains("\"/film/")) {
-                val matches = Regex(""""(?:href|url|link|slug)"\s*:\s*"([^"]*(?:/dizi/|/film/)[^"]*)"""").findAll(text)
-                for (m in matches) {
-                    val href = normalizeHref(m.groupValues[1]) ?: continue
-                    val titleGuess = href.substringAfterLast("/").replace("-", " ").trim()
-                    val poster = null
-                    
-                    if (href.contains("/dizi/")) {
-                        cards += newTvSeriesSearchResponse(titleGuess, href, TvType.TvSeries) { this.posterUrl = poster }
-                    } else {
-                        cards += newMovieSearchResponse(titleGuess, href, TvType.Movie) { this.posterUrl = poster }
-                    }
-                }
-            }
-        }
-
-        if (cards.isNotEmpty()) {
-            Log.e("DZP", "Platform ($pageName) -> Gizli JSON'dan ${cards.size} kart bulundu.")
-            return newHomePageResponse(pageName, cards.distinctBy { it.url }, hasNext = false)
-        }
-
-        // 2. YÖNTEM: HTML içinden genel link avcılığı
-        val links = doc.select("a[href*='/dizi/'], a[href*='/film/']")
-        links.forEach { a ->
-            val href = normalizeHref(a.attr("href")) ?: return@forEach
-            val container = a.closest("div, article, li") ?: a.parent()
-            
-            val poster = container?.selectFirst("img")?.let {
-                it.attr("data-src").ifBlank { it.attr("src") }
-            }?.let(::fixUrlNull)
-            val title = container?.selectFirst(".title, .tt, h2, h3")?.text()?.trim()
-                ?: container?.selectFirst("img")?.attr("alt")?.trim()
-                ?: a.attr("title").ifBlank { a.text() }.ifBlank { href.substringAfterLast("/").replace("-", " ").trim() }
+            val title = a.selectFirst(".r-cap-t")?.text()?.trim()
+                ?: a.selectFirst("img")?.attr("alt")?.trim()?.removeSuffix(" izle")
+                ?: href.substringAfterLast("/").replace("-", " ").trim()
 
             if (href.contains("/dizi/")) {
                 cards += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
@@ -159,51 +82,45 @@ class DiziPal : MainAPI() {
             }
         }
 
-        if (cards.isNotEmpty()) {
-            Log.e("DZP", "Platform ($pageName) -> HTML'den ${cards.size} kart bulundu.")
-            return newHomePageResponse(pageName, cards.distinctBy { it.url }, hasNext = false)
-        }
-
-        // 3. YÖNTEM: Site API'sini dene
-        try {
-            val apiUrl = url + (if (url.contains("?")) "&" else "?") + "ajax=1"
-            val apiRes = app.get(apiUrl, interceptor = interceptor, referer = url).text
-            val apiDoc = Jsoup.parse(apiRes)
-            
-            val apiLinks = apiDoc.select("a[href*='/dizi/'], a[href*='/film/']")
-            apiLinks.forEach { a ->
+        // 2. Bölüm Kartları (list-episodes) - Sadece Son Eklenen Bölümler için
+        if (request.name == "Son Eklenen Bölümler") {
+            doc.select("div.list-episodes").forEach { div ->
+                val a = div.selectFirst("a.r-still") ?: return@forEach
                 val href = normalizeHref(a.attr("href")) ?: return@forEach
-                val title = a.attr("title").ifBlank { a.text() }.ifBlank { href.substringAfterLast("/").replace("-", " ").trim() }
-                if (href.contains("/dizi/")) {
-                    cards += newTvSeriesSearchResponse(title, href, TvType.TvSeries)
-                } else {
-                    cards += newMovieSearchResponse(title, href, TvType.Movie)
-                }
+                if (!href.contains("-sezon-") || !href.contains("-bolum")) return@forEach
+
+                val poster = a.selectFirst("img")?.let {
+                    it.attr("data-src").ifBlank { it.attr("src") }
+                }?.let(::fixUrlNull)
+
+                val title = div.selectFirst(".r-cap-t")?.text()?.trim()
+                    ?: a.attr("title")?.trim()
+                    ?: href.substringAfterLast("/").replace("-", " ").trim()
+
+                cards += newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = poster }
             }
-        } catch (e: Exception) {
-            Log.e("DZP", "Platform API denemesi başarısız: ${e.message}")
         }
 
-        Log.e("DZP", "Platform ($pageName) -> Toplam ${cards.size} kart bulundu.")
-        return newHomePageResponse(pageName, cards.distinctBy { it.url }, hasNext = false)
+        val hasNext = doc.selectFirst("link[rel=next]") != null
+        return newHomePageResponse(request.name, cards.distinctBy { it.url }, hasNext = hasNext)
     }
 
     /* -------------------- Search -------------------- */
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/arama?q=${query.encodeURL()}"
+        val url = "$mainUrl/?s=${query.encodeURL()}"
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
         val out = mutableListOf<SearchResponse>()
 
-        doc.select(".ip-card a[href], .ip-trend-card a[href]").forEach { a ->
+        doc.select("a.r-card").forEach { a ->
             val href = normalizeHref(a.attr("href")) ?: return@forEach
             if (!href.contains("/dizi/") && !href.contains("/film/")) return@forEach
 
-            val container = a.closest(".ip-card") ?: a.closest(".ip-trend-card")
-            val poster = container?.selectFirst("img")?.let {
+            val poster = a.selectFirst("img")?.let {
                 it.attr("data-src").ifBlank { it.attr("src") }
             }?.let(::fixUrlNull)
-            val title = container?.selectFirst(".ip-card-title, .ip-trend-title")?.text()?.trim()
-                ?: container?.selectFirst("img")?.attr("alt")?.trim()
+
+            val title = a.selectFirst(".r-cap-t")?.text()?.trim()
+                ?: a.selectFirst("img")?.attr("alt")?.trim()?.removeSuffix(" izle")
                 ?: href.substringAfterLast("/").replace("-", " ").trim()
 
             when {
@@ -217,17 +134,18 @@ class DiziPal : MainAPI() {
 
     override suspend fun quickSearch(query: String) = search(query)
 
-    /* -------------------- Load (details) — DEĞİŞMEDİ -------------------- */
+    /* -------------------- Load (details) -------------------- */
     override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
         val poster = fixUrlNull(
-            doc.selectFirst("[property='og:image']")?.attr("content")
+            doc.selectFirst("meta[property='og:image']")?.attr("content")
                 ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
-                ?: doc.selectFirst(".dp-sidebar-poster img, .dp-poster-small img")?.attr("src")
+                ?: doc.selectFirst(".r-dposter img")?.attr("src")
         )
-        val title = doc.selectFirst(".dp-series-title, h1")?.text()?.trim()
+        val rawTitle = doc.selectFirst("h1")?.text()?.trim()
             ?: doc.selectFirst("meta[property='og:title']")?.attr("content")?.substringBefore("|")?.trim()
             ?: doc.title().substringBefore("|").trim()
+        val title = rawTitle.removeSuffix(" izle").removeSuffix(" Tüm Bölümler").trim()
 
         return when {
             url.contains("/dizi/") -> {
@@ -235,10 +153,11 @@ class DiziPal : MainAPI() {
                 val seasons = extractSeasons(doc)
                 val eps = mutableListOf<Episode>()
                 for (s in seasons) {
-                    eps += fetchEpisodes(slug, s)
+                    eps += fetchEpisodes(slug, s, doc)
                 }
+                // Eğer API'den gelmezse, sayfadaki tüm bölüm linklerini topla
                 if (eps.isEmpty()) {
-                    doc.select("""a[href*="/bolum/"]""").forEach { a ->
+                    doc.select("a[href*='-sezon-'][href*='-bolum']").forEach { a ->
                         val href = normalizeHref(a.attr("href")) ?: return@forEach
                         val (s, e) = parseSeasonEpisode(href, a.text())
                         eps += newEpisode(href) {
@@ -251,17 +170,20 @@ class DiziPal : MainAPI() {
                 Log.e("DZP", "load(): $title -> ${eps.size} bölüm")
                 newTvSeriesLoadResponse(title, url, TvType.TvSeries, eps.distinctBy { it.data }) {
                     this.posterUrl = poster
+                    this.plot = doc.selectFirst(".r-lead p")?.text()?.trim()
                 }
             }
             url.contains("/film/") -> {
                 newMovieLoadResponse(title, url, TvType.Movie, url) {
                     this.posterUrl = poster
+                    this.plot = doc.selectFirst(".r-lead p")?.text()?.trim()
                 }
             }
-            url.contains("/bolum/") -> {
-                val (s, e) = parseSeasonEpisode(url, doc.selectFirst("h1, .bp-ep-title")?.text().orEmpty())
+            url.contains("-sezon-") && url.contains("-bolum") -> {
+                // Bölüm sayfası
+                val (s, e) = parseSeasonEpisode(url, doc.selectFirst("h1")?.text().orEmpty())
                 val ep = newEpisode(url) {
-                    name = doc.selectFirst("h1, .bp-ep-title")?.text()?.trim()
+                    name = doc.selectFirst("h1")?.text()?.trim()
                     season = s
                     episode = e
                 }
@@ -274,16 +196,34 @@ class DiziPal : MainAPI() {
     }
 
     private fun extractSeasons(doc: Document): List<Int> {
-        val fromBtns = doc.select(".dp-season-btn, .bp-stab")
-            .mapNotNull { it.attr("data-season").toIntOrNull() }
+        val fromBtns = doc.select(".r-sezonlar button.r-sezon")
+            .mapNotNull { btn ->
+                // "1. Sezon" -> 1
+                Regex("""(\d+)""").find(btn.text())?.groupValues?.getOrNull(1)?.toIntOrNull()
+            }
             .distinct()
         if (fromBtns.isNotEmpty()) return fromBtns.sorted()
-        val badge = doc.selectFirst(".dp-badge-season")?.text() ?: ""
-        val n = Regex("""(\d+)""").find(badge)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        return if (n != null) (1..n).toList() else listOf(1)
+        return listOf(1)
     }
 
-    private suspend fun fetchEpisodes(slug: String, season: Int): List<Episode> {
+    private suspend fun fetchEpisodes(slug: String, season: Int, doc: Document): List<Episode> {
+        // Önce sayfadaki bölüm linklerini topla (HTML'de tüm sezonlar olmayabilir)
+        val episodes = mutableListOf<Episode>()
+        doc.select("a[href*='-sezon-'][href*='-bolum']").forEach { a ->
+            val href = normalizeHref(a.attr("href")) ?: return@forEach
+            val (s, e) = parseSeasonEpisode(href, a.text())
+            if (s == season || s == null) {
+                episodes += newEpisode(href) {
+                    name = a.selectFirst(".r-bolum-t")?.text()?.trim()
+                        ?: a.attr("title").ifBlank { a.text() }.ifBlank { "Bölüm $e" }
+                    this.season = s ?: season
+                    this.episode = e
+                }
+            }
+        }
+        if (episodes.isNotEmpty()) return episodes
+
+        // Eğer HTML'den gelmezse API'yi dene
         return try {
             val apiUrl = "$mainUrl/bolum_yukle.php?slug=${slug.encodeURL()}&sezon=$season"
             val json = app.get(apiUrl, interceptor = interceptor, referer = "$mainUrl/dizi/$slug", headers = mapOf("X-Requested-With" to "XMLHttpRequest")).text
@@ -316,46 +256,60 @@ class DiziPal : MainAPI() {
         return s to e
     }
 
-    /* -------------------- Links (player) — DEĞİŞMEDİ -------------------- */
+    /* -------------------- Links (player) -------------------- */
     data class EncPayload(val ciphertext: String, val iv: String, val salt: String)
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         Log.e("DZP", "=== loadLinks ÇAĞRILDI ===")
         Log.e("DZP", "data=$data")
-        if (extractFromPageUrl(data, referer = "$mainUrl/", subtitleCallback, callback)) {
-            Log.e("DZP", "✓ Sayfadan link bulundu")
-            return true
-        }
+
+        // 1. Sayfayı çek
         val page = runCatching { app.get(data, interceptor = interceptor, referer = "$mainUrl/").document }.getOrNull()
-        if (page != null) {
-            val pageHtml = page.html()
-            val slugFromJs = Regex("""(?:var|let|const)\s+EP_SLUG\s*=\s*["']([^"']+)["']""").find(pageHtml)?.groupValues?.getOrNull(1) ?: data.substringAfterLast("/").substringBefore("?")
-            Log.e("DZP", "EP_SLUG=$slugFromJs")
-            val isFilm = data.contains("/film/")
-            val typeParam = if (isFilm) "&type=film" else ""
-            val embedUrls = listOf(
-                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com$typeParam&cb=3",
-                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl$typeParam&cb=3",
-                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com&cb=3",
-                "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl&cb=3"
-            ).distinct()
-            for (embedUrl in embedUrls) {
-                Log.e("DZP", "embed.php deneniyor: $embedUrl")
-                if (extractFromPageUrl(embedUrl, referer = data, subtitleCallback, callback)) {
-                    Log.e("DZP", "✓ embed.php'den link bulundu")
-                    return true
-                }
+            ?: return false
+
+        // 2. Doğrudan iframe kontrolü (HTML'deki gibi)
+        page.selectFirst("div.video-container iframe")?.let { iframe ->
+            val src = normalizeHref(iframe.attr("src")) ?: return@let
+            Log.e("DZP", "iframe bulundu: $src")
+            if (loadExtractor(src, data, subtitleCallback, callback)) {
+                Log.e("DZP", "✓ iframe'den link bulundu")
+                return true
             }
-            page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
-                val src = normalizeHref(ifr.attr("src")) ?: return@forEach
-                Log.e("DZP", "iframe: $src")
-                if (loadExtractor(src, data, subtitleCallback, callback)) return true
-                if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
-            }
-            if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
-            if (pushM3u8s(pageHtml, referer = "$mainUrl/", callback)) return true
-            if (pushMp4s(pageHtml, referer = "$mainUrl/", callback)) return true
         }
+
+        // 3. Diğer iframe'ler
+        page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
+            val src = normalizeHref(ifr.attr("src")) ?: return@forEach
+            Log.e("DZP", "iframe: $src")
+            if (loadExtractor(src, data, subtitleCallback, callback)) return true
+            if (extractFromPageUrl(src, referer = data, subtitleCallback, callback)) return true
+        }
+
+        // 4. Sayfa kaynağında m3u8/mp4 ara
+        val pageHtml = page.html()
+        if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
+        if (pushM3u8s(pageHtml, referer = "$mainUrl/", callback)) return true
+        if (pushMp4s(pageHtml, referer = "$mainUrl/", callback)) return true
+
+        // 5. Eski yöntemler (embed.php vb.)
+        val slugFromJs = Regex("""(?:var|let|const)\s+EP_SLUG\s*=\s*["']([^"']+)["']""").find(pageHtml)?.groupValues?.getOrNull(1) ?: data.substringAfterLast("/").substringBefore("?")
+        Log.e("DZP", "EP_SLUG=$slugFromJs")
+        val isFilm = data.contains("/film/")
+        val typeParam = if (isFilm) "&type=film" else ""
+        val embedUrls = listOf(
+            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com$typeParam&cb=3",
+            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl$typeParam&cb=3",
+            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com&cb=3",
+            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl&cb=3"
+        ).distinct()
+        for (embedUrl in embedUrls) {
+            Log.e("DZP", "embed.php deneniyor: $embedUrl")
+            if (extractFromPageUrl(embedUrl, referer = data, subtitleCallback, callback)) {
+                Log.e("DZP", "✓ embed.php'den link bulundu")
+                return true
+            }
+        }
+
         Log.e("DZP", "✗ loadLinks başarısız")
         return false
     }
@@ -403,14 +357,14 @@ class DiziPal : MainAPI() {
             if (pushHlsProxy(code, referer, callback)) found = true
             if (pushM3u8s(code, referer, callback)) found = true
             Regex("""file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""").findAll(code).map { it.groupValues[1] }.distinct().forEach { m3u ->
-                runCatching { 
+                runCatching {
                     M3u8Helper.generateM3u8(
-                        source = name, 
-                        streamUrl = fixUrl(m3u), 
-                        referer = referer, 
+                        source = name,
+                        streamUrl = fixUrl(m3u),
+                        referer = referer,
                         name = name
                     ).forEach(callback)
-                    found = true 
+                    found = true
                 }
             }
             Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""").findAll(code).mapNotNull { runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull() }.forEach { decoded ->
@@ -430,17 +384,17 @@ class DiziPal : MainAPI() {
             val encoded = Regex("""[?&]url=([^&]+)""").find(proxy)?.groupValues?.getOrNull(1) ?: continue
             val realM3u8 = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: continue
             if (!realM3u8.startsWith("http")) continue
-            val m3u8Result = runCatching { 
+            val m3u8Result = runCatching {
                 M3u8Helper.generateM3u8(
-                    source = name, 
-                    streamUrl = proxy, 
-                    referer = "$mainUrl/", 
+                    source = name,
+                    streamUrl = proxy,
+                    referer = "$mainUrl/",
                     name = name
-                ) 
+                )
             }.getOrElse { emptyList() }
-            
+
             if (m3u8Result.isNotEmpty()) { m3u8Result.forEach(callback); any = true; continue }
-            
+
             val headers = mapOf("Referer" to "$mainUrl/", "Origin" to mainUrl, "User-Agent" to "Mozilla/5.0")
             val link = runCatching { ExtractorLink(source = name, name = name, url = proxy, referer = "$mainUrl/", quality = Qualities.Unknown.value, headers = headers, type = ExtractorLinkType.M3U8) }.getOrElse { newExtractorLink(source = name, name = name, url = proxy) }
             callback(link)
@@ -453,14 +407,14 @@ class DiziPal : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(text).map { it.value }.distinct().forEach { m3u ->
             if (m3u.contains("hls.php")) return@forEach
-            runCatching { 
+            runCatching {
                 M3u8Helper.generateM3u8(
-                    source = name, 
-                    streamUrl = fixUrl(m3u), 
-                    referer = referer, 
+                    source = name,
+                    streamUrl = fixUrl(m3u),
+                    referer = referer,
                     name = name
                 ).forEach(callback)
-                any = true 
+                any = true
             }
         }
         return any
