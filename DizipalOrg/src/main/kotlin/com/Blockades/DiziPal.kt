@@ -20,7 +20,7 @@ import javax.crypto.spec.SecretKeySpec
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipalizm.com/"
-    override var name                 = "DiziPalOrg"
+    override var name                 = "DiziPalizm"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
@@ -255,11 +255,9 @@ class DiziPal : MainAPI() {
         Log.e("DZP", "=== loadLinks ÇAĞRILDI ===")
         Log.e("DZP", "data=$data")
 
-        // 1. Sayfayı çek
         val page = runCatching { app.get(data, interceptor = interceptor, referer = "$mainUrl/").document }.getOrNull()
             ?: return false
 
-        // 2. Doğrudan iframe kontrolü (video-container içindeki)
         page.selectFirst("div.video-container iframe")?.let { iframe ->
             val src = normalizeHref(iframe.attr("src")) ?: return@let
             Log.e("DZP", "video-container iframe bulundu: $src")
@@ -269,37 +267,16 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // 3. Tüm iframe'leri kontrol et
         page.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             Log.e("DZP", "iframe: $src")
             if (extractVideoFromIframe(src, data, subtitleCallback, callback)) return true
         }
 
-        // 4. Sayfa kaynağında m3u8/mp4 ara
         val pageHtml = page.html()
         if (pushM3u8s(pageHtml, referer = "$mainUrl/", callback)) return true
         if (pushMp4s(pageHtml, referer = "$mainUrl/", callback)) return true
         if (pushHlsProxy(pageHtml, referer = "$mainUrl/", callback)) return true
-
-        // 5. Eski yöntemler (embed.php vb.)
-        val slugFromJs = Regex("""(?:var|let|const)\s+EP_SLUG\s*=\s*["']([^"']+)["']""").find(pageHtml)?.groupValues?.getOrNull(1) ?: data.substringAfterLast("/").substringBefore("?")
-        Log.e("DZP", "EP_SLUG=$slugFromJs")
-        val isFilm = data.contains("/film/")
-        val typeParam = if (isFilm) "&type=film" else ""
-        val embedUrls = listOf(
-            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com$typeParam&cb=3",
-            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl$typeParam&cb=3",
-            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=https://dizipal2148.com&cb=3",
-            "$mainUrl/api/embed.php?slug=$slugFromJs&domain=$mainUrl&cb=3"
-        ).distinct()
-        for (embedUrl in embedUrls) {
-            Log.e("DZP", "embed.php deneniyor: $embedUrl")
-            if (extractFromPageUrl(embedUrl, referer = data, subtitleCallback, callback)) {
-                Log.e("DZP", "✓ embed.php'den link bulundu")
-                return true
-            }
-        }
 
         Log.e("DZP", "✗ loadLinks başarısız")
         return false
@@ -308,13 +285,11 @@ class DiziPal : MainAPI() {
     private suspend fun extractVideoFromIframe(url: String, referer: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         Log.e("DZP", "extractVideoFromIframe: $url")
 
-        // Önce doğrudan extractor dene
         if (loadExtractor(url, referer, subtitleCallback, callback)) {
             Log.e("DZP", "✓ loadExtractor başarılı: $url")
             return true
         }
 
-        // Iframe sayfasını çek
         val res = runCatching { app.get(url, referer = referer, interceptor = interceptor) }.getOrNull() ?: run {
             Log.e("DZP", "Iframe sayfası çekilemedi: $url")
             return false
@@ -322,74 +297,32 @@ class DiziPal : MainAPI() {
         val body = res.text
         val doc = res.document
 
-        // Twimg m3u8'leri direkt ara (Twitter video CDN)
+        // Twimg m3u8'leri - DOĞRUDAN ExtractorLink ile referer ekle
         Regex("""https?://video\.twimg\.com/[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(body).map { it.value }.distinct().forEach { m3u8 ->
             Log.e("DZP", "Twimg m3u8 bulundu: $m3u8")
-            runCatching {
-                M3u8Helper.generateM3u8(
-                    source = name,
-                    streamUrl = m3u8,
-                    referer = url,
-                    name = name
-                ).forEach(callback)
-                return true
-            }
+            callback(newExtractorLink(source = name, name = name, url = m3u8) {
+                this.referer = "https://dizipalizm.com/"
+                this.quality = Qualities.Unknown.value
+            })
+            return true
         }
 
-        // Genel m3u8 ara
-        if (pushM3u8s(body, referer = url, callback)) return true
-        if (pushMp4s(body, referer = url, callback)) return true
-        if (pushHlsProxy(body, referer = url, callback)) return true
+        if (pushM3u8s(body, referer = "https://dizipalizm.com/", callback)) return true
+        if (pushMp4s(body, referer = "https://dizipalizm.com/", callback)) return true
+        if (pushHlsProxy(body, referer = "https://dizipalizm.com/", callback)) return true
 
-        // Script'lerde ara
-        if (huntInScripts(doc, url, callback)) return true
+        if (huntInScripts(doc, "https://dizipalizm.com/", callback)) return true
 
-        // Sayfadaki diğer iframe'leri kontrol et
         doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
             val src = normalizeHref(ifr.attr("src")) ?: return@forEach
             Log.e("DZP", "Nested iframe: $src")
             if (loadExtractor(src, referer, subtitleCallback, callback)) return true
             val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
-            if (pushM3u8s(subRes.text, url, callback)) return true
-            if (pushMp4s(subRes.text, url, callback)) return true
-            if (huntInScripts(subRes.document, src, callback)) return true
+            if (pushM3u8s(subRes.text, "https://dizipalizm.com/", callback)) return true
+            if (pushMp4s(subRes.text, "https://dizipalizm.com/", callback)) return true
+            if (huntInScripts(subRes.document, "https://dizipalizm.com/", callback)) return true
         }
 
-        return false
-    }
-
-    private suspend fun extractFromPageUrl(url: String, referer: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
-        val res = try { app.get(url, referer = referer, interceptor = interceptor) } catch (e: Exception) { return false }
-        val body = res.text
-        val trimmed = body.trim()
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            if (pushM3u8s(body, referer, callback)) return true
-            if (pushMp4s(body, referer, callback)) return true
-            if (pushHlsProxy(body, referer, callback)) return true
-            Regex("""https?://[^\s"'<>]+""").findAll(body).map { it.value }.distinct().forEach { u ->
-                if (loadExtractor(u, referer, subtitleCallback, callback)) return true
-            }
-        }
-        val doc = res.document
-        decryptFromPage(doc)?.let { dec ->
-            if (pushM3u8s(dec, referer, callback)) return true
-            if (pushMp4s(dec, referer, callback)) return true
-            if (pushHlsProxy(dec, referer, callback)) return true
-        }
-        if (pushM3u8s(body, referer, callback)) return true
-        if (pushMp4s(body, referer, callback)) return true
-        if (pushHlsProxy(body, referer, callback)) return true
-        if (huntInScripts(doc, url, callback)) return true
-
-        doc.select("iframe[src], amp-iframe[src]").forEach { ifr ->
-            val src = normalizeHref(ifr.attr("src")) ?: return@forEach
-            if (loadExtractor(src, referer, subtitleCallback, callback)) return@forEach
-            val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
-            if (pushM3u8s(subRes.text, url, callback)) return@forEach
-            if (pushMp4s(subRes.text, url, callback)) return@forEach
-            if (pushHlsProxy(subRes.text, url, callback)) return@forEach
-            if (huntInScripts(subRes.document, src, callback)) return@forEach
-        }
         return false
     }
 
@@ -399,18 +332,13 @@ class DiziPal : MainAPI() {
             val code = if (s.hasAttr("src")) runCatching { app.get(fixUrl(s.attr("src")), referer = referer, interceptor = interceptor).text }.getOrNull() else s.data()
             if (code.isNullOrBlank()) continue
 
-            // Twimg m3u8'leri
             Regex("""https?://video\.twimg\.com/[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(code).map { it.value }.distinct().forEach { m3u8 ->
                 Log.e("DZP", "Script içinde twimg m3u8: $m3u8")
-                runCatching {
-                    M3u8Helper.generateM3u8(
-                        source = name,
-                        streamUrl = m3u8,
-                        referer = referer,
-                        name = name
-                    ).forEach(callback)
-                    found = true
-                }
+                callback(newExtractorLink(source = name, name = name, url = m3u8) {
+                    this.referer = "https://dizipalizm.com/"
+                    this.quality = Qualities.Unknown.value
+                })
+                found = true
             }
 
             if (pushM3u8s(code, referer, callback)) found = true
@@ -418,15 +346,10 @@ class DiziPal : MainAPI() {
             if (pushHlsProxy(code, referer, callback)) found = true
 
             Regex("""file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]""").findAll(code).map { it.groupValues[1] }.distinct().forEach { m3u ->
-                runCatching {
-                    M3u8Helper.generateM3u8(
-                        source = name,
-                        streamUrl = fixUrl(m3u),
-                        referer = referer,
-                        name = name
-                    ).forEach(callback)
-                    found = true
-                }
+                callback(newExtractorLink(source = name, name = name, url = fixUrl(m3u)) {
+                    this.referer = referer
+                })
+                found = true
             }
             Regex("""atob\(['"]([A-Za-z0-9+/=]{20,})['"]\)""").findAll(code).mapNotNull { runCatching { String(Base64.getDecoder().decode(it.groupValues[1])) }.getOrNull() }.forEach { decoded ->
                 if (pushM3u8s(decoded, referer, callback)) found = true
@@ -444,20 +367,11 @@ class DiziPal : MainAPI() {
             val encoded = Regex("""[?&]url=([^&]+)""").find(proxy)?.groupValues?.getOrNull(1) ?: continue
             val realM3u8 = runCatching { URLDecoder.decode(encoded, "UTF-8") }.getOrNull() ?: continue
             if (!realM3u8.startsWith("http")) continue
-            val m3u8Result = runCatching {
-                M3u8Helper.generateM3u8(
-                    source = name,
-                    streamUrl = proxy,
-                    referer = "$mainUrl/",
-                    name = name
-                )
-            }.getOrElse { emptyList() }
 
-            if (m3u8Result.isNotEmpty()) { m3u8Result.forEach(callback); any = true; continue }
-
-            val headers = mapOf("Referer" to "$mainUrl/", "Origin" to mainUrl, "User-Agent" to "Mozilla/5.0")
-            val link = runCatching { ExtractorLink(source = name, name = name, url = proxy, referer = "$mainUrl/", quality = Qualities.Unknown.value, headers = headers, type = ExtractorLinkType.M3U8) }.getOrElse { newExtractorLink(source = name, name = name, url = proxy) }
-            callback(link)
+            callback(newExtractorLink(source = name, name = name, url = proxy) {
+                this.referer = referer
+                this.quality = Qualities.Unknown.value
+            })
             any = true
         }
         return any
@@ -467,15 +381,11 @@ class DiziPal : MainAPI() {
         var any = false
         Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").findAll(text).map { it.value }.distinct().forEach { m3u ->
             if (m3u.contains("hls.php")) return@forEach
-            runCatching {
-                M3u8Helper.generateM3u8(
-                    source = name,
-                    streamUrl = fixUrl(m3u),
-                    referer = referer,
-                    name = name
-                ).forEach(callback)
-                any = true
-            }
+            callback(newExtractorLink(source = name, name = name, url = fixUrl(m3u)) {
+                this.referer = referer
+                this.quality = Qualities.Unknown.value
+            })
+            any = true
         }
         return any
     }
@@ -483,7 +393,9 @@ class DiziPal : MainAPI() {
     private suspend fun pushMp4s(text: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
         var any = false
         Regex("""https?://[^\s"'<>]+\.mp4[^\s"'<>]*""").findAll(text).map { it.value }.distinct().forEach { link ->
-            callback(newExtractorLink(source = name, name = name, url = fixUrl(link)) { this.referer = referer })
+            callback(newExtractorLink(source = name, name = name, url = fixUrl(link)) {
+                this.referer = referer
+            })
             any = true
         }
         return any
