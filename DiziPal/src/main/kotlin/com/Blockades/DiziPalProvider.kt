@@ -34,7 +34,7 @@ import org.jsoup.nodes.Element
 class DiziPalProvider : MainAPI() {
 
     // Ekran görüntüsündeki duyuruya göre güncel adres
-    override var mainUrl = "https://dizipal1596.com"
+    override var mainUrl = "https://dizipal1595.com"
 
     override var name = "DiziPal"
     override var lang = "tr"
