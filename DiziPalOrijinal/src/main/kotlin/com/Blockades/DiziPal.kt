@@ -1,374 +1,508 @@
-package com.Blockades
+package com.dizipal
 
 import android.util.Base64
-import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrlNull
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import javax.crypto.Cipher
-import javax.crypto.Mac
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import org.json.JSONArray
+import org.json.JSONObject
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 
 /**
- * dizipal1592.com — Next.js App Router (Turbopack) rewrite.
+ * DiziPal — dizipal1593.com (Next.js arayüzü, Türkçe dizi + film, platform bölümleri).
  *
- * The site renders server components, so every page ships its data as an escaped RSC
- * flight payload (`self.__next_f.push([1,"..."])`). Cards are plain anchors:
- *   series -> a.tc[href=/series/<slug>]      movies -> a.tc[href=/movies/<slug>]
- *   episodes -> a.sr[href=/bolum/<slug>-<s>x<e>]
- * Search lives at /arama-yap?s=<query> (the /arama?q= route is client-side only and 404s).
+ * Arama `POST /api/mj` JSON servisine gider (`action=searchContent`). Liste ve detay sayfaları
+ * sunucu tarafında render edilir; künye `application/ld+json` (TVSeries/Movie) bloğundadır.
  *
- * Playback: the player config holds an AES-256-CBC blob (`enc`) plus the password (`k`):
- *   key = PBKDF2-HMAC-SHA512(k, salt, iterations = 999, dkLen = 32)
- * decrypted value is a player URL such as `//sn.dplayer82.site/iframe.php?v=<id>`, which is
- * rewritten to sn.hotlinger.com (same ContentX player, reachable) and handed to the bundled
- * DpSnHotlinger extractor.
+ * Oynatıcı zinciri: bölüm/film sayfası RSC yükünde `enc` (ciphertext/iv/salt) ve aynı yükte
+ * sayfa başına üretilen `k` parolası taşınır. PBKDF2-HMAC-SHA512(999) + AES-256-CBC çözümü
+ * `//<host>.dplayer82.site/(iframe|multiplayer).php?v=…` adresini verir. İki oynatıcı ailesi var:
+ *  - `NP_CONFIG` (iframe.php): `sources[].master` doğrudan HLS master; `subtitles[].url` WebVTT.
+ *  - `openPlayer(blob)` (multiplayer.php): `/source2.php?v=blob` JSON'u m3u8 dosya yolları verir.
+ * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
  */
 class DiziPal : MainAPI() {
     override var mainUrl = "https://dizipal1595.com"
-    override var name = "DiziPalOrj"
-    override val hasMainPage = true
+    override var name = "DiziPal"
     override var lang = "tr"
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
+    override val hasMainPage = true
+    override val hasQuickSearch = true
+    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    override val mainPage = listOf(
-        MainPageData("Anasayfa", "$mainUrl/"),
-        MainPageData("Yeni Bölümler", "$mainUrl/yeni-eklenen-dizi-bolumler"),
-        MainPageData("Yabancı Diziler", "$mainUrl/yabanci-dizi-izle"),
-        MainPageData("Filmler", "$mainUrl/film-izle"),
-        MainPageData("Platform Bölümleri", "$mainUrl/platform-bolumler"),
-        MainPageData("Keşfet", "$mainUrl/kesfet"),
-    )
+    // Oynatıcı CDN'i (aşağıdaki UA sabitinin yorumu) Chrome UA'ya 403 verdiği için tüm
+    // istekler Firefox UA ile gider; browserHeaders (Chrome/130) burada bilinçli kullanılmaz.
+    private val uaHeaders get() = mapOf("user-agent" to UA, "Accept-Language" to "tr-TR,tr;q=0.9")
+
+    /** Yalnız bu iki bölüm `?page=N` ile sayfalanıyor; diğerleri tek istekte tüm listeyi verir. */
+    private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
+
+    override val mainPage get() = mainPageOf(
+        "$mainUrl/yabanci-dizi-izle" to "Yeni Diziler",
+        "$mainUrl/film-izle" to "Yeni Filmler",
+        "$mainUrl/trendler" to "Trendler",
+        "$mainUrl/kesfet" to "Keşfet",
+        "$mainUrl/platform-bolumler/netflix" to "Netflix",
+        "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
+        "$mainUrl/platform-bolumler/disneyplus" to "Disney+",
+    ).filter { Settings.rowEnabled(it.name) }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return newHomePageResponse(request.name, emptyList())
-        val doc = app.get(request.data).document
-        val items = LinkedHashMap<String, SearchResponse>()
-
-        doc.select("a.tc[href]").forEach { card ->
-            val item = cardFromAnchor(card) ?: return@forEach
-            items.putIfAbsent(item.url, item)
-        }
-        doc.select("a.sr[href^=/bolum/], a.ecl[href^=/bolum/], a.mwr[href^=/bolum/]").forEach { card ->
-            val item = episodeCardFromAnchor(card) ?: return@forEach
-            items.putIfAbsent(item.url, item)
-        }
-        return newHomePageResponse(request.name, items.values.toList())
+        val paged = request.data in pagedSections
+        val url = if (paged && page > 1) "${request.data}?page=$page" else request.data
+        val doc = app.get(url, headers = uaHeaders).document
+        val items = doc.select("a.tc[href]").mapNotNull { it.toCard() }.distinctBy { it.url }
+        return newHomePageResponse(request.name, items, hasNext = paged && items.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val doc = app.get("$mainUrl/arama-yap", params = mapOf("s" to query)).document
-        val out = LinkedHashMap<String, SearchResponse>()
-        doc.select("a.tc[href], a[href^=/series/], a[href^=/movies/]").forEach { card ->
-            val item = cardFromAnchor(card) ?: return@forEach
-            out.putIfAbsent(item.url, item)
-        }
-        return out.values.toList()
+        val q = query.trim()
+        if (q.length < 3) return emptyList()
+        val body = runCatching {
+            app.post(
+                "$mainUrl/api/mj",
+                json = JSONObject().put("action", "searchContent").put("params", JSONArray().put(q)),
+                headers = uaHeaders + mapOf("Origin" to mainUrl),
+                referer = "$mainUrl/",
+            ).text
+        }.getOrNull() ?: throw ErrorLoadingException("$name: arama isteği başarısız. $REPORT_HINT")
+        val rows = runCatching { JSONObject(body).optJSONArray("result") }.getOrNull()
+            ?: throw ErrorLoadingException("$name: arama yanıtı okunamadı. $REPORT_HINT")
+        return rows.objects().mapNotNull { it.toSearchResult() }.distinctBy { it.url }
     }
 
-    private fun cardFromAnchor(a: org.jsoup.nodes.Element): SearchResponse? {
-        val href = a.attr("href").trim()
-        val isMovie = href.startsWith("/movies/")
-        if (!isMovie && !href.startsWith("/series/")) return null
-        val fullUrl = "$mainUrl$href"
-        val aria = a.attr("aria-label")
-        val label = a.selectFirst("span.tt")?.text()?.trim()
-        val title = label?.takeIf { it.isNotBlank() }
-            ?: aria.substringBefore(",").trim().takeIf { it.isNotBlank() }
-            ?: a.text().trim().takeIf { it.isNotBlank() }
-            ?: return null
-        val poster = DpResim.kart(a)
-        val year = Regex("\\b(19|20)\\d{2}\\b").find(aria)?.value?.toIntOrNull()
-            ?: Regex("\\b(19|20)\\d{2}\\b").find(a.text())?.value?.toIntOrNull()
-
-        return if (isMovie) {
-            newMovieSearchResponse(title, fullUrl, TvType.Movie) {
-                this.posterUrl = poster
-                this.year = year
-            }
-        } else {
-            newTvSeriesSearchResponse(title, fullUrl, TvType.TvSeries) {
-                this.posterUrl = poster
-                this.year = year
-            }
-        }
-    }
-
-    /** "Yeni Bölümler" cards point at an episode; they open the series page instead. */
-    private fun episodeCardFromAnchor(a: org.jsoup.nodes.Element): SearchResponse? {
-        val href = a.attr("href").trim()
-        val m = Regex("^/bolum/(.+?)-(\\d+)x(\\d+)$").find(href) ?: return null
-        val slug = m.groupValues[1]
-        val aria = a.attr("aria-label").trim()
-
-        // aria-label biçimi: "<Dizi>, 4. Sezon 6. Bölüm, dublaj"
-        val parcalar = aria.split(",").map { it.trim() }.filter { it.isNotBlank() }
-        val seriesName = parcalar.firstOrNull { !it.startsWith("Son:") && !it.contains("Sezon") }
-            ?: slug.replace('-', ' ')
-
-        val bolumEtiketi = Regex("\\d+\\.\\s*Sezon\\s*\\d+\\.\\s*Bölüm").find(aria)?.value
-            ?: a.select("span").map { it.text().trim() }
-                .firstOrNull { it.contains("Sezon") && it.contains("Bölüm") }
-            ?: "${m.groupValues[2]}. Sezon ${m.groupValues[3]}. Bölüm"
-
-        val title = "$seriesName - $bolumEtiketi"
-        val poster = DpResim.kart(a)
-        return newTvSeriesSearchResponse(title, "$mainUrl/series/$slug", TvType.TvSeries) {
-            this.posterUrl = poster
-        }
-    }
+    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val html = unescape(app.get(url).text)
-        val isMovie = url.contains("/movies/")
+        val pageUrl = httpsUrl(url)
+        val doc = runCatching { app.get(pageUrl, headers = uaHeaders).document }.getOrNull()
+            ?: throw ErrorLoadingException("$name: içerik sayfası yüklenemedi. $REPORT_HINT")
+        val isSeries = pageUrl.contains("/series/")
+        val ld = jsonLd(doc, if (isSeries) "TVSeries" else "Movie")
+        val title = ld?.optString("name")?.trim()?.takeIf { it.isNotEmpty() }
+            ?: doc.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw ErrorLoadingException("$name: başlık okunamadı. $REPORT_HINT")
 
-        val title = firstGroup(html, "\"mjTitle\":\"([^\"]+)\"")
-            ?: app.get(url).document.selectFirst("h1")?.text()?.trim()
-            ?: return null
-        val poster = firstGroup(html, "\"mjPoster\":\"([^\"]+)\"")
-        val year = firstGroup(html, "\"mjYear\":\"((?:19|20)\\d{2})")?.toIntOrNull()
-        val plot = firstGroup(html, "\"mjOverview\":\"(.*?)\",\"")
-        val imdb = firstGroup(html, "\"mjImdb\":\"([0-9.]+)")
-        val trailerId = firstGroup(html, "\"trailerRaw\":\"([^\"]+)\"")
-        val tags = groupBlock(html, "\"mjGenres\":\\[(.*?)\\]")
-            .mapNotNull { Regex("\"label\":\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
-        val cast = groupBlock(html, "\"mjCast\":\\[(.*?)\\]")
-            .mapNotNull { Regex("\"label\":\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
-
-        if (isMovie) {
-            val response = newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = poster
-                this.plot = plot
-                this.year = year
-                this.tags = tags
-                this.score = Score.from10(imdb)
+        if (isSeries) {
+            val episodes = episodesOf(doc, ld)
+            if (episodes.isEmpty()) {
+                throw ErrorLoadingException("$name: bölüm listesi bulunamadı. $REPORT_HINT")
             }
-            if (cast.isNotEmpty()) response.addActors(cast)
-            if (!trailerId.isNullOrBlank()) {
-                runCatching { response.addTrailer("https://www.youtube.com/watch?v=$trailerId") }
+            return newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, episodes) {
+                this.posterUrl = posterOf(doc, ld)
+                this.plot = ld?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
+                this.year = yearOf(ld)
+                this.score = Score.from10(ld?.optJSONObject("aggregateRating")?.optString("ratingValue"))
+                this.duration = minutes(ld?.optString("timeRequired"))
+                this.tags = tagsOf(doc).takeIf { it.isNotEmpty() }
+                this.recommendations = recommendationsOf(doc, isSeries)
+                actorsOf(ld)?.let { addActors(it) }
             }
-            return response
         }
 
-        val episodes = ArrayList<Episode>()
-        Regex(
-            "\"no\":(\\d+),\"label\":\"[^\"]*\",\"href\":\"[^\"]*\",\"episodes\":\\[([^\\]]*)\\]"
-        ).findAll(html).forEach { season ->
-            val seasonNo = season.groupValues[1].toIntOrNull() ?: return@forEach
-            Regex("\"n\":(\\d+),\"title\":\"([^\"]*)\",\"date\":\"[^\"]*\",\"href\":\"([^\"]*)\"")
-                .findAll(season.groupValues[2]).forEach { ep ->
-                    val epNo = ep.groupValues[1].toIntOrNull() ?: return@forEach
-                    val epName = ep.groupValues[2].ifBlank { null }
-                    val epHref = ep.groupValues[3].ifBlank { return@forEach }
-                    episodes.add(newEpisode("$mainUrl$epHref") {
-                        this.name = epName
-                        this.season = seasonNo
-                        this.episode = epNo
-                        this.posterUrl = poster
-                    })
-                }
+        return newMovieLoadResponse(title, pageUrl, TvType.Movie, pageUrl) {
+            this.posterUrl = posterOf(doc, ld)
+            this.plot = ld?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
+            this.year = yearOf(ld)
+            this.score = Score.from10(ld?.optJSONObject("aggregateRating")?.optString("ratingValue"))
+            this.duration = minutes(ld?.optString("timeRequired"))
+            this.tags = tagsOf(doc).takeIf { it.isNotEmpty() }
+            this.recommendations = recommendationsOf(doc, isSeries)
+            actorsOf(ld)?.let { addActors(it) }
         }
-
-        val response = newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            this.posterUrl = poster
-            this.plot = plot
-            this.year = year
-            this.tags = tags
-            this.score = Score.from10(imdb)
-        }
-        if (cast.isNotEmpty()) response.addActors(cast)
-        if (!trailerId.isNullOrBlank()) {
-            runCatching { response.addTrailer("https://www.youtube.com/watch?v=$trailerId") }
-        }
-        return response
     }
 
     override suspend fun loadLinks(
         data: String,
-        isCine: Boolean,
+        isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val firstRaw = unescape(app.get(data).text)
-        val sources = parseSources(firstRaw)
-        val pages = LinkedHashMap<String, String>()
-        pages[data] = firstRaw
-        sources.forEach { source ->
-            val full = if (source.href.startsWith("http")) source.href else "$mainUrl${source.href}"
-            if (!pages.containsKey(full)) {
-                pages[full] = runCatching { unescape(app.get(full).text) }.getOrNull() ?: return@forEach
+        val links: (ExtractorLink) -> Unit = { if (Settings.qualityAllowed(it.quality)) callback(it) }
+        val subtitles: (SubtitleFile) -> Unit = { if (Settings.subtitleAllowed(it.lang)) subtitleCallback(it) }
+
+        val pageUrl = httpsUrl(data)
+        val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
+            .getOrNull()
+            ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
+
+        val playerUrl = decryptEmbed(pageHtml)
+            ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
+        val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }
+            .getOrNull()
+            ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
+
+        val found = npLinks(playerHtml, playerUrl, links, subtitles) ||
+            dplayerLinks(playerHtml, playerUrl, links)
+
+        if (!found) throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
+        return true
+    }
+
+    // ---------------------------------------------------------------- listing
+
+    private fun Element.toCard(): SearchResponse? {
+        val href = fixUrlNull(attr("href")) ?: return null
+        val isSeries = href.contains("/series/")
+        if (!isSeries && !href.contains("/movies/")) return null
+
+        val title = selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
+            ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
+            ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
+            ?: return null
+        val poster = selectFirst("img[src^=http]")?.attr("src")
+        val year = YEAR.find(text())?.value?.toIntOrNull()
+
+        return if (isSeries) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = poster
+                this.year = year
+            }
+        } else {
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = poster
+                this.year = year
+            }
+        }
+    }
+
+    private fun JSONObject.toSearchResult(): SearchResponse? {
+        val slug = optString("used_slug").trim().trimStart('/')
+        if (slug.isEmpty()) return null
+        val title = optString("object_name").trim().takeIf { it.isNotEmpty() } ?: return null
+
+        val url = "$mainUrl/$slug"
+        val poster = directImage(optString("object_poster_url"))
+        val year = optString("object_release_year").toIntOrNull()?.takeIf { it in 1900..2100 }
+        val score = Score.from10(optString("object_related_imdb_point").takeIf { it != "0" })
+
+        return if (optString("used_type").equals("Series", ignoreCase = true)) {
+            newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
+                this.posterUrl = poster
+                this.year = year
+                this.score = score
+            }
+        } else {
+            newMovieSearchResponse(title, url, TvType.Movie) {
+                this.posterUrl = poster
+                this.year = year
+                this.score = score
+            }
+        }
+    }
+
+    /** Arama servisi görselleri ampproject önbelleğinden verir; gerçek adres `/i/s/` sonrasındadır. */
+    private fun directImage(url: String): String? {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http")) return null
+        return if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
+    }
+
+    // ------------------------------------------------------------------ künye
+
+    private fun episodesOf(doc: Document, ld: JSONObject?): List<Episode> {
+        val episodes = LinkedHashMap<String, Episode>()
+
+        ld?.opt("containsSeason").seasons().forEach { season ->
+            val seasonNumber = season.optString("seasonNumber").toIntOrNull() ?: 1
+            season.optJSONArray("episode").objects().forEach { entry ->
+                val episodeUrl = httpsUrl(entry.optString("url"))
+                if (episodeUrl.isEmpty()) return@forEach
+                val number = entry.optString("episodeNumber").toIntOrNull()
+                episodes[episodeUrl] = newEpisode(episodeUrl) {
+                    this.name = entry.optString("name").trim()
+                        .ifEmpty { "$seasonNumber. Sezon $number. Bölüm" }
+                    this.season = seasonNumber
+                    this.episode = number
+                    this.description = entry.optString("description").trim().takeIf { it.isNotEmpty() }
+                }
             }
         }
 
-        var found = false
-        val seen = HashSet<String>()
-        pages.forEach { (pageUrl, raw) ->
-            val label = sources.firstOrNull {
-                val full = if (it.href.startsWith("http")) it.href else "$mainUrl${it.href}"
-                full == pageUrl
-            }?.label ?: "DiziPal"
-            val playerUrl = run {
-                val enc = parseEnc(raw)
-                val decrypted = if (enc != null) decryptPlayer(enc) else null
-                val fallback = decrypted ?: DpRmk.decryptFromPage(raw) ?: return@forEach
-                normalizePlayer(fallback)
+        // ld+json kırpılırsa sayfadaki /bolum/<slug>-<S>x<E> bağlantıları aynı listeyi verir.
+        if (episodes.isEmpty()) {
+            doc.select("a[href*='/bolum/']").forEach { anchor ->
+                val episodeUrl = httpsUrl(anchor.attr("href").substringBefore('?'))
+                if (episodeUrl.isEmpty() || episodes.containsKey(episodeUrl)) return@forEach
+                val match = EPISODE_IN_SLUG.find(episodeUrl) ?: return@forEach
+                val season = match.groupValues[1].toIntOrNull() ?: return@forEach
+                val number = match.groupValues[2].toIntOrNull()
+                episodes[episodeUrl] = newEpisode(episodeUrl) {
+                    this.name = "$season. Sezon $number. Bölüm"
+                    this.season = season
+                    this.episode = number
+                }
             }
-            if (!seen.add(playerUrl)) return@forEach
+        }
+        return episodes.values.toList()
+    }
 
-            // Host-specific decoders ported from the neowatch DiziPal family.
-            val special = when {
-                playerUrl.contains("formationfeed") -> DpJwKaynak()
-                playerUrl.contains("streamcorecdn") -> DpStreamCore()
-                playerUrl.contains("player.html?video=") -> DpVideoPlays()
-                else -> null
-            }
-            if (special != null) {
-                runCatching {
-                    special.getUrl(playerUrl, "$mainUrl/", subtitleCallback) { link ->
-                        callback(renameLink(link, label))
-                    }
-                }.onSuccess { found = true }
-                return@forEach
-            }
+    private fun jsonLd(doc: Document, type: String): JSONObject? =
+        doc.select("script[type=application/ld+json]").firstNotNullOfOrNull { script ->
+            runCatching { JSONObject(script.data()) }.getOrNull()
+                ?.takeIf { it.optString("@type") == type }
+        }
 
-            val iframe = runCatching { app.get(playerUrl, referer = "$mainUrl/").text }.getOrNull()
+    /** Dizi sayfası künye görseli olarak backdrop taşır; afiş `…/tv/poster/…` yolundan gelir. */
+    private fun posterOf(doc: Document, ld: JSONObject?): String? =
+        doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
+            ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
+
+    private fun yearOf(ld: JSONObject?): Int? =
+        ld?.optString("datePublished")?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
+
+    private fun tagsOf(doc: Document): List<String> =
+        doc.select("a[href^='/kategori/'], a[href^='/film-kategori/']")
+            .map { it.text().trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
+    /** Detay sayfasındaki "Benzer diziler"/"Benzer filmler" şeridi (`ds-ben` / `df-ben`). */
+    private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
+        val section = if (isSeries) "ds-ben" else "df-ben"
+        return doc.select("section[aria-labelledby='$section'] a.tc[href]")
+            .mapNotNull { it.toCard() }
+            .distinctBy { it.url }
+    }
+
+    private fun actorsOf(ld: JSONObject?): List<String>? =
+        ld?.optJSONArray("actor").objects()
+            .mapNotNull { it.optString("name").trim().takeIf(String::isNotEmpty) }
+            .takeIf { it.isNotEmpty() }
+
+    /** ISO-8601 süre (`PT1H46M`) → dakika. */
+    private fun minutes(iso: String?): Int? {
+        val match = ISO_DURATION.find(iso.orEmpty()) ?: return null
+        val total = (match.groupValues[1].toIntOrNull() ?: 0) * 60 + (match.groupValues[2].toIntOrNull() ?: 0)
+        return total.takeIf { it > 0 }
+    }
+
+    // --------------------------------------------------------------- oynatıcı
+
+    /**
+     * Sayfadaki `enc` bloğunu ve aynı sayfada üretilen parolayı (`k`) çözerek oynatıcı adresini verir.
+     * Parola istek başına değiştiği için sayfadan okunur; sabit kopya tutulmaz.
+     */
+    private fun decryptEmbed(html: String): String? {
+        val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
+        val cipherText = fields["ciphertext"]?.firstOrNull() ?: return null
+        val iv = fields["iv"]?.firstOrNull() ?: return null
+        val salt = fields["salt"]?.firstOrNull() ?: return null
+        val passphrase = fields["k"]?.maxByOrNull { it.length } ?: return null
+        val clear = pbkdf2AesCbcDecrypt(Base64.decode(cipherText, Base64.DEFAULT), passphrase, salt, iv)
+            ?: return null
+        return httpsUrl(clear.trim('\t', '\r', '\n', ' ', '\u000f'))
+    }
+
+    private suspend fun npLinks(
+        playerHtml: String,
+        playerUrl: String,
+        emit: (ExtractorLink) -> Unit,
+        emitSubtitle: (SubtitleFile) -> Unit,
+    ): Boolean {
+        val anchor = playerHtml.indexOf("window.NP_CONFIG")
+        val open = if (anchor < 0) -1 else playerHtml.indexOf('{', anchor)
+        if (open < 0) return false
+        val config = objectAt(playerHtml, open)?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return false
+
+        config.optJSONArray("subtitles").objects().forEach { track ->
+            // Yeni oynatıcı altyazıyı `tok` ile verir (`nsub.php?v=`); eski yük `url` taşır.
+            val url = track.optString("url").takeIf { it.startsWith("http") }?.let { pichiveSign(playerHtml, it) }
+                ?: track.optString("tok").takeIf { it.isNotEmpty() }
+                    ?.let { pichiveSign(playerHtml, "${ORIGIN.find(playerUrl)?.value.orEmpty()}/nsub.php?v=$it") }
                 ?: return@forEach
-            val token = Regex("openPlayer\\('([^']+)'").find(iframe)?.groupValues?.get(1)
+            val label = track.optString("label").trim()
+                .ifEmpty { track.optString("lang").trim() }
+                .ifEmpty { "Altyazı" }
+            emitSubtitle(SubtitleFile(label, url).apply {
+                this.headers = mapOf("Referer" to playerUrl, "user-agent" to UA)
+            })
+        }
 
-            // Unknown player layout: try our own ContentX/NP_CONFIG decoder first, then the registry.
-            if (token == null) {
-                val handled = runCatching {
-                    DpContentX().getUrl(playerUrl, "$mainUrl/", subtitleCallback) { link ->
-                        callback(renameLink(link, label))
-                    }
-                    true
-                }.getOrDefault(false)
-                if (handled) {
-                    found = true
-                    return@forEach
-                }
-                runCatching { loadExtractor(playerUrl, "$mainUrl/", subtitleCallback, callback) }
-                    .onSuccess { if (it) found = true }
-                return@forEach
-            }
-
-            val host = playerUrl.substringAfter("://").substringBefore("/")
-            val source2 = "https://$host/source2.php?v=$token"
-
-            runCatching {
-                DpContentX().getUrl(source2, "$mainUrl/", subtitleCallback) { link ->
-                    callback(renameLink(link, label))
-                }
-            }.onSuccess { found = true }
+        var found = false
+        config.optJSONArray("sources").objects().forEach { source ->
+            val master = source.optString("master").takeIf { it.startsWith("http") }?.let { pichiveSign(playerHtml, it) } ?: return@forEach
+            val label = source.optString("title").trim().ifEmpty { "Kaynak" }
+            emitPlaylist(master, playerUrl, label, emit)
+            found = true
         }
         return found
     }
 
-    private fun renameLink(link: ExtractorLink, newName: String): ExtractorLink = ExtractorLink(
-        source = newName,
-        name = newName,
-        url = link.url,
-        referer = link.referer,
-        quality = link.quality,
-        headers = link.headers,
-        extractorData = link.extractorData,
-        type = link.type
-    )
+    private suspend fun dplayerLinks(
+        playerHtml: String,
+        playerUrl: String,
+        emit: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val playlist = OPEN_PLAYER.find(playerHtml)?.groupValues?.get(1) ?: return false
+        val origin = ORIGIN.find(playerUrl)?.value ?: return false
+        val body = runCatching {
+            app.get(
+                "$origin/source2.php",
+                params = mapOf("v" to playlist),
+                headers = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest"),
+                referer = playerUrl,
+            ).text
+        }.getOrNull() ?: return false
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return false
 
-    // ── player payload ────────────────────────────────────────────────────
-
-    private data class DpSource(val label: String, val href: String)
-    private data class DpEnc(val ciphertext: String, val iv: String, val salt: String, val key: String)
-
-    private fun parseSources(raw: String): List<DpSource> {
-        val block = Regex("\"sources\":\\[(.*?)\\],\"language\"", RegexOption.DOT_MATCHES_ALL)
-            .find(raw)?.groupValues?.get(1) ?: return emptyList()
-        return Regex("\\{\"label\":\"([^\"]+)\",\"quality\":\"([^\"]*)\",\"href\":\"([^\"]+)\"")
-            .findAll(block)
-            .map { DpSource(it.groupValues[1], it.groupValues[3]) }
-            .toList()
-    }
-
-    private fun parseEnc(raw: String): DpEnc? {
-        val m = Regex(
-            "\"enc\":\\{\"ciphertext\":\"([^\"]+)\",\"iv\":\"([^\"]+)\",\"salt\":\"([^\"]+)\"\\},\"k\":\"([^\"]+)\""
-        ).find(raw) ?: return null
-        return DpEnc(m.groupValues[1], m.groupValues[2], m.groupValues[3], m.groupValues[4])
-    }
-
-    private fun decryptPlayer(enc: DpEnc): String? = runCatching {
-        val key = pbkdf2Sha512(enc.key.toByteArray(Charsets.UTF_8), hexToBytes(enc.salt), 999, 32)
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(hexToBytes(enc.iv)))
-        val plain = cipher.doFinal(Base64.decode(enc.ciphertext, Base64.NO_WRAP))
-        String(plain, Charsets.UTF_8).trim()
-    }.getOrNull()
-
-    /** PBKDF2-HMAC-SHA512 done by hand: the platform SecretKeyFactory variant needs API 26. */
-    private fun pbkdf2Sha512(password: ByteArray, salt: ByteArray, iterations: Int, dkLen: Int): ByteArray {
-        val mac = Mac.getInstance("HmacSHA512")
-        mac.init(SecretKeySpec(password, "HmacSHA512"))
-        val out = ByteArray(dkLen)
-        var offset = 0
-        var blockIndex = 1
-        while (offset < dkLen) {
-            mac.update(salt)
-            mac.update(
-                byteArrayOf(
-                    (blockIndex ushr 24).toByte(),
-                    (blockIndex ushr 16).toByte(),
-                    (blockIndex ushr 8).toByte(),
-                    blockIndex.toByte()
-                )
-            )
-            var u = mac.doFinal()
-            val t = u.copyOf()
-            repeat(iterations - 1) {
-                u = mac.doFinal(u)
-                for (i in t.indices) t[i] = (t[i].toInt() xor u[i].toInt()).toByte()
+        var found = false
+        root.optJSONArray("playlist").objects().forEach { item ->
+            val label = item.optString("title").trim().ifEmpty { "Kaynak" }
+            item.optJSONArray("sources").objects().forEach eachSource@{ source ->
+                val file = source.optString("file").takeIf { it.startsWith("http") } ?: return@eachSource
+                val master = if ("m.php" in file) file.replace("m.php", "master.m3u8") else file
+                emitPlaylist(master, playerUrl, label, emit)
+                found = true
             }
-            val len = minOf(t.size, dkLen - offset)
-            System.arraycopy(t, 0, out, offset, len)
-            offset += len
-            blockIndex++
         }
-        return out
+        return found
     }
 
-    private fun hexToBytes(hex: String): ByteArray {
-        val clean = hex.trim()
-        val out = ByteArray(clean.length / 2)
-        for (i in out.indices) {
-            out[i] = ((Character.digit(clean[i * 2], 16) shl 4) or Character.digit(clean[i * 2 + 1], 16)).toByte()
+    /** HLS master'ı varyantlarına ayırır; tek varyant kaldıysa master olduğu gibi verilir. */
+    private suspend fun emitPlaylist(
+        masterUrl: String,
+        referer: String,
+        label: String,
+        emit: (ExtractorLink) -> Unit,
+    ) {
+        val playlist = runCatching { app.get(masterUrl, headers = uaHeaders, referer = referer).text }
+            .getOrNull()
+        val variants = parseVariants(playlist.orEmpty())
+        if (variants.size <= 1) {
+            emit(hlsLink(masterUrl, label, Qualities.Unknown.value, referer))
+            return
         }
-        return out
+        variants.forEach { (height, url) ->
+            val quality = height.takeIf { it > 0 } ?: Qualities.Unknown.value
+            val variantLabel = if (quality > 0) "$label ${quality}p" else label
+            emit(hlsLink(url, variantLabel, quality, referer))
+        }
     }
 
-    private fun normalizePlayer(url: String): String {
-        val out = url.trim()
+    /** Master'daki `#EXT-X-STREAM-INF` bloklarını (yükseklik, adres) çiftlerine çevirir. */
+    private fun parseVariants(playlist: String): List<Pair<Int, String>> {
+        if (!playlist.startsWith("#EXTM3U") ||
+            playlist.contains("TYPE=AUDIO", ignoreCase = true) ||
+            playlist.contains("AUDIO=", ignoreCase = true)
+        ) return emptyList()
+        val variants = mutableListOf<Pair<Int, String>>()
+        var height: Int? = null
+        for (raw in playlist.lineSequence()) {
+            val line = raw.trim()
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                height = RESOLUTION.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                continue
+            }
+            val pending = height ?: continue
+            if (line.isEmpty() || line.startsWith("#")) continue
+            variants.add(pending to line)
+            height = null
+        }
+        return variants.distinctBy { it.second }
+    }
+
+    private suspend fun hlsLink(url: String, label: String, quality: Int, referer: String): ExtractorLink =
+        newExtractorLink(name, label, url, ExtractorLinkType.M3U8) {
+            this.referer = referer
+            this.quality = quality
+            this.headers = uaHeaders
+        }
+
+    // ------------------------------------------------------------------ ortak
+
+    /** `window.NP_CONFIG = {…}` gövdesini süslü parantez sayarak çıkarır (string içindekiler atlanır). */
+    private fun objectAt(html: String, from: Int): String? {
+        if (from < 0 || from >= html.length || html[from] != '{') return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in from until html.length) {
+            val char = html[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                }
+                continue
+            }
+            when (char) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return html.substring(from, index + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun httpsUrl(raw: String?): String {
+        val url = raw?.trim().orEmpty()
         return when {
-            out.startsWith("http://") || out.startsWith("https://") -> out
-            out.startsWith("//") -> "https:$out"
-            out.isBlank() -> out
-            // Şemasız gelen oynatıcı adresleri (sn.dplayer*.site/...) app.get'te patlıyordu.
-            else -> "https://$out"
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("http://") -> "https://" + url.removePrefix("http://")
+            else -> url
         }
     }
 
-    // ── tiny parsing helpers ──────────────────────────────────────────────
+    private fun Any?.seasons(): List<JSONObject> = when (this) {
+        is JSONArray -> objects()
+        is JSONObject -> listOf(this)
+        else -> emptyList()
+    }
 
-    private fun unescape(html: String): String =
-        html.replace("\\\"", "\"").replace("\\\\/", "/")
+    private fun JSONArray?.objects(): List<JSONObject> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
-    private fun firstGroup(text: String, pattern: String): String? =
-        Regex(pattern, RegexOption.DOT_MATCHES_ALL).find(text)?.groupValues?.get(1)?.trim()
+    companion object {
+        /** Ana sayfa satırları; ayarlardan kapatılabilir. */
+        val ROWS = listOf(
+            "Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet",
+            "Netflix", "Amazon Prime", "Disney+",
+        )
+        /** Oynatıcı CDN'i (Cloudflare) Chrome tarzı UA'lara TLS'ten bağımsız 403 verir; Firefox UA geçer. */
+        private const val UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+        private const val REPORT_HINT =
+            "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
+        private const val IMAGE_PROXY = "/i/s/"
 
-    private fun groupBlock(text: String, pattern: String): List<String> {
-        val block = Regex(pattern, RegexOption.DOT_MATCHES_ALL).find(text)?.groupValues?.get(1)
-            ?: return emptyList()
-        return listOf(block)
+        private val YEAR = Regex("""\b(19\d{2}|20\d{2})\b""")
+        private val EPISODE_IN_SLUG = Regex("""-(\d+)x(\d+)""")
+        private val ISO_DURATION = Regex("""PT(?:(\d+)H)?(?:(\d+)M)?""")
+        private val RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""")
+        private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
+        private val ORIGIN = Regex("""^https?://[^/]+""")
+
+        /**
+         * Sayfa yükündeki alanlar RSC kaçışıyla (`\"ciphertext\":\"…\"`) gelir; 0-3 ters bölü
+         * kabul edilir. Parola `k` anahtarında durur ve görseller gibi aynı yükte tekrarlanır.
+         */
+        private val ENC_FIELD = Regex("""\\{0,3}"(ciphertext|iv|salt|k)\\{0,3}":\\{0,3}"([^"\\]+)""")
     }
 }
