@@ -4,7 +4,12 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.SharedPreferences
-import android.widget.*
+import android.widget.ArrayAdapter
+import android.widget.CheckBox
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.TextView
 
 object Settings {
     private const val PREFS = "dizipal_settings"
@@ -21,11 +26,15 @@ object Settings {
 
     var qualityCap: Int
         get() = prefs?.getInt("quality_cap", 0) ?: 0
-        set(value) { prefs?.edit()?.putInt("quality_cap", value)?.apply() }
+        set(value) {
+            prefs?.edit()?.putInt("quality_cap", value)?.apply()
+        }
 
     var subtitleLang: String
         get() = prefs?.getString("subtitle_lang", "all") ?: "all"
-        set(value) { prefs?.edit()?.putString("subtitle_lang", value)?.apply() }
+        set(value) {
+            prefs?.edit()?.putString("subtitle_lang", value)?.apply()
+        }
 
     fun qualityAllowed(quality: Int): Boolean {
         val cap = qualityCap
@@ -60,14 +69,22 @@ object Settings {
 
         layout.addView(TextView(activity).apply { text = "Kalite üst sınırı" })
         val qualitySpinner = Spinner(activity).apply {
-            adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, qualityLabels)
+            adapter = ArrayAdapter(
+                activity,
+                android.R.layout.simple_spinner_dropdown_item,
+                qualityLabels
+            )
             setSelection(qualityValues.indexOf(qualityCap).coerceAtLeast(0))
         }
         layout.addView(qualitySpinner)
 
         layout.addView(TextView(activity).apply { text = "Altyazı" })
         val subtitleSpinner = Spinner(activity).apply {
-            adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, subtitleLabels)
+            adapter = ArrayAdapter(
+                activity,
+                android.R.layout.simple_spinner_dropdown_item,
+                subtitleLabels
+            )
             setSelection(subtitleValues.indexOf(subtitleLang).coerceAtLeast(0))
         }
         layout.addView(subtitleSpinner)
@@ -75,7 +92,10 @@ object Settings {
         val checks = if (rows.isNotEmpty()) {
             layout.addView(TextView(activity).apply { text = "Ana sayfa kategorileri" })
             val list = rows.map { name ->
-                CheckBox(activity).apply { text = name; isChecked = rowEnabled(name) }
+                CheckBox(activity).apply {
+                    text = name
+                    isChecked = rowEnabled(name)
+                }
             }
             layout.addView(ScrollView(activity).apply {
                 addView(LinearLayout(activity).apply {
@@ -84,7 +104,9 @@ object Settings {
                 })
             })
             list
-        } else emptyList()
+        } else {
+            emptyList()
+        }
 
         AlertDialog.Builder(activity)
             .setTitle(title)
@@ -93,7 +115,10 @@ object Settings {
                 qualityCap = qualityValues[qualitySpinner.selectedItemPosition]
                 subtitleLang = subtitleValues[subtitleSpinner.selectedItemPosition]
                 if (rows.isNotEmpty()) {
-                    setRows(rows, checks.filter { it.isChecked }.map { it.text.toString() }.toSet())
+                    setRows(
+                        rows,
+                        checks.filter { it.isChecked }.map { it.text.toString() }.toSet()
+                    )
                 }
             }
             .setNegativeButton("İptal", null)
