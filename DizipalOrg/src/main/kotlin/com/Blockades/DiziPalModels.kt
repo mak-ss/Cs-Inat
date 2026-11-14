@@ -1,12 +1,9 @@
-
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
-
 package com.Blockades
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 
-// DÜZELTME: JSON'da olmayan alanlar için ignoreUnknown = true
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class SearchItem(
     @JsonProperty("id") val id: String? = null,
@@ -20,7 +17,6 @@ data class SearchItem(
     @JsonProperty("view") val view: Int? = null,
     @JsonProperty("type") val type: String? = "defaultType",
     @JsonProperty("url") val url: String? = null,
-    // DÜZELTME: fetchEpisodes()'un ihtiyaç duyduğu alanlar eklendi
     @JsonProperty("slug") val slug: String? = null,
     @JsonProperty("baslik") val baslik: String? = null,
     @JsonProperty("alt") val alt: String? = null
