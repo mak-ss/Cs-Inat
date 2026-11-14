@@ -24,11 +24,6 @@ object CryptoUtils {
         }
     }
 
-    /**
-     * Oynatıcı sayfasındaki gizli imza değerini URL'ye ekler.
-     * Not: Bu, gerçek site algoritmasının basitleştirilmiş bir versiyonudur;
-     * site tarafında farklı parametre adı kullanılıyorsa regex güncellenmelidir.
-     */
     fun pichiveSign(playerHtml: String, url: String): String {
         val sign = Regex("""(?:sign|token|hash)\s*[:=]\s*['"]([a-fA-F0-9]{16,})['"]""")
             .find(playerHtml)?.groupValues?.get(1) ?: return url
