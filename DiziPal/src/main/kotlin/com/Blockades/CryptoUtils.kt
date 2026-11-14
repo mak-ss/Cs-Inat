@@ -9,7 +9,12 @@ import javax.crypto.spec.SecretKeySpec
 
 object CryptoUtils {
 
-    fun pbkdf2AesCbcDecrypt(ciphertext: ByteArray, passphrase: String, saltB64: String, ivB64: String): String? {
+    fun pbkdf2AesCbcDecrypt(
+        ciphertext: ByteArray,
+        passphrase: String,
+        saltB64: String,
+        ivB64: String,
+    ): String? {
         return try {
             val salt = Base64.decode(saltB64, Base64.DEFAULT)
             val iv = Base64.decode(ivB64, Base64.DEFAULT)
