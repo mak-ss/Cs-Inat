@@ -275,7 +275,16 @@ class DiziPal : MainAPI() {
             }
             Log.d("DiziPal", "iframe: $absoluteIframe")
 
-            val iframeHtml = app.get(absoluteIframe, headers = headers + mapOf("Referer" to data)).text
+            // Video sunucusunun Origin'ini çıkar (örneğin https://sn.dplayer82.site)
+            val playerOrigin = Regex("""^https?://[^/]+""").find(absoluteIframe)?.value ?: ""
+
+            val iframeHtml = app.get(
+                absoluteIframe,
+                headers = headers + mapOf(
+                    "Referer" to data,
+                    "Origin" to playerOrigin
+                )
+            ).text
             val npMatch = Regex("""window\.NP_CONFIG\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL).find(iframeHtml)
             if (npMatch == null) {
                 Log.e("DiziPal", "loadLinks: NP_CONFIG not found")
@@ -283,7 +292,7 @@ class DiziPal : MainAPI() {
             }
             val npJson = JSONObject(npMatch.groupValues[1])
 
-            // Altyazılar
+            // Altyazılar — video sunucusunun Referer ve Origin'ini taşımalı
             npJson.optJSONArray("subtitles")?.let { subs ->
                 for (i in 0 until subs.length()) {
                     val sub = subs.optJSONObject(i) ?: continue
@@ -297,12 +306,15 @@ class DiziPal : MainAPI() {
                     }
                     Log.d("DiziPal", "subtitle: $label -> ${subUrl.take(80)}")
                     subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
-                        this.headers = this@DiziPal.headers + mapOf("Referer" to absoluteIframe)
+                        this.headers = this@DiziPal.headers + mapOf(
+                            "Referer" to absoluteIframe,
+                            "Origin" to playerOrigin
+                        )
                     })
                 }
             }
 
-            // Video kaynakları
+            // Video kaynakları — doğru Referer ve Origin ile
             var any = false
             npJson.optJSONArray("sources")?.let { sources ->
                 for (i in 0 until sources.length()) {
@@ -310,7 +322,23 @@ class DiziPal : MainAPI() {
                     val master = src.optString("master", "")
                     if (master.isEmpty()) continue
                     val label = src.optString("title", "DiziPal")
-                    Log.d("DiziPal", "video: $label -> ${master.take(80)}")
+                    Log.d("DiziPal", "video: $label -> ${master.take(100)}")
+
+                    // İsteğe bağlı: m3u8'in erişilebilir olup olmadığını test et
+                    try {
+                        val probe = app.get(
+                            master,
+                            headers = headers + mapOf(
+                                "Referer" to absoluteIframe,
+                                "Origin" to playerOrigin,
+                                "Accept" to "*/*"
+                            )
+                        )
+                        Log.d("DiziPal", "probe $label => HTTP ${probe.code}")
+                    } catch (e: Exception) {
+                        Log.w("DiziPal", "probe $label failed: ${e.message}")
+                    }
+
                     callback.invoke(newExtractorLink(
                         source = name,
                         name = "DiziPal - $label",
@@ -318,7 +346,10 @@ class DiziPal : MainAPI() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = absoluteIframe
-                        this.headers = this@DiziPal.headers
+                        this.headers = this@DiziPal.headers + mapOf(
+                            "Referer" to absoluteIframe,
+                            "Origin" to playerOrigin
+                        )
                         this.quality = Qualities.P1080.value
                     })
                     any = true
