@@ -1,8 +1,26 @@
 package com.Blockades
 
 import android.util.Base64
-import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrlNull
+import com.lagradost.cloudstream3.mainPageOf
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -21,6 +39,7 @@ class DiziPalProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
     private val uaHeaders get() = mapOf("user-agent" to UA, "Accept-Language" to "tr-TR,tr;q=0.9")
+
     private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
 
     override val mainPage get() = mainPageOf(
@@ -32,8 +51,6 @@ class DiziPalProvider : MainAPI() {
         "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
         "$mainUrl/platform-bolumler/disneyplus" to "Disney+",
     ).filter { Settings.rowEnabled(it.name) }
-
-    // ... (getMainPage, search, quickSearch, load, loadLinks orijinal kodla aynı, sadece Settings çağrıları artık doğrudan object'e referans veriyor)
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val paged = request.data in pagedSections
@@ -73,7 +90,9 @@ class DiziPalProvider : MainAPI() {
 
         if (isSeries) {
             val episodes = episodesOf(doc, ld)
-            if (episodes.isEmpty()) throw ErrorLoadingException("$name: bölüm listesi bulunamadı. $REPORT_HINT")
+            if (episodes.isEmpty()) {
+                throw ErrorLoadingException("$name: bölüm listesi bulunamadı. $REPORT_HINT")
+            }
             return newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, episodes) {
                 this.posterUrl = posterOf(doc, ld)
                 this.plot = ld?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
@@ -109,12 +128,14 @@ class DiziPalProvider : MainAPI() {
 
         val pageUrl = httpsUrl(data)
         val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
-            .getOrNull() ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
+            .getOrNull()
+            ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
 
         val playerUrl = decryptEmbed(pageHtml)
             ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
         val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }
-            .getOrNull() ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
+            .getOrNull()
+            ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
 
         val found = npLinks(playerHtml, playerUrl, links, subtitles) ||
             dplayerLinks(playerHtml, playerUrl, links)
@@ -123,11 +144,140 @@ class DiziPalProvider : MainAPI() {
         return true
     }
 
-    // ... (toCard, toSearchResult, directImage, episodesOf, jsonLd, posterOf, yearOf, tagsOf,
-    //      recommendationsOf, actorsOf, minutes, decryptEmbed, npLinks, dplayerLinks,
-    //      emitPlaylist, parseVariants, hlsLink, objectAt, httpsUrl, seasons, objects
-    //      orijinal kodla aynı, sadece decryptEmbed içinde CryptoUtils.pbkdf2AesCbcDecrypt çağrısı ve
-    //      npLinks içinde CryptoUtils.pichiveSign çağrısı var)
+    // ---------------------------------------------------------------- listing
+
+    private fun Element.toCard(): SearchResponse? {
+        val href = fixUrlNull(attr("href")) ?: return null
+        val isSeries = href.contains("/series/")
+        if (!isSeries && !href.contains("/movies/")) return null
+
+        val title = selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
+            ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
+            ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
+            ?: return null
+        val poster = selectFirst("img[src^=http]")?.attr("src")
+        val year = YEAR.find(text())?.value?.toIntOrNull()
+
+        return if (isSeries) {
+            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                this.posterUrl = poster
+                this.year = year
+            }
+        } else {
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = poster
+                this.year = year
+            }
+        }
+    }
+
+    private fun JSONObject.toSearchResult(): SearchResponse? {
+        val slug = optString("used_slug").trim().trimStart('/')
+        if (slug.isEmpty()) return null
+        val title = optString("object_name").trim().takeIf { it.isNotEmpty() } ?: return null
+
+        val url = "$mainUrl/$slug"
+        val poster = directImage(optString("object_poster_url"))
+        val year = optString("object_release_year").toIntOrNull()?.takeIf { it in 1900..2100 }
+        val score = Score.from10(optString("object_related_imdb_point").takeIf { it != "0" })
+
+        return if (optString("used_type").equals("Series", ignoreCase = true)) {
+            newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
+                this.posterUrl = poster
+                this.year = year
+                this.score = score
+            }
+        } else {
+            newMovieSearchResponse(title, url, TvType.Movie) {
+                this.posterUrl = poster
+                this.year = year
+                this.score = score
+            }
+        }
+    }
+
+    private fun directImage(url: String): String? {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http")) return null
+        return if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
+    }
+
+    // ------------------------------------------------------------------ künye
+
+    private fun episodesOf(doc: Document, ld: JSONObject?): List<Episode> {
+        val episodes = LinkedHashMap<String, Episode>()
+
+        ld?.opt("containsSeason").seasons().forEach { season ->
+            val seasonNumber = season.optString("seasonNumber").toIntOrNull() ?: 1
+            season.optJSONArray("episode").objects().forEach { entry ->
+                val episodeUrl = httpsUrl(entry.optString("url"))
+                if (episodeUrl.isEmpty()) return@forEach
+                val number = entry.optString("episodeNumber").toIntOrNull()
+                episodes[episodeUrl] = newEpisode(episodeUrl) {
+                    this.name = entry.optString("name").trim()
+                        .ifEmpty { "$seasonNumber. Sezon $number. Bölüm" }
+                    this.season = seasonNumber
+                    this.episode = number
+                    this.description = entry.optString("description").trim().takeIf { it.isNotEmpty() }
+                }
+            }
+        }
+
+        if (episodes.isEmpty()) {
+            doc.select("a[href*='/bolum/']").forEach { anchor ->
+                val episodeUrl = httpsUrl(anchor.attr("href").substringBefore('?'))
+                if (episodeUrl.isEmpty() || episodes.containsKey(episodeUrl)) return@forEach
+                val match = EPISODE_IN_SLUG.find(episodeUrl) ?: return@forEach
+                val season = match.groupValues[1].toIntOrNull() ?: return@forEach
+                val number = match.groupValues[2].toIntOrNull()
+                episodes[episodeUrl] = newEpisode(episodeUrl) {
+                    this.name = "$season. Sezon $number. Bölüm"
+                    this.season = season
+                    this.episode = number
+                }
+            }
+        }
+        return episodes.values.toList()
+    }
+
+    private fun jsonLd(doc: Document, type: String): JSONObject? =
+        doc.select("script[type=application/ld+json]").firstNotNullOfOrNull { script ->
+            runCatching { JSONObject(script.data()) }.getOrNull()
+                ?.takeIf { it.optString("@type") == type }
+        }
+
+    private fun posterOf(doc: Document, ld: JSONObject?): String? =
+        doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
+            ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
+
+    private fun yearOf(ld: JSONObject?): Int? =
+        ld?.optString("datePublished")?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
+
+    private fun tagsOf(doc: Document): List<String> =
+        doc.select("a[href^='/kategori/'], a[href^='/film-kategori/']")
+            .map { it.text().trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
+    private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
+        val section = if (isSeries) "ds-ben" else "df-ben"
+        return doc.select("section[aria-labelledby='$section'] a.tc[href]")
+            .mapNotNull { it.toCard() }
+            .distinctBy { it.url }
+    }
+
+    private fun actorsOf(ld: JSONObject?): List<String>? =
+        ld?.optJSONArray("actor").objects()
+            .mapNotNull { it.optString("name").trim().takeIf(String::isNotEmpty) }
+            .takeIf { it.isNotEmpty() }
+
+    private fun minutes(iso: String?): Int? {
+        val match = ISO_DURATION.find(iso.orEmpty()) ?: return null
+        val total = (match.groupValues[1].toIntOrNull() ?: 0) * 60 + (match.groupValues[2].toIntOrNull() ?: 0)
+        return total.takeIf { it > 0 }
+    }
+
+    // --------------------------------------------------------------- oynatıcı
 
     private fun decryptEmbed(html: String): String? {
         val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
@@ -167,8 +317,7 @@ class DiziPalProvider : MainAPI() {
 
         var found = false
         config.optJSONArray("sources").objects().forEach { source ->
-            val master = source.optString("master").takeIf { it.startsWith("http") }
-                ?.let { CryptoUtils.pichiveSign(playerHtml, it) } ?: return@forEach
+            val master = source.optString("master").takeIf { it.startsWith("http") }?.let { CryptoUtils.pichiveSign(playerHtml, it) } ?: return@forEach
             val label = source.optString("title").trim().ifEmpty { "Kaynak" }
             emitPlaylist(master, playerUrl, label, emit)
             found = true
@@ -176,7 +325,130 @@ class DiziPalProvider : MainAPI() {
         return found
     }
 
-    // ... (kalan fonksiyonlar orijinal kodla aynı)
+    private suspend fun dplayerLinks(
+        playerHtml: String,
+        playerUrl: String,
+        emit: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val playlist = OPEN_PLAYER.find(playerHtml)?.groupValues?.get(1) ?: return false
+        val origin = ORIGIN.find(playerUrl)?.value ?: return false
+        val body = runCatching {
+            app.get(
+                "$origin/source2.php",
+                params = mapOf("v" to playlist),
+                headers = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest"),
+                referer = playerUrl,
+            ).text
+        }.getOrNull() ?: return false
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return false
+
+        var found = false
+        root.optJSONArray("playlist").objects().forEach { item ->
+            val label = item.optString("title").trim().ifEmpty { "Kaynak" }
+            item.optJSONArray("sources").objects().forEach eachSource@{ source ->
+                val file = source.optString("file").takeIf { it.startsWith("http") } ?: return@eachSource
+                val master = if ("m.php" in file) file.replace("m.php", "master.m3u8") else file
+                emitPlaylist(master, playerUrl, label, emit)
+                found = true
+            }
+        }
+        return found
+    }
+
+    private suspend fun emitPlaylist(
+        masterUrl: String,
+        referer: String,
+        label: String,
+        emit: (ExtractorLink) -> Unit,
+    ) {
+        val playlist = runCatching { app.get(masterUrl, headers = uaHeaders, referer = referer).text }
+            .getOrNull()
+        val variants = parseVariants(playlist.orEmpty())
+        if (variants.size <= 1) {
+            emit(hlsLink(masterUrl, label, Qualities.Unknown.value, referer))
+            return
+        }
+        variants.forEach { (height, url) ->
+            val quality = height.takeIf { it > 0 } ?: Qualities.Unknown.value
+            val variantLabel = if (quality > 0) "$label ${quality}p" else label
+            emit(hlsLink(url, variantLabel, quality, referer))
+        }
+    }
+
+    private fun parseVariants(playlist: String): List<Pair<Int, String>> {
+        if (!playlist.startsWith("#EXTM3U") ||
+            playlist.contains("TYPE=AUDIO", ignoreCase = true) ||
+            playlist.contains("AUDIO=", ignoreCase = true)
+        ) return emptyList()
+        val variants = mutableListOf<Pair<Int, String>>()
+        var height: Int? = null
+        for (raw in playlist.lineSequence()) {
+            val line = raw.trim()
+            if (line.startsWith("#EXT-X-STREAM-INF")) {
+                height = RESOLUTION.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                continue
+            }
+            val pending = height ?: continue
+            if (line.isEmpty() || line.startsWith("#")) continue
+            variants.add(pending to line)
+            height = null
+        }
+        return variants.distinctBy { it.second }
+    }
+
+    private suspend fun hlsLink(url: String, label: String, quality: Int, referer: String): ExtractorLink =
+        newExtractorLink(name, label, url, ExtractorLinkType.M3U8) {
+            this.referer = referer
+            this.quality = quality
+            this.headers = uaHeaders
+        }
+
+    // ------------------------------------------------------------------ ortak
+
+    private fun objectAt(html: String, from: Int): String? {
+        if (from < 0 || from >= html.length || html[from] != '{') return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in from until html.length) {
+            val char = html[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                }
+                continue
+            }
+            when (char) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return html.substring(from, index + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun httpsUrl(raw: String?): String {
+        val url = raw?.trim().orEmpty()
+        return when {
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("http://") -> "https://" + url.removePrefix("http://")
+            else -> url
+        }
+    }
+
+    private fun Any?.seasons(): List<JSONObject> = when (this) {
+        is JSONArray -> objects()
+        is JSONObject -> listOf(this)
+        else -> emptyList()
+    }
+
+    private fun JSONArray?.objects(): List<JSONObject> =
+        if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
     companion object {
         val ROWS = listOf(
