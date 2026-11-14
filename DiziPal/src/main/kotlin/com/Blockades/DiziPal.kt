@@ -41,7 +41,7 @@ class DiziPal : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    private val headers = mapOf(
+    private val baseHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8"
     )
@@ -52,7 +52,7 @@ class DiziPal : MainAPI() {
     private suspend fun resolveBaseUrl(): String {
         resolvedUrl?.let { return it }
         return try {
-            val resp = app.get(mainUrl, headers = headers)
+            val resp = app.get(mainUrl, headers = baseHeaders)
             val finalUrl = resp.url.trimEnd('/')
             if (finalUrl.startsWith("http")) {
                 resolvedUrl = finalUrl
@@ -65,6 +65,20 @@ class DiziPal : MainAPI() {
         }
     }
 
+    private fun buildPlayerHeaders(iframeUrl: String, playerOrigin: String): Map<String, String> {
+        // Referer'ı yalnızca tek yerde veriyoruz; this.referer kullanmıyoruz.
+        return baseHeaders + mapOf(
+            "Referer" to iframeUrl,
+            "Origin" to playerOrigin
+        )
+    }
+
+    private fun appendParam(url: String, key: String, value: String): String {
+        if (value.isBlank()) return url
+        val sep = if (url.contains('?')) '&' else '?'
+        return "$url$sep$key=$value"
+    }
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Trend"
     )
@@ -74,7 +88,7 @@ class DiziPal : MainAPI() {
         return try {
             val base = resolveBaseUrl()
             val reqUrl = if (request.data.contains(mainUrl)) request.data.replace(mainUrl, base) else request.data
-            val html = app.get(reqUrl, headers = headers + mapOf("Referer" to base)).text
+            val html = app.get(reqUrl, headers = baseHeaders + mapOf("Referer" to base)).text
             val rsc = extractRsc(html)
             val trend = extractJsonArrayAfter(rsc, "\"trend\":")
                 ?: return newHomePageResponse(request.name, emptyList())
@@ -120,7 +134,7 @@ class DiziPal : MainAPI() {
             val base = resolveBaseUrl()
             val resp = app.post(
                 "$base/api/mj",
-                headers = headers + mapOf(
+                headers = baseHeaders + mapOf(
                     "Content-Type" to "application/json",
                     "Origin" to base,
                     "Referer" to "$base/kesfet"
@@ -171,7 +185,7 @@ class DiziPal : MainAPI() {
         return try {
             val base = resolveBaseUrl()
             val reqUrl = if (url.contains(mainUrl)) url.replace(mainUrl, base) else url
-            val html = app.get(reqUrl, headers = headers + mapOf("Referer" to base)).text
+            val html = app.get(reqUrl, headers = baseHeaders + mapOf("Referer" to base)).text
             val rsc = extractRsc(html)
             val data = extractJsonObjectAfter(rsc, "\"data\":{\"id\":")
                 ?: run {
@@ -250,7 +264,7 @@ class DiziPal : MainAPI() {
         return try {
             val base = resolveBaseUrl()
             val reqUrl = if (data.contains(mainUrl)) data.replace(mainUrl, base) else data
-            val html = app.get(reqUrl, headers = headers + mapOf("Referer" to base)).text
+            val html = app.get(reqUrl, headers = baseHeaders + mapOf("Referer" to base)).text
             val rsc = extractRsc(html)
             val player = findPlayer(rsc) ?: run {
                 Log.e("DiziPal", "loadLinks: player not found")
@@ -277,13 +291,11 @@ class DiziPal : MainAPI() {
             Log.d("DiziPal", "iframe: $absoluteIframe")
 
             val playerOrigin = Regex("""^https?://[^/]+""").find(absoluteIframe)?.value ?: ""
+            val playerHeaders = buildPlayerHeaders(absoluteIframe, playerOrigin)
 
             val iframeHtml = app.get(
                 absoluteIframe,
-                headers = headers + mapOf(
-                    "Referer" to data,
-                    "Origin" to playerOrigin
-                )
+                headers = playerHeaders + mapOf("Referer" to data)
             ).text
             val npMatch = Regex("""window\.NP_CONFIG\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL).find(iframeHtml)
             if (npMatch == null) {
@@ -293,8 +305,6 @@ class DiziPal : MainAPI() {
             val npJson = JSONObject(npMatch.groupValues[1])
 
             // === GATE ÇÖZÜMÜ ===
-            // np.js: ee(gate.n + ":" + n)[0] >>> (32 - b) == 0  olan n'i bul
-            // ee = SHA-256, [0] = ilk 32-bit kelime (big-endian)
             var gateParam = ""
             val gate = npJson.optJSONObject("gate")
             if (gate != null) {
@@ -303,7 +313,7 @@ class DiziPal : MainAPI() {
                 if (gateN.isNotEmpty() && gateB in 1..32) {
                     val pow = solveGate(gateN, gateB)
                     if (pow != null) {
-                        gateParam = "&p=$pow"
+                        gateParam = pow
                         Log.d("DiziPal", "gate çözüldü: n=$gateN b=$gateB p=$pow")
                     } else {
                         Log.e("DiziPal", "gate çözülemedi!")
@@ -323,14 +333,10 @@ class DiziPal : MainAPI() {
                         val baseDomain = Regex("""^https?://[^/]+""").find(absoluteIframe)?.value ?: ""
                         subUrl = "$baseDomain$subUrl"
                     }
-                    // Gate parametresini altyazı URL'sine de ekle
-                    subUrl += gateParam
+                    if (gateParam.isNotBlank()) subUrl = appendParam(subUrl, "p", gateParam)
                     Log.d("DiziPal", "subtitle: $label -> ${subUrl.take(120)}")
                     subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
-                        this.headers = this@DiziPal.headers + mapOf(
-                            "Referer" to absoluteIframe,
-                            "Origin" to playerOrigin
-                        )
+                        this.headers = playerHeaders
                     })
                 }
             }
@@ -342,10 +348,21 @@ class DiziPal : MainAPI() {
                     val src = sources.optJSONObject(i) ?: continue
                     var master = src.optString("master", "")
                     if (master.isEmpty()) continue
-                    // Gate parametresini master URL'sine ekle
-                    master += gateParam
+                    if (gateParam.isNotBlank()) master = appendParam(master, "p", gateParam)
                     val label = src.optString("title", "DiziPal")
-                    Log.d("DiziPal", "video: $label -> ${master.take(120)}")
+                    Log.d("DiziPal", "video: $label -> ${master.take(160)}")
+
+                    // Debug: 404'ün kaynağını görmek için master URL'sini doğrula
+                    try {
+                        val probe = app.get(master, headers = playerHeaders)
+                        Log.d("DiziPal", "probe ${probe.code} -> ${master.take(120)}")
+                        if (probe.code !in 200..299) {
+                            Log.e("DiziPal", "probe failed ${probe.code} -> ${master.take(120)}")
+                            // İstersen burada continue ile bu kaynağı atlayabilirsin
+                        }
+                    } catch (pe: Exception) {
+                        Log.e("DiziPal", "probe error: ${pe.message} -> ${master.take(120)}")
+                    }
 
                     callback.invoke(newExtractorLink(
                         source = name,
@@ -353,11 +370,7 @@ class DiziPal : MainAPI() {
                         url = master,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = absoluteIframe
-                        this.headers = this@DiziPal.headers + mapOf(
-                            "Referer" to absoluteIframe,
-                            "Origin" to playerOrigin
-                        )
+                        this.headers = playerHeaders
                         this.quality = Qualities.P1080.value
                     })
                     any = true
@@ -372,27 +385,23 @@ class DiziPal : MainAPI() {
     }
 
     // === PoW Gate Çözücü ===
-    // np.js'teki algoritma:
-    //   for n in 0..1e8:
-    //     if (sha256(gateN + ":" + n)[0] >>> (32 - b)) == 0:
-    //       return n
-    // [0], hash'in ilk 32-bit kelimesidir (big-endian).
-    // ">>> (32 - b) == 0" demek, ilk b bitinin 0 olması demek.
+    // np.js: sha256(gateN + ":" + n)[0] >>> (32 - b) == 0
+    // Yani ilk b bit 0 olmalı. [0] = hash'in ilk 32-bit kelimesi (big-endian).
     private fun solveGate(gateN: String, b: Int): String? {
         return try {
             val md = MessageDigest.getInstance("SHA-256")
-            val mask = (1L shl (32 - b)) - 1L  // üst b bit 0 ise, alt (32-b) bit maskelenir
+            // İlk b bitin 0 olması için üst b bit maskesi: ((1 shl b) - 1) shl (32 - b)
+            val topMask = (((1L shl b) - 1L) shl (32 - b)) and 0xFFFFFFFFL
             val limit = 100_000_000L
             var n = 0L
             while (n < limit) {
                 md.reset()
                 val bytes = md.digest((gateN + ":" + n).toByteArray(Charsets.UTF_8))
-                // İlk 4 byte = [0] big-endian
                 val first = ((bytes[0].toLong() and 0xFF) shl 24) or
                         ((bytes[1].toLong() and 0xFF) shl 16) or
                         ((bytes[2].toLong() and 0xFF) shl 8) or
                         (bytes[3].toLong() and 0xFF)
-                if ((first and mask) == 0L) {
+                if ((first and topMask) == 0L) {
                     return n.toString()
                 }
                 n++
