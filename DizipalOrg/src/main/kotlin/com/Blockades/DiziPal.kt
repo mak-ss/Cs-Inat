@@ -5,7 +5,6 @@ import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import okhttp3.Interceptor
 import okhttp3.Response
 import org.jsoup.Jsoup
@@ -45,7 +44,6 @@ class DiziPal : MainAPI() {
 
     /* -------------------- MainPage -------------------- */
 
-    // DÜZELTME: Site Next.js SSR. Sayfalama "?page=N" ile çalışıyor.
     override val mainPage = mainPageOf(
         "$mainUrl/filmler" to "Filmler",
         "$mainUrl/diziler" to "Diziler",
@@ -58,7 +56,6 @@ class DiziPal : MainAPI() {
 
         val cards = mutableListOf<SearchResponse>()
 
-        // DÜZELTME: Gerçek seçici — tüm /filmler/ ve /diziler/ linklerini al
         val anchors = doc.select("a[href^=\"/filmler/\"], a[href^=\"/diziler/\"]")
             .distinctBy { it.attr("href") }
 
@@ -68,7 +65,6 @@ class DiziPal : MainAPI() {
 
             val img = a.selectFirst("img")
             val poster = img?.attr("src")?.let { fixUrlNull(it) }
-            // DÜZELTME: Başlık önce h3, sonra img alt, sonra a.title
             val title = a.selectFirst("h3")?.text()?.trim()
                 ?: img?.attr("alt")?.trim()
                 ?: a.attr("title").ifBlank { a.text() }.ifBlank {
@@ -85,16 +81,13 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // DÜZELTME: Next.js'te "next" linki genelde /filmler?page=N şeklinde
         val hasNext = doc.select("a[href*=\"?page=\"], a[rel=next]").isNotEmpty()
-
         return newHomePageResponse(request.name, cards.distinctBy { it.url }, hasNext = hasNext)
     }
 
     /* -------------------- Search -------------------- */
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // DÜZELTME: Site aramasi hâlâ /arama?q= ile çalışıyor (JSON-LD SearchAction)
         val url = "$mainUrl/arama?q=${query.encodeURL()}"
         val doc = runCatching {
             app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
@@ -132,14 +125,12 @@ class DiziPal : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url, interceptor = interceptor, referer = "$mainUrl/").document
 
-        // DÜZELTME: Poster = sayfa içindeki büyük img, fallback = og:image (o arkaplan ama iş görür)
         val poster = fixUrlNull(
             doc.selectFirst("img[alt][src*=\"/storage/posters/\"]")?.attr("src")
                 ?: doc.selectFirst("[property='og:image']")?.attr("content")
                 ?: doc.selectFirst("meta[name='twitter:image']")?.attr("content")
         )
 
-        // DÜZELTME: h1 "Kavgacılar izle" şeklinde, " izle" sonekini temizle
         val rawTitle = doc.selectFirst("h1")?.text()?.trim()
             ?: doc.selectFirst("meta[property='og:title']")?.attr("content")?.trim()
             ?: doc.title().substringBefore("|").trim()
@@ -147,11 +138,9 @@ class DiziPal : MainAPI() {
 
         return when {
             url.contains("/diziler/") -> {
-                // Bölümler SSR ile statik HTML'de geliyor: /bolumler/ linkleri
                 val eps = mutableListOf<Episode>()
                 doc.select("a[href^=\"/bolumler/\"]").distinctBy { it.attr("href") }.forEach { a ->
                     val href = normalizeHref(a.attr("href")) ?: return@forEach
-                    // Bölüm başlığı: kart içindeki p'lerden biri "X. Sezon Y. Bölüm"
                     val text = a.text()
                     val (s, e) = parseSeasonEpisode(href, text)
                     eps += newEpisode(href) {
@@ -189,11 +178,9 @@ class DiziPal : MainAPI() {
     }
 
     private fun parseSeasonEpisode(href: String, textRaw: String): Pair<Int?, Int?> {
-        // DÜZELTME: Yeni URL formatı: /bolumler/alien-earth-s1b8
         Regex("""-s(\d+)b(\d+)""", RegexOption.IGNORE_CASE).find(href)?.let {
             return it.groupValues[1].toIntOrNull() to it.groupValues[2].toIntOrNull()
         }
-        // Fallback: metinden çıkar
         val text = textRaw.lowercase(Locale.ROOT)
             .replace('ö', 'o').replace('ü', 'u').replace('ı', 'i')
             .replace('ş', 's').replace('ç', 'c').replace('ğ', 'g')
@@ -212,62 +199,149 @@ class DiziPal : MainAPI() {
     ): Boolean {
         Log.d("DZP", "loadLinks: $data")
 
-        // DÜZELTME: Detay sayfasını çek, video kaynağı artık iframe içinde
         val doc = runCatching {
             app.get(data, interceptor = interceptor, referer = "$mainUrl/").document
         }.getOrNull() ?: return false
 
-        // 1) JSON-LD VideoObject içindeki embedUrl (en güvenilir yol)
-        val jsonLd = doc.select("script[type=application/ld+json]").firstOrNull { it.data().contains("\"VideoObject\"") }
-        jsonLd?.let { script ->
+        // 1) Sayfadaki iframe'leri topla
+        val iframeUrls = mutableListOf<String>()
+        doc.select("iframe[src]").forEach { ifr ->
+            normalizeHref(ifr.attr("src"))?.let { iframeUrls += it }
+        }
+        // 2) JSON-LD VideoObject embedUrl
+        doc.select("script[type=application/ld+json]").forEach { script ->
             val json = script.data()
-            Regex("\"embedUrl\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.getOrNull(1)?.let { embed ->
-                Log.d("DZP", "JSON-LD embedUrl: $embed")
-                if (loadExtractor(embed, data, subtitleCallback, callback)) return true
-                if (extractFromPlayer(embed, data, subtitleCallback, callback)) return true
+            if (json.contains("\"VideoObject\"") || json.contains("\"embedUrl\"")) {
+                Regex("\"embedUrl\"\\s*:\\s*\"([^\"]+)\"").find(json)
+                    ?.groupValues?.getOrNull(1)?.let { iframeUrls += it }
             }
         }
 
-        // 2) Sayfadaki iframe'ler (videoplays.cfd)
-        doc.select("iframe[src]").forEach { ifr ->
-            val src = normalizeHref(ifr.attr("src")) ?: return@forEach
-            Log.d("DZP", "iframe: $src")
-            if (loadExtractor(src, data, subtitleCallback, callback)) return@forEach
-            if (extractFromPlayer(src, data, subtitleCallback, callback)) return@forEach
+        if (iframeUrls.isEmpty()) {
+            Log.e("DZP", "Hiç iframe bulunamadı")
+            return false
         }
 
-        // 3) HTML içinde m3u8/mp4 var mı?
-        val html = doc.html()
-        if (pushM3u8s(html, referer = data, callback)) return true
-        if (pushMp4s(html, referer = data, callback)) return true
+        // 3) Her iframe için player'ı çöz
+        for (playerUrl in iframeUrls.distinct()) {
+            Log.d("DZP", "Player: $playerUrl")
+            if (resolvePlayer(playerUrl, data, subtitleCallback, callback)) return true
+        }
+
+        // 4) Son çare: sayfa HTML'inde storagedomain pattern ara
+        if (huntStorageM3u8(doc.html(), referer = data, callback)) return true
 
         return false
     }
 
-    /** videoplays.cfd/player.html?video=... sayfasından m3u8/mp4 çıkar. */
-    private suspend fun extractFromPlayer(
-        url: String,
+    /**
+     * videoplays.cfd player sayfasını açar; içindeki API çağrısını veya
+     * doğrudan m3u8 linkini bulur.
+     */
+    private suspend fun resolvePlayer(
+        playerUrl: String,
         referer: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val res = runCatching { app.get(url, referer = referer, interceptor = interceptor) }.getOrNull() ?: return false
+        // 4.1) Bilinen extractor'lara şans ver
+        if (loadExtractor(playerUrl, referer, subtitleCallback, callback)) return true
+
+        // 4.2) Player HTML'ini çek
+        val res = runCatching {
+            app.get(playerUrl, referer = referer, interceptor = interceptor)
+        }.getOrNull() ?: return false
+
         val body = res.text
+        val pdoc = res.document
 
-        if (pushM3u8s(body, referer, callback)) return true
-        if (pushMp4s(body, referer, callback)) return true
+        // 4.3) HTML/JS içinde token'lı master.m3u8 var mı?
+        if (huntStorageM3u8(body, referer = playerUrl, callback)) return true
 
-        // Player içinde gizli iframe olabilir
-        res.document.select("iframe[src]").forEach { ifr ->
-            val src = normalizeHref(ifr.attr("src")) ?: return@forEach
-            if (loadExtractor(src, referer, subtitleCallback, callback)) return@forEach
-            val subRes = runCatching { app.get(src, referer = url, interceptor = interceptor) }.getOrNull() ?: return@forEach
-            if (pushM3u8s(subRes.text, url, callback)) return@forEach
-            if (pushMp4s(subRes.text, url, callback)) return@forEach
+        // 4.4) Sayfa içindeki script src'lerini de indirip tara
+        pdoc.select("script[src]").forEach { s ->
+            val src = normalizeHref(s.attr("src")) ?: return@forEach
+            val js = runCatching { app.get(src, referer = playerUrl, interceptor = interceptor).text }.getOrNull()
+                ?: return@forEach
+            if (huntStorageM3u8(js, referer = playerUrl, callback)) return true
         }
+
+        // 4.5) Player'ın kendi API'sini dene
+        val videoId = Regex("""[?&]video=(\d+)""").find(playerUrl)?.groupValues?.getOrNull(1)
+        if (videoId != null) {
+            val apiCandidates = listOf(
+                "https://videoplays.cfd/api/video/$videoId",
+                "https://videoplays.cfd/api/videos/$videoId",
+                "https://videoplays.cfd/api/player/$videoId",
+                "https://videoplays.cfd/api/get/$videoId",
+                "https://videoplays.cfd/get/$videoId",
+                "https://videoplays.cfd/api/v1/video/$videoId",
+            )
+            for (api in apiCandidates) {
+                val apiRes = runCatching {
+                    app.get(api, referer = playerUrl, interceptor = interceptor)
+                }.getOrNull() ?: continue
+                val apiBody = apiRes.text
+                Log.d("DZP", "API denemesi: $api → ${apiBody.take(120)}")
+                if (huntStorageM3u8(apiBody, referer = playerUrl, callback)) return true
+            }
+        }
+
+        // 4.6) m3u8 değil mp4 olabilir
+        if (pushMp4s(body, referer = playerUrl, callback)) return true
+
         return false
     }
 
+    /** HTML/JS içinde storagedomain.cfd/.../master.m3u8?token=... pattern'ini ara. */
+    private suspend fun huntStorageM3u8(
+        text: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var found = false
+
+        // Token'lı master.m3u8 (storagedomain.cfd veya *domain.cfd)
+        val masterRegex = Regex(
+            """https?://[a-zA-Z0-9.-]+\.cfd/\d+/master\.m3u8\?token=[A-Za-z0-9._\-]+"""
+        )
+        masterRegex.findAll(text).map { it.value }.distinct().forEach { url ->
+            Log.d("DZP", "master.m3u8 bulundu: ${url.take(80)}...")
+            M3u8Helper.generateM3u8(
+                source = name,
+                streamUrl = url,
+                referer = referer,
+                name = name
+            ).forEach(callback)
+            found = true
+        }
+
+        // Token'sız video_0/stream.m3u8 (master bozulursa fallback)
+        if (!found) {
+            val streamRegex = Regex(
+                """https?://[a-zA-Z0-9.-]+\.cfd/\d+/video_\d+/stream\.m3u8[^\s"'<>\\]*"""
+            )
+            streamRegex.findAll(text).map { it.value }.distinct().forEach { url ->
+                Log.d("DZP", "video stream.m3u8 bulundu: ${url.take(80)}...")
+                M3u8Helper.generateM3u8(
+                    source = name,
+                    streamUrl = url,
+                    referer = referer,
+                    name = name
+                ).forEach(callback)
+                found = true
+            }
+        }
+
+        // Genel m3u8 yakalayıcı (diğer domainler için fallback)
+        if (!found) {
+            if (pushM3u8s(text, referer, callback)) found = true
+        }
+
+        return found
+    }
+
+    /** Metin içindeki herhangi bir .m3u8 linkini ekle (genel fallback). */
     private suspend fun pushM3u8s(
         text: String,
         referer: String,
@@ -287,6 +361,7 @@ class DiziPal : MainAPI() {
         return any
     }
 
+    /** Metin içindeki .mp4 linklerini ekle. */
     private suspend fun pushMp4s(
         text: String,
         referer: String,
@@ -312,7 +387,6 @@ class DiziPal : MainAPI() {
 
     private fun String.encodeURL() = java.net.URLEncoder.encode(this, "utf-8")
 
-    // DÜZELTME: Next.js yeni format "?page=N" kullanıyor
     private fun String.addPageQuery(page: Int): String {
         if (page <= 1) return this
         return if (this.contains("?")) {
