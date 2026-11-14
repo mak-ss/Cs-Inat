@@ -1,18 +1,13 @@
 package com.Blockades
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 
 @CloudstreamPlugin
-class DiziPalPlugin: Plugin() {
+class DiziPalPlugin : Plugin() {
     override fun load(context: Context) {
+        Settings.init(context)
         registerMainAPI(DiziPal())
-        registerExtractorAPI(DpSnHotlinger())
-        registerExtractorAPI(DpHotlinger())
-        registerExtractorAPI(DpContentX())
-        registerExtractorAPI(DpJwKaynak())
-        registerExtractorAPI(DpStreamCore())
-        registerExtractorAPI(DpVideoPlays())
+        this.openSettings = { Settings.showDialog(it, "DiziPal Ayarları", DiziPal.ROWS) }
     }
-}
