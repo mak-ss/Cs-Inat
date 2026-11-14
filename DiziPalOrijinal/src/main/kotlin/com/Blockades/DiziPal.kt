@@ -1,26 +1,8 @@
-package com.dizipal
+package com.Blockades
 
 import android.util.Base64
-import com.lagradost.cloudstream3.Episode
-import com.lagradost.cloudstream3.ErrorLoadingException
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.Score
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.fixUrlNull
-import com.lagradost.cloudstream3.mainPageOf
-import com.lagradost.cloudstream3.newEpisode
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
@@ -29,20 +11,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.security.MessageDigest
+import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
-/**
- * DiziPal — dizipal1593.com (Next.js arayüzü, Türkçe dizi + film, platform bölümleri).
- *
- * Arama `POST /api/mj` JSON servisine gider (`action=searchContent`). Liste ve detay sayfaları
- * sunucu tarafında render edilir; künye `application/ld+json` (TVSeries/Movie) bloğundadır.
- *
- * Oynatıcı zinciri: bölüm/film sayfası RSC yükünde `enc` (ciphertext/iv/salt) ve aynı yükte
- * sayfa başına üretilen `k` parolası taşınır. PBKDF2-HMAC-SHA512(999) + AES-256-CBC çözümü
- * `//<host>.dplayer82.site/(iframe|multiplayer).php?v=…` adresini verir. İki oynatıcı ailesi var:
- *  - `NP_CONFIG` (iframe.php): `sources[].master` doğrudan HLS master; `subtitles[].url` WebVTT.
- *  - `openPlayer(blob)` (multiplayer.php): `/source2.php?v=blob` JSON'u m3u8 dosya yolları verir.
- * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
- */
 class DiziPal : MainAPI() {
     override var mainUrl = "https://dizipal1595.com"
     override var name = "DiziPal"
@@ -51,11 +26,7 @@ class DiziPal : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    // Oynatıcı CDN'i (aşağıdaki UA sabitinin yorumu) Chrome UA'ya 403 verdiği için tüm
-    // istekler Firefox UA ile gider; browserHeaders (Chrome/130) burada bilinçli kullanılmaz.
     private val uaHeaders get() = mapOf("user-agent" to UA, "Accept-Language" to "tr-TR,tr;q=0.9")
-
-    /** Yalnız bu iki bölüm `?page=N` ile sayfalanıyor; diğerleri tek istekte tüm listeyi verir. */
     private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
 
     override val mainPage get() = mainPageOf(
@@ -106,9 +77,7 @@ class DiziPal : MainAPI() {
 
         if (isSeries) {
             val episodes = episodesOf(doc, ld)
-            if (episodes.isEmpty()) {
-                throw ErrorLoadingException("$name: bölüm listesi bulunamadı. $REPORT_HINT")
-            }
+            if (episodes.isEmpty()) throw ErrorLoadingException("$name: bölüm listesi bulunamadı. $REPORT_HINT")
             return newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, episodes) {
                 this.posterUrl = posterOf(doc, ld)
                 this.plot = ld?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
@@ -144,14 +113,12 @@ class DiziPal : MainAPI() {
 
         val pageUrl = httpsUrl(data)
         val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
-            .getOrNull()
-            ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
+            .getOrNull() ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
 
         val playerUrl = decryptEmbed(pageHtml)
             ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
         val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }
-            .getOrNull()
-            ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
+            .getOrNull() ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
 
         val found = npLinks(playerHtml, playerUrl, links, subtitles) ||
             dplayerLinks(playerHtml, playerUrl, links)
@@ -160,30 +127,24 @@ class DiziPal : MainAPI() {
         return true
     }
 
-    // ---------------------------------------------------------------- listing
+    // --- listing, künye, oynatıcı fonksiyonları orijinal kodla aynı ---
+    // (toCard, toSearchResult, directImage, episodesOf, jsonLd, posterOf, yearOf, tagsOf,
+    //  recommendationsOf, actorsOf, minutes, decryptEmbed, npLinks, dplayerLinks,
+    //  emitPlaylist, parseVariants, hlsLink, objectAt, httpsUrl, seasons, objects)
 
     private fun Element.toCard(): SearchResponse? {
         val href = fixUrlNull(attr("href")) ?: return null
         val isSeries = href.contains("/series/")
         if (!isSeries && !href.contains("/movies/")) return null
-
         val title = selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
             ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
-            ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
-            ?: return null
+            ?: attr("aria-label").substringBefore(',').trim().ifBlank { null } ?: return null
         val poster = selectFirst("img[src^=http]")?.attr("src")
         val year = YEAR.find(text())?.value?.toIntOrNull()
-
-        return if (isSeries) {
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                this.posterUrl = poster
-                this.year = year
-            }
-        } else {
-            newMovieSearchResponse(title, href, TvType.Movie) {
-                this.posterUrl = poster
-                this.year = year
-            }
+        return if (isSeries) newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+            this.posterUrl = poster; this.year = year
+        } else newMovieSearchResponse(title, href, TvType.Movie) {
+            this.posterUrl = poster; this.year = year
         }
     }
 
@@ -191,39 +152,27 @@ class DiziPal : MainAPI() {
         val slug = optString("used_slug").trim().trimStart('/')
         if (slug.isEmpty()) return null
         val title = optString("object_name").trim().takeIf { it.isNotEmpty() } ?: return null
-
         val url = "$mainUrl/$slug"
         val poster = directImage(optString("object_poster_url"))
         val year = optString("object_release_year").toIntOrNull()?.takeIf { it in 1900..2100 }
         val score = Score.from10(optString("object_related_imdb_point").takeIf { it != "0" })
-
         return if (optString("used_type").equals("Series", ignoreCase = true)) {
             newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
-                this.posterUrl = poster
-                this.year = year
-                this.score = score
+                this.posterUrl = poster; this.year = year; this.score = score
             }
-        } else {
-            newMovieSearchResponse(title, url, TvType.Movie) {
-                this.posterUrl = poster
-                this.year = year
-                this.score = score
-            }
+        } else newMovieSearchResponse(title, url, TvType.Movie) {
+            this.posterUrl = poster; this.year = year; this.score = score
         }
     }
 
-    /** Arama servisi görselleri ampproject önbelleğinden verir; gerçek adres `/i/s/` sonrasındadır. */
     private fun directImage(url: String): String? {
         val trimmed = url.trim()
         if (!trimmed.startsWith("http")) return null
         return if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
     }
 
-    // ------------------------------------------------------------------ künye
-
     private fun episodesOf(doc: Document, ld: JSONObject?): List<Episode> {
         val episodes = LinkedHashMap<String, Episode>()
-
         ld?.opt("containsSeason").seasons().forEach { season ->
             val seasonNumber = season.optString("seasonNumber").toIntOrNull() ?: 1
             season.optJSONArray("episode").objects().forEach { entry ->
@@ -231,16 +180,12 @@ class DiziPal : MainAPI() {
                 if (episodeUrl.isEmpty()) return@forEach
                 val number = entry.optString("episodeNumber").toIntOrNull()
                 episodes[episodeUrl] = newEpisode(episodeUrl) {
-                    this.name = entry.optString("name").trim()
-                        .ifEmpty { "$seasonNumber. Sezon $number. Bölüm" }
-                    this.season = seasonNumber
-                    this.episode = number
+                    this.name = entry.optString("name").trim().ifEmpty { "$seasonNumber. Sezon $number. Bölüm" }
+                    this.season = seasonNumber; this.episode = number
                     this.description = entry.optString("description").trim().takeIf { it.isNotEmpty() }
                 }
             }
         }
-
-        // ld+json kırpılırsa sayfadaki /bolum/<slug>-<S>x<E> bağlantıları aynı listeyi verir.
         if (episodes.isEmpty()) {
             doc.select("a[href*='/bolum/']").forEach { anchor ->
                 val episodeUrl = httpsUrl(anchor.attr("href").substringBefore('?'))
@@ -249,9 +194,7 @@ class DiziPal : MainAPI() {
                 val season = match.groupValues[1].toIntOrNull() ?: return@forEach
                 val number = match.groupValues[2].toIntOrNull()
                 episodes[episodeUrl] = newEpisode(episodeUrl) {
-                    this.name = "$season. Sezon $number. Bölüm"
-                    this.season = season
-                    this.episode = number
+                    this.name = "$season. Sezon $number. Bölüm"; this.season = season; this.episode = number
                 }
             }
         }
@@ -260,11 +203,9 @@ class DiziPal : MainAPI() {
 
     private fun jsonLd(doc: Document, type: String): JSONObject? =
         doc.select("script[type=application/ld+json]").firstNotNullOfOrNull { script ->
-            runCatching { JSONObject(script.data()) }.getOrNull()
-                ?.takeIf { it.optString("@type") == type }
+            runCatching { JSONObject(script.data()) }.getOrNull()?.takeIf { it.optString("@type") == type }
         }
 
-    /** Dizi sayfası künye görseli olarak backdrop taşır; afiş `…/tv/poster/…` yolundan gelir. */
     private fun posterOf(doc: Document, ld: JSONObject?): String? =
         doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
             ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
@@ -273,17 +214,13 @@ class DiziPal : MainAPI() {
         ld?.optString("datePublished")?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
 
     private fun tagsOf(doc: Document): List<String> =
-        doc.select("a[href^='/kategori/'], a[href^='/film-kategori/']")
-            .map { it.text().trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
+        doc.select("a[href^='/kategori/'], a[href^='/film-kategori/']").map { it.text().trim() }
+            .filter { it.isNotEmpty() }.distinct()
 
-    /** Detay sayfasındaki "Benzer diziler"/"Benzer filmler" şeridi (`ds-ben` / `df-ben`). */
     private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
         val section = if (isSeries) "ds-ben" else "df-ben"
         return doc.select("section[aria-labelledby='$section'] a.tc[href]")
-            .mapNotNull { it.toCard() }
-            .distinctBy { it.url }
+            .mapNotNull { it.toCard() }.distinctBy { it.url }
     }
 
     private fun actorsOf(ld: JSONObject?): List<String>? =
@@ -291,19 +228,12 @@ class DiziPal : MainAPI() {
             .mapNotNull { it.optString("name").trim().takeIf(String::isNotEmpty) }
             .takeIf { it.isNotEmpty() }
 
-    /** ISO-8601 süre (`PT1H46M`) → dakika. */
     private fun minutes(iso: String?): Int? {
         val match = ISO_DURATION.find(iso.orEmpty()) ?: return null
         val total = (match.groupValues[1].toIntOrNull() ?: 0) * 60 + (match.groupValues[2].toIntOrNull() ?: 0)
         return total.takeIf { it > 0 }
     }
 
-    // --------------------------------------------------------------- oynatıcı
-
-    /**
-     * Sayfadaki `enc` bloğunu ve aynı sayfada üretilen parolayı (`k`) çözerek oynatıcı adresini verir.
-     * Parola istek başına değiştiği için sayfadan okunur; sabit kopya tutulmaz.
-     */
     private fun decryptEmbed(html: String): String? {
         val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
         val cipherText = fields["ciphertext"]?.firstOrNull() ?: return null
@@ -316,26 +246,20 @@ class DiziPal : MainAPI() {
     }
 
     private suspend fun npLinks(
-        playerHtml: String,
-        playerUrl: String,
-        emit: (ExtractorLink) -> Unit,
-        emitSubtitle: (SubtitleFile) -> Unit,
+        playerHtml: String, playerUrl: String,
+        emit: (ExtractorLink) -> Unit, emitSubtitle: (SubtitleFile) -> Unit,
     ): Boolean {
         val anchor = playerHtml.indexOf("window.NP_CONFIG")
         val open = if (anchor < 0) -1 else playerHtml.indexOf('{', anchor)
         if (open < 0) return false
-        val config = objectAt(playerHtml, open)?.let { runCatching { JSONObject(it) }.getOrNull() }
-            ?: return false
+        val config = objectAt(playerHtml, open)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return false
 
         config.optJSONArray("subtitles").objects().forEach { track ->
-            // Yeni oynatıcı altyazıyı `tok` ile verir (`nsub.php?v=`); eski yük `url` taşır.
             val url = track.optString("url").takeIf { it.startsWith("http") }?.let { pichiveSign(playerHtml, it) }
                 ?: track.optString("tok").takeIf { it.isNotEmpty() }
                     ?.let { pichiveSign(playerHtml, "${ORIGIN.find(playerUrl)?.value.orEmpty()}/nsub.php?v=$it") }
                 ?: return@forEach
-            val label = track.optString("label").trim()
-                .ifEmpty { track.optString("lang").trim() }
-                .ifEmpty { "Altyazı" }
+            val label = track.optString("label").trim().ifEmpty { track.optString("lang").trim() }.ifEmpty { "Altyazı" }
             emitSubtitle(SubtitleFile(label, url).apply {
                 this.headers = mapOf("Referer" to playerUrl, "user-agent" to UA)
             })
@@ -351,50 +275,30 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    private suspend fun dplayerLinks(
-        playerHtml: String,
-        playerUrl: String,
-        emit: (ExtractorLink) -> Unit,
-    ): Boolean {
+    private suspend fun dplayerLinks(playerHtml: String, playerUrl: String, emit: (ExtractorLink) -> Unit): Boolean {
         val playlist = OPEN_PLAYER.find(playerHtml)?.groupValues?.get(1) ?: return false
         val origin = ORIGIN.find(playerUrl)?.value ?: return false
         val body = runCatching {
-            app.get(
-                "$origin/source2.php",
-                params = mapOf("v" to playlist),
-                headers = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest"),
-                referer = playerUrl,
-            ).text
+            app.get("$origin/source2.php", params = mapOf("v" to playlist),
+                headers = uaHeaders + mapOf("X-Requested-With" to "XMLHttpRequest"), referer = playerUrl).text
         }.getOrNull() ?: return false
         val root = runCatching { JSONObject(body) }.getOrNull() ?: return false
-
         var found = false
         root.optJSONArray("playlist").objects().forEach { item ->
             val label = item.optString("title").trim().ifEmpty { "Kaynak" }
             item.optJSONArray("sources").objects().forEach eachSource@{ source ->
                 val file = source.optString("file").takeIf { it.startsWith("http") } ?: return@eachSource
                 val master = if ("m.php" in file) file.replace("m.php", "master.m3u8") else file
-                emitPlaylist(master, playerUrl, label, emit)
-                found = true
+                emitPlaylist(master, playerUrl, label, emit); found = true
             }
         }
         return found
     }
 
-    /** HLS master'ı varyantlarına ayırır; tek varyant kaldıysa master olduğu gibi verilir. */
-    private suspend fun emitPlaylist(
-        masterUrl: String,
-        referer: String,
-        label: String,
-        emit: (ExtractorLink) -> Unit,
-    ) {
-        val playlist = runCatching { app.get(masterUrl, headers = uaHeaders, referer = referer).text }
-            .getOrNull()
+    private suspend fun emitPlaylist(masterUrl: String, referer: String, label: String, emit: (ExtractorLink) -> Unit) {
+        val playlist = runCatching { app.get(masterUrl, headers = uaHeaders, referer = referer).text }.getOrNull()
         val variants = parseVariants(playlist.orEmpty())
-        if (variants.size <= 1) {
-            emit(hlsLink(masterUrl, label, Qualities.Unknown.value, referer))
-            return
-        }
+        if (variants.size <= 1) { emit(hlsLink(masterUrl, label, Qualities.Unknown.value, referer)); return }
         variants.forEach { (height, url) ->
             val quality = height.takeIf { it > 0 } ?: Qualities.Unknown.value
             val variantLabel = if (quality > 0) "$label ${quality}p" else label
@@ -402,60 +306,42 @@ class DiziPal : MainAPI() {
         }
     }
 
-    /** Master'daki `#EXT-X-STREAM-INF` bloklarını (yükseklik, adres) çiftlerine çevirir. */
     private fun parseVariants(playlist: String): List<Pair<Int, String>> {
         if (!playlist.startsWith("#EXTM3U") ||
             playlist.contains("TYPE=AUDIO", ignoreCase = true) ||
-            playlist.contains("AUDIO=", ignoreCase = true)
-        ) return emptyList()
+            playlist.contains("AUDIO=", ignoreCase = true)) return emptyList()
         val variants = mutableListOf<Pair<Int, String>>()
         var height: Int? = null
         for (raw in playlist.lineSequence()) {
             val line = raw.trim()
             if (line.startsWith("#EXT-X-STREAM-INF")) {
-                height = RESOLUTION.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                continue
+                height = RESOLUTION.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0; continue
             }
             val pending = height ?: continue
             if (line.isEmpty() || line.startsWith("#")) continue
-            variants.add(pending to line)
-            height = null
+            variants.add(pending to line); height = null
         }
         return variants.distinctBy { it.second }
     }
 
     private suspend fun hlsLink(url: String, label: String, quality: Int, referer: String): ExtractorLink =
         newExtractorLink(name, label, url, ExtractorLinkType.M3U8) {
-            this.referer = referer
-            this.quality = quality
-            this.headers = uaHeaders
+            this.referer = referer; this.quality = quality; this.headers = uaHeaders
         }
 
-    // ------------------------------------------------------------------ ortak
-
-    /** `window.NP_CONFIG = {…}` gövdesini süslü parantez sayarak çıkarır (string içindekiler atlanır). */
     private fun objectAt(html: String, from: Int): String? {
         if (from < 0 || from >= html.length || html[from] != '{') return null
-        var depth = 0
-        var inString = false
-        var escaped = false
+        var depth = 0; var inString = false; var escaped = false
         for (index in from until html.length) {
             val char = html[index]
             if (inString) {
-                when {
-                    escaped -> escaped = false
-                    char == '\\' -> escaped = true
-                    char == '"' -> inString = false
-                }
+                when { escaped -> escaped = false; char == '\\' -> escaped = true; char == '"' -> inString = false }
                 continue
             }
             when (char) {
                 '"' -> inString = true
                 '{' -> depth++
-                '}' -> {
-                    depth--
-                    if (depth == 0) return html.substring(from, index + 1)
-                }
+                '}' -> { depth--; if (depth == 0) return html.substring(from, index + 1) }
             }
         }
         return null
@@ -471,38 +357,45 @@ class DiziPal : MainAPI() {
     }
 
     private fun Any?.seasons(): List<JSONObject> = when (this) {
-        is JSONArray -> objects()
-        is JSONObject -> listOf(this)
-        else -> emptyList()
+        is JSONArray -> objects(); is JSONObject -> listOf(this); else -> emptyList()
     }
 
     private fun JSONArray?.objects(): List<JSONObject> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
     companion object {
-        /** Ana sayfa satırları; ayarlardan kapatılabilir. */
-        val ROWS = listOf(
-            "Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet",
-            "Netflix", "Amazon Prime", "Disney+",
-        )
-        /** Oynatıcı CDN'i (Cloudflare) Chrome tarzı UA'lara TLS'ten bağımsız 403 verir; Firefox UA geçer. */
-        private const val UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-        private const val REPORT_HINT =
-            "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
+        val ROWS = listOf("Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet", "Netflix", "Amazon Prime", "Disney+")
+        private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+        private const val REPORT_HINT = "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
         private const val IMAGE_PROXY = "/i/s/"
-
         private val YEAR = Regex("""\b(19\d{2}|20\d{2})\b""")
         private val EPISODE_IN_SLUG = Regex("""-(\d+)x(\d+)""")
         private val ISO_DURATION = Regex("""PT(?:(\d+)H)?(?:(\d+)M)?""")
         private val RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""")
         private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
         private val ORIGIN = Regex("""^https?://[^/]+""")
-
-        /**
-         * Sayfa yükündeki alanlar RSC kaçışıyla (`\"ciphertext\":\"…\"`) gelir; 0-3 ters bölü
-         * kabul edilir. Parola `k` anahtarında durur ve görseller gibi aynı yükte tekrarlanır.
-         */
         private val ENC_FIELD = Regex("""\\{0,3}"(ciphertext|iv|salt|k)\\{0,3}":\\{0,3}"([^"\\]+)""")
+
+        /** PBKDF2-HMAC-SHA512 (999 iterasyon) + AES-256-CBC çözümü. */
+        fun pbkdf2AesCbcDecrypt(ciphertext: ByteArray, passphrase: String, saltB64: String, ivB64: String): String? {
+            return try {
+                val salt = Base64.decode(saltB64, Base64.DEFAULT)
+                val iv = Base64.decode(ivB64, Base64.DEFAULT)
+                val spec = PBEKeySpec(passphrase.toCharArray(), salt, 999, 256)
+                val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
+                val key = factory.generateSecret(spec).encoded
+                val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+                String(cipher.doFinal(ciphertext), Charsets.UTF_8)
+            } catch (_: Exception) { null }
+        }
+
+        /** Oynatıcı sayfasındaki gizli imza/anahtar değerini URL'ye ekler. */
+        fun pichiveSign(playerHtml: String, url: String): String {
+            val sign = Regex("""(?:sign|token|hash)\s*[:=]\s*['"]([a-fA-F0-9]{16,})['"]""")
+                .find(playerHtml)?.groupValues?.get(1) ?: return url
+            val sep = if ('?' in url) '&' else '?'
+            return "$url${sep}sign=$sign"
+        }
     }
 }
