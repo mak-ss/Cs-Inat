@@ -1,6 +1,7 @@
 package com.Blockades
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
@@ -32,7 +33,9 @@ import org.jsoup.nodes.Element
 
 class DiziPalProvider : MainAPI() {
 
-    override var mainUrl = "https://dizipal1595.com"
+    // Ekran görüntüsündeki duyuruya göre güncel adres
+    override var mainUrl = "https://dizipal1596.com"
+
     override var name = "DiziPal"
     override var lang = "tr"
     override val hasMainPage = true
@@ -59,14 +62,17 @@ class DiziPalProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val paged = request.data in pagedSections
         val url = if (paged && page > 1) "${request.data}?page=$page" else request.data
+        Log.d("DiziPal", "getMainPage isteği: $url")
         val doc = app.get(url, headers = uaHeaders).document
         val items = doc.select("a.tc[href]").mapNotNull { it.toCard() }.distinctBy { it.url }
+        Log.d("DiziPal", "getMainPage sonucu: ${items.size} öğe bulundu")
         return newHomePageResponse(request.name, items, hasNext = paged && items.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim()
         if (q.length < 3) return emptyList()
+        Log.d("DiziPal", "Arama isteği: $q")
         val body = runCatching {
             app.post(
                 "$mainUrl/api/mj",
@@ -75,6 +81,7 @@ class DiziPalProvider : MainAPI() {
                 referer = "$mainUrl/"
             ).text
         }.getOrNull() ?: throw ErrorLoadingException("$name: arama isteği başarısız. $REPORT_HINT")
+
         val rows = runCatching { JSONObject(body).optJSONArray("result") }.getOrNull()
             ?: throw ErrorLoadingException("$name: arama yanıtı okunamadı. $REPORT_HINT")
         return rows.objects().mapNotNull { it.toSearchResult() }.distinctBy { it.url }
@@ -84,8 +91,10 @@ class DiziPalProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val pageUrl = httpsUrl(url)
+        Log.d("DiziPal", "load isteği: $pageUrl")
         val doc = runCatching { app.get(pageUrl, headers = uaHeaders).document }.getOrNull()
             ?: throw ErrorLoadingException("$name: içerik sayfası yüklenemedi. $REPORT_HINT")
+
         val isSeries = pageUrl.contains("/series/")
         val ld = jsonLd(doc, if (isSeries) "TVSeries" else "Movie")
         val title = ld?.optString("name")?.trim()?.takeIf { it.isNotEmpty() }
@@ -129,18 +138,39 @@ class DiziPalProvider : MainAPI() {
         val subtitles: (SubtitleFile) -> Unit = { if (Settings.subtitleAllowed(it.lang)) subtitleCallback(it) }
 
         val pageUrl = httpsUrl(data)
-        val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
-            .getOrNull() ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
+        Log.d("DiziPal", "loadLinks başladı: $pageUrl")
+
+        val pageHtml = runCatching {
+            app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text
+        }.getOrNull()
+        if (pageHtml == null) {
+            Log.e("DiziPal", "Bölüm sayfası yüklenemedi: $pageUrl")
+            throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
+        }
 
         val playerUrl = decryptEmbed(pageHtml)
-            ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
-        val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }
-            .getOrNull() ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
+        if (playerUrl == null) {
+            Log.e("DiziPal", "Oynatıcı adresi çözülemedi. HTML içeriği (ilk 500 karakter): ${pageHtml.take(500)}")
+            throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
+        }
+        Log.d("DiziPal", "Oynatıcı adresi çözüldü: $playerUrl")
+
+        val playerHtml = runCatching {
+            app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text
+        }.getOrNull()
+        if (playerHtml == null) {
+            Log.e("DiziPal", "Oynatıcı sayfası yüklenemedi: $playerUrl")
+            throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
+        }
 
         val found = npLinks(playerHtml, playerUrl, links, subtitles) ||
                 dplayerLinks(playerHtml, playerUrl, links)
 
-        if (!found) throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
+        if (!found) {
+            Log.e("DiziPal", "Oynatılabilir kaynak bulunamadı. Player HTML (ilk 500 karakter): ${playerHtml.take(500)}")
+            throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
+        }
+        Log.d("DiziPal", "Bağlantılar başarıyla çıkarıldı.")
         return true
     }
 
@@ -255,22 +285,24 @@ class DiziPalProvider : MainAPI() {
 
     private fun decryptEmbed(html: String): String? {
         val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
-        val cipherText = fields["ciphertext"]?.firstOrNull() ?: return null
-        val iv = fields["iv"]?.firstOrNull() ?: return null
-        val salt = fields["salt"]?.firstOrNull() ?: return null
-        val passphrase = fields["k"]?.maxByOrNull { it.length } ?: return null
+        val cipherText = fields["ciphertext"]?.firstOrNull()
+        val iv = fields["iv"]?.firstOrNull()
+        val salt = fields["salt"]?.firstOrNull()
+        val passphrase = fields["k"]?.maxByOrNull { it.length }
+
+        if (cipherText == null || iv == null || salt == null || passphrase == null) {
+            Log.e("DiziPal", "decryptEmbed: Eksik alanlar. ciphertext=$cipherText, iv=$iv, salt=$salt, k=$passphrase")
+            return null
+        }
+
         val clear = CryptoUtils.pbkdf2AesCbcDecrypt(Base64.decode(cipherText, Base64.DEFAULT), passphrase, salt, iv)
-            ?: return null
+        if (clear == null) {
+            Log.e("DiziPal", "decryptEmbed: Çözme başarısız.")
+            return null
+        }
         return httpsUrl(clear.trim('\t', '\r', '\n', ' ', '\u000f'))
     }
 
-    /**
-     * Gerçek NP_CONFIG yapısına göre düzeltildi:
-     * - subtitles[].url varsa doğrudan kullanılır (tok'tan üretmeye gerek yok).
-     * - sources[].master doğrudan kullanılır; imza zaten URL içinde değil.
-     * - master URL'si nm.php ise önce içeriği çekip m3u8 ayrıştırmayı dener.
-     * - gate alanı varsa loglanır (şimdilik sadece tespit).
-     */
     private suspend fun npLinks(
         playerHtml: String,
         playerUrl: String,
@@ -279,18 +311,17 @@ class DiziPalProvider : MainAPI() {
     ): Boolean {
         val anchor = playerHtml.indexOf("window.NP_CONFIG")
         val open = if (anchor < 0) -1 else playerHtml.indexOf('{', anchor)
-        if (open < 0) return false
-        val config = objectAt(playerHtml, open)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return false
-
-        // --- gate tespiti (şimdilik sadece bilgi amaçlı) ---
-        val gate = config.optJSONObject("gate")
-        if (gate != null) {
-            val gateN = gate.optString("n")
-            val gateB = gate.optInt("b")
-            // Log.v("DiziPal", "NP_GATE tespit edildi: n=$gateN, b=$gateB — şimdilik çözülmüyor")
+        if (open < 0) {
+            Log.e("DiziPal", "npLinks: window.NP_CONFIG bulunamadı.")
+            return false
         }
 
-        // --- altyazılar: url varsa doğrudan kullan ---
+        val config = objectAt(playerHtml, open)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        if (config == null) {
+            Log.e("DiziPal", "npLinks: NP_CONFIG JSON olarak ayrıştırılamadı.")
+            return false
+        }
+
         config.optJSONArray("subtitles").objects().forEach { track ->
             val url = track.optString("url").takeIf { it.startsWith("http") }
                 ?: track.optString("tok").takeIf { it.isNotEmpty() }
@@ -304,7 +335,6 @@ class DiziPalProvider : MainAPI() {
             })
         }
 
-        // --- kaynaklar: master varsa doğrudan kullan ---
         var found = false
         config.optJSONArray("sources").objects().forEach { source ->
             val master = source.optString("master").takeIf { it.startsWith("http") } ?: return@forEach
@@ -339,22 +369,16 @@ class DiziPalProvider : MainAPI() {
         return found
     }
 
-    /**
-     * Master URL'sini çekip varyantlarına ayırır. nm.php gibi endpoint'ler
-     * doğrudan m3u8 döndürmezse, URL olduğu gibi tek link olarak verilir.
-     */
     private suspend fun emitPlaylist(
         masterUrl: String,
         referer: String,
         label: String,
         emit: (ExtractorLink) -> Unit,
     ) {
-        // nm.php gibi endpoint'ler için önce içeriği çek
         val playlist = runCatching {
             app.get(masterUrl, headers = uaHeaders, referer = referer).text
         }.getOrNull()
 
-        // Eğer içerik gerçekten m3u8 ise varyantları ayrıştır
         if (playlist != null && playlist.startsWith("#EXTM3U")) {
             val variants = parseVariants(playlist)
             if (variants.size <= 1) {
@@ -369,7 +393,7 @@ class DiziPalProvider : MainAPI() {
             return
         }
 
-        // m3u8 değilse (nm.php yönlendirme/API), URL'yi olduğu gibi ver
+        // Eğer m3u8 değilse, URL'yi doğrudan vermeyi dene
         emit(hlsLink(masterUrl, label, Qualities.Unknown.value, referer))
     }
 
