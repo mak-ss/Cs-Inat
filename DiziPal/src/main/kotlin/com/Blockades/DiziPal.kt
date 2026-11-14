@@ -26,6 +26,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.security.MessageDigest
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.IvParameterSpec
@@ -275,7 +276,6 @@ class DiziPal : MainAPI() {
             }
             Log.d("DiziPal", "iframe: $absoluteIframe")
 
-            // Video sunucusunun Origin'ini çıkar (örneğin https://sn.dplayer82.site)
             val playerOrigin = Regex("""^https?://[^/]+""").find(absoluteIframe)?.value ?: ""
 
             val iframeHtml = app.get(
@@ -292,7 +292,26 @@ class DiziPal : MainAPI() {
             }
             val npJson = JSONObject(npMatch.groupValues[1])
 
-            // Altyazılar — video sunucusunun Referer ve Origin'ini taşımalı
+            // === GATE ÇÖZÜMÜ ===
+            // np.js: ee(gate.n + ":" + n)[0] >>> (32 - b) == 0  olan n'i bul
+            // ee = SHA-256, [0] = ilk 32-bit kelime (big-endian)
+            var gateParam = ""
+            val gate = npJson.optJSONObject("gate")
+            if (gate != null) {
+                val gateN = gate.optString("n", "")
+                val gateB = gate.optInt("b", 12)
+                if (gateN.isNotEmpty() && gateB in 1..32) {
+                    val pow = solveGate(gateN, gateB)
+                    if (pow != null) {
+                        gateParam = "&p=$pow"
+                        Log.d("DiziPal", "gate çözüldü: n=$gateN b=$gateB p=$pow")
+                    } else {
+                        Log.e("DiziPal", "gate çözülemedi!")
+                    }
+                }
+            }
+
+            // Altyazılar
             npJson.optJSONArray("subtitles")?.let { subs ->
                 for (i in 0 until subs.length()) {
                     val sub = subs.optJSONObject(i) ?: continue
@@ -304,7 +323,9 @@ class DiziPal : MainAPI() {
                         val baseDomain = Regex("""^https?://[^/]+""").find(absoluteIframe)?.value ?: ""
                         subUrl = "$baseDomain$subUrl"
                     }
-                    Log.d("DiziPal", "subtitle: $label -> ${subUrl.take(80)}")
+                    // Gate parametresini altyazı URL'sine de ekle
+                    subUrl += gateParam
+                    Log.d("DiziPal", "subtitle: $label -> ${subUrl.take(120)}")
                     subtitleCallback.invoke(newSubtitleFile(label, subUrl) {
                         this.headers = this@DiziPal.headers + mapOf(
                             "Referer" to absoluteIframe,
@@ -314,30 +335,17 @@ class DiziPal : MainAPI() {
                 }
             }
 
-            // Video kaynakları — doğru Referer ve Origin ile
+            // Video kaynakları
             var any = false
             npJson.optJSONArray("sources")?.let { sources ->
                 for (i in 0 until sources.length()) {
                     val src = sources.optJSONObject(i) ?: continue
-                    val master = src.optString("master", "")
+                    var master = src.optString("master", "")
                     if (master.isEmpty()) continue
+                    // Gate parametresini master URL'sine ekle
+                    master += gateParam
                     val label = src.optString("title", "DiziPal")
-                    Log.d("DiziPal", "video: $label -> ${master.take(100)}")
-
-                    // İsteğe bağlı: m3u8'in erişilebilir olup olmadığını test et
-                    try {
-                        val probe = app.get(
-                            master,
-                            headers = headers + mapOf(
-                                "Referer" to absoluteIframe,
-                                "Origin" to playerOrigin,
-                                "Accept" to "*/*"
-                            )
-                        )
-                        Log.d("DiziPal", "probe $label => HTTP ${probe.code}")
-                    } catch (e: Exception) {
-                        Log.w("DiziPal", "probe $label failed: ${e.message}")
-                    }
+                    Log.d("DiziPal", "video: $label -> ${master.take(120)}")
 
                     callback.invoke(newExtractorLink(
                         source = name,
@@ -360,6 +368,39 @@ class DiziPal : MainAPI() {
         } catch (e: Exception) {
             Log.e("DiziPal", "loadLinks error: ${e.message}")
             false
+        }
+    }
+
+    // === PoW Gate Çözücü ===
+    // np.js'teki algoritma:
+    //   for n in 0..1e8:
+    //     if (sha256(gateN + ":" + n)[0] >>> (32 - b)) == 0:
+    //       return n
+    // [0], hash'in ilk 32-bit kelimesidir (big-endian).
+    // ">>> (32 - b) == 0" demek, ilk b bitinin 0 olması demek.
+    private fun solveGate(gateN: String, b: Int): String? {
+        return try {
+            val md = MessageDigest.getInstance("SHA-256")
+            val mask = (1L shl (32 - b)) - 1L  // üst b bit 0 ise, alt (32-b) bit maskelenir
+            val limit = 100_000_000L
+            var n = 0L
+            while (n < limit) {
+                md.reset()
+                val bytes = md.digest((gateN + ":" + n).toByteArray(Charsets.UTF_8))
+                // İlk 4 byte = [0] big-endian
+                val first = ((bytes[0].toLong() and 0xFF) shl 24) or
+                        ((bytes[1].toLong() and 0xFF) shl 16) or
+                        ((bytes[2].toLong() and 0xFF) shl 8) or
+                        (bytes[3].toLong() and 0xFF)
+                if ((first and mask) == 0L) {
+                    return n.toString()
+                }
+                n++
+            }
+            null
+        } catch (e: Exception) {
+            Log.e("DiziPal", "solveGate error: ${e.message}")
+            null
         }
     }
 
