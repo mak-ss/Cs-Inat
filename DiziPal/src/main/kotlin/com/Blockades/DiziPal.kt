@@ -485,66 +485,94 @@ class DiziPal : MainAPI() {
     private fun JSONArray?.objects(): List<JSONObject> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
-    // ============================================================ ORTAK FONKSİYONLAR
-    // Önceden `com.Blockades.common` paketinden geliyordu; burada yerel olarak tanımlı.
+    // ============================================================ COMMON.KT'DEN TAŞINANLAR
+    // Önceden `com.Blockades.common` paketindeydi; tek dosyada derlenmesi için buraya alındı.
 
-    /**
-     * PBKDF2-HMAC-SHA512 (999 iterasyon, 256-bit anahtar) ile türetilen anahtarla
-     * AES-256-CBC çözümü yapar. Girdi `Base64` çözülmüş ciphertext'tir; `salt` ve `iv`
-     * düz metin/Base64 string olarak verilir. Başarıda UTF-8 düz metin, aksi halde `null` döner.
-     */
-    private fun pbkdf2AesCbcDecrypt(
-        cipherText: ByteArray,
-        passphrase: String,
-        salt: String,
-        iv: String,
-    ): String? = runCatching {
-        val saltBytes = decodeMaybeBase64(salt)
-        val ivBytes = decodeMaybeBase64(iv).let { bytes ->
-            when {
-                bytes.size == 16 -> bytes
-                bytes.size > 16 -> bytes.copyOfRange(0, 16)
-                else -> return null
-            }
+    /** Hex string'i bayt dizisine çevirir (PBKDF2 salt/iv çözümü için). */
+    private fun String.hexToBytes(): ByteArray =
+        chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    /** AES-CBC/PKCS5 çözümü. */
+    private fun aesCbcDecrypt(cipherBytes: ByteArray, key: ByteArray, iv: ByteArray): ByteArray =
+        Cipher.getInstance("AES/CBC/PKCS5Padding").run {
+            init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+            doFinal(cipherBytes)
         }
 
-        val spec = PBEKeySpec(passphrase.toCharArray(), saltBytes, 999, 256)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
-        val keyBytes = factory.generateSecret(spec).encoded
-        val key = SecretKeySpec(keyBytes, "AES")
-
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(ivBytes))
-        String(cipher.doFinal(cipherText), Charsets.UTF_8)
+    /** DiziPal/SelcukFlix RSC `enc` bloğu: PBKDF2-HMAC-SHA512(999, 256) + AES-256-CBC. */
+    private fun pbkdf2AesCbcDecrypt(
+        cipherBytes: ByteArray,
+        passphrase: String,
+        saltHex: String,
+        ivHex: String,
+        rounds: Int = 999,
+        keyBits: Int = 256,
+    ): String? = runCatching {
+        val key = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
+            .generateSecret(PBEKeySpec(passphrase.toCharArray(), saltHex.hexToBytes(), rounds, keyBits))
+            .encoded
+        String(aesCbcDecrypt(cipherBytes, key, ivHex.hexToBytes()), Charsets.UTF_8)
     }.getOrNull()
 
     /**
-     * Oynatıcı sayfasındaki `pichive` imza/token mantığını uygular. Sayfada `pichiveSign` /
-     * `pichive` geçen bir script varsa oradan türetilen token'ı URL'ye ekler; yoksa URL'yi
-     * olduğu gibi döndürür. CDN çoğu durumda yalnız `Referer` ile de çalıştığı için bu,
-     * güvenli bir "en iyi çaba" uygulamasıdır.
+     * pichive iframe'i `nm.php`/`nsub.php` adreslerine proof-of-work ister (`&p=<nonce>`), yoksa 404 döner.
+     * Sayfadaki `NP_GATE` (önek `String.fromCharCode`, sayaç base36, `& maske`) ya da varsayılan biçim
+     * (`sha256("n:i")` ilk `b` biti sıfır) çözülür. shortcut: sayfa bu iki biçimden birini bırakırsa
+     * nonce null olur ve adres imzasız kalır; yeni biçimde tekrar çözülmeli.
      */
-    private fun pichiveSign(page: String, url: String): String {
-        if (url.isBlank()) return url
-        return runCatching {
-            // Sayfada token üretimi için kullanılan gizli anahtar/değer varsa yakala.
-            val token = PICHIVE_TOKEN.find(page)?.groupValues?.get(1)
-            if (token.isNullOrBlank()) return url
-            val separator = if ('?' in url) '&' else '?'
-            if ("pichive=" in url) url else "$url${separator}pichive=$token"
-        }.getOrDefault(url)
+    private fun pichiveGateNonce(html: String): String? {
+        val gate = Regex(""""gate"\s*:\s*\{\s*"n"\s*:\s*"([^"]+)"(?:\s*,\s*"b"\s*:\s*(\d+))?""").find(html) ?: return null
+        val n = gate.groupValues[1]
+        val bits = gate.groupValues[2].toIntOrNull() ?: 12
+        val md = MessageDigest.getInstance("SHA-256")
+        fun wordAt(msg: String, idx: Int): Long {
+            val d = md.digest(msg.toByteArray(Charsets.UTF_8))
+            val o = (idx.coerceIn(0, 7)) * 4
+            return ((d[o].toLong() and 0xff) shl 24) or ((d[o + 1].toLong() and 0xff) shl 16) or
+                ((d[o + 2].toLong() and 0xff) shl 8) or (d[o + 3].toLong() and 0xff)
+        }
+        val fn = Regex("""window\.NP_GATE\s*=\s*function\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*\{([\s\S]*?)\};""").find(html)
+        if (fn == null) {
+            for (i in 0 until 50_000_000) if (wordAt("$n:$i", 0) ushr (32 - bits) == 0L) return i.toString()
+            return null
+        }
+        val nVar = fn.groupValues[1]
+        val body = fn.groupValues[3]
+        val cm = Regex("""var\s+(\w+)\s*=\s*String\.fromCharCode\(([\d,\s]+)\)""").find(body) ?: return null
+        val saltVar = cm.groupValues[1]
+        val salt = cm.groupValues[2].split(',').map { it.trim().toInt().toChar() }.joinToString("")
+        val nonceMatch = Regex("""var\s+(\w+)\s*=\s*(?:\w+\.toString\((\d*)\)|String\(\w+\))""").find(body) ?: return null
+        val nonceVar = nonceMatch.groupValues[1]
+        val radix = nonceMatch.groupValues[2].toIntOrNull()?.coerceIn(2, 36) ?: 10
+        val im = Regex("""\(\s*\w+\(([^)]+)\)\[(\d+)\]\s*(>>>|&)\s*(\d+)\s*\)\s*===?\s*0""").find(body) ?: return null
+        val parts = im.groupValues[1].split('+').map { it.trim() }
+        val wordIdx = im.groupValues[2].toIntOrNull() ?: 0
+        val op = im.groupValues[3]
+        val rhs = im.groupValues[4].toLongOrNull() ?: return null
+        for (i in 0 until 50_000_000) {
+            val nonce = java.lang.Long.toString(i.toLong(), radix)
+            val msg = buildString {
+                for (p in parts) {
+                    when (p) {
+                        nVar -> append(n)
+                        saltVar -> append(salt)
+                        nonceVar -> append(nonce)
+                        else -> append(p.trim('\'', '"'))
+                    }
+                }
+            }
+            val w = wordAt(msg, wordIdx)
+            val ok = if (op == ">>>") (w ushr rhs.toInt()) == 0L else (w and rhs) == 0L
+            if (ok) return nonce
+        }
+        return null
     }
 
-    /** Base64 ise çözer, değilse ham UTF-8 baytlarını döndürür. */
-    private fun decodeMaybeBase64(value: String): ByteArray {
-        val trimmed = value.trim()
-        val looksBase64 = trimmed.length % 4 == 0 &&
-            trimmed.all { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
-        return if (looksBase64) {
-            runCatching { Base64.decode(trimmed, Base64.DEFAULT) }.getOrDefault(trimmed.toByteArray())
-        } else {
-            trimmed.toByteArray(Charsets.UTF_8)
-        }
+    /** `nm.php`/`nsub.php` adresine [pichiveGateNonce] ile bulunan `&p=` imzasını ekler; diğer adresler değişmez. */
+    private fun pichiveSign(html: String, url: String): String {
+        if (!(url.contains("/nm.php") || url.contains("/nsub.php")) || url.contains("&p=")) return url
+        val nonce = pichiveGateNonce(html) ?: return url
+        return "$url&p=$nonce"
     }
 
     companion object {
@@ -566,9 +594,6 @@ class DiziPal : MainAPI() {
         private val RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""")
         private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
         private val ORIGIN = Regex("""^https?://[^/]+""")
-
-        /** Oynatıcı sayfasındaki olası `pichive` token tanımı. */
-        private val PICHIVE_TOKEN = Regex("""pichive(?:Sign|Token)?\s*[:=]\s*['"]([^'"]+)""")
 
         /**
          * Sayfa yükündeki alanlar RSC kaçışıyla (`\"ciphertext\":\"…\"`) gelir; 0-3 ters bölü
