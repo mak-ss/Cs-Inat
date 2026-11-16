@@ -1,4 +1,4 @@
-package com.dizipal
+package com.Blockades
 
 import com.Blockades.common.pichiveSign
 import android.util.Base64
