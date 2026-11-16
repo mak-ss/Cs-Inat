@@ -1,13 +1,15 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
-import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import android.content.Context
 
 @CloudstreamPlugin
-class DiziPalPlugin : Plugin() {
+class DiziPalPlugin: Plugin() {
     override fun load(context: Context) {
         registerMainAPI(DiziPal())
+        registerExtractorAPI(VideoPlays())
+        registerExtractorAPI(StreamCore())
     }
 }
