@@ -2,7 +2,7 @@ name: Domain Değişiklik Kontrolü
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 on:
   workflow_dispatch:
@@ -19,6 +19,9 @@ jobs:
     steps:
       - name: Depoyu Çek
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
 
       - name: Python Kur
         uses: actions/setup-python@v5
@@ -51,8 +54,20 @@ jobs:
           fi
 
           git commit -m "🤖 Domain Update" -m "Automatic domain update"
-          git push
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # Remote'daki yeni commit'leri al ve kendi commit'imizi üstüne rebase et
+          for i in 1 2 3 4 5; do
+            if git push origin HEAD:"${GITHUB_REF_NAME}"; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Push başarısız, rebase edilip tekrar deneniyor ($i)..."
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            sleep $((i * 2))
+          done
+
+          echo "Push, tekrar denemelere rağmen başarısız oldu"
+          exit 1
 
       - name: build.yml Tetikle
         if: steps.commit.outputs.changed == 'true'
