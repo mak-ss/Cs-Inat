@@ -24,7 +24,6 @@ class DiziPalOrijinal : MainAPI() {
     override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    // ! CloudFlare bypass
     override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
@@ -44,9 +43,6 @@ class DiziPalOrijinal : MainAPI() {
         "${mainUrl}/kategori/belgesel"    to "Belgesel",
     )
 
-    // Ekim 2026: bölüm (/bolum/) ve film (/film/) sayfaları önce sitenin kendi "Doğrulama · DiziPAL" ara sayfasını
-    // gösteriyor (JS ile çalışan bir tarayıcı kontrolü). Bu kontrolü uygulamanın gömülü tarayıcısı (WebView) sayfayı
-    // normal bir tarayıcı gibi açarak geçer; oluşan oturum çerezleri sonraki isteklerde kullanılır.
     private var dogrulamaCerezleri: Map<String, String> = emptyMap()
     private var sonDogrulama       = 0L
     private var dogrulamaBasarili  = false
@@ -63,11 +59,10 @@ class DiziPalOrijinal : MainAPI() {
     }.getOrDefault(emptyMap())
 
     private suspend fun dogrula(url: String): Boolean = dogrulamaKilidi.withLock {
-        // Son bir dakikada denendiyse WebView yeniden açılmaz (başarısızsa her tıklamada beklenmesin)
         if (System.currentTimeMillis() - sonDogrulama < 60_000L) return@withLock dogrulamaBasarili
         runCatching {
             WebViewResolver(
-                interceptUrl = Regex("""/public/assets/js/main\.js"""),  // yalnızca asıl sayfa yükler
+                interceptUrl = Regex("""/public/assets/js/main\.js"""),
                 userAgent    = USER_AGENT,
                 useOkhttp    = false,
                 timeout      = 25_000L
@@ -80,7 +75,6 @@ class DiziPalOrijinal : MainAPI() {
         dogrulamaBasarili
     }
 
-    // Gömülü tarayıcı CloudStream'in DNS over HTTPS ayarını kullanmaz; site DNS ile engelliyse doğrulama sayfası açılamaz
     private var uyarildi = false
     private fun dogrulamaUyarisi() {
         if (uyarildi) return
@@ -129,7 +123,6 @@ class DiziPalOrijinal : MainAPI() {
         val href      = fixUrlNull(this.attr("href")) ?: return null
         val posterUrl = fixUrlNull(this.selectFirst("img")?.let { it.attr("data-src").ifBlank { it.attr("src") } })
 
-        // Bölüm adresi dizi adresinden türetilemiyor (slug farklı olabiliyor); load() içinde dizi sayfasına geçilir
         return newTvSeriesSearchResponse(if (episode != null) "$name $episode" else name, href, TvType.TvSeries) {
             this.posterUrl = posterUrl
         }
@@ -159,7 +152,6 @@ class DiziPalOrijinal : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("${mainUrl}/arama", params = mapOf("q" to query), referer = "${mainUrl}/").document
-
         return document.select(".content-card a.card-link").mapNotNull { it.toSearchResult() }
     }
 
@@ -173,8 +165,6 @@ class DiziPalOrijinal : MainAPI() {
         }
         if (!url.contains("/bolum/")) return loadSeries(url, app.get(url, referer = "${mainUrl}/").document)
 
-        // Son Bölümler kartı bölüme gider: önce adresten türetilen dizi sayfası denenir (bölüm sayfası doğrulama ister),
-        // olmazsa bölüm sayfasındaki "Tüm Bölümler" bağlantısı kullanılır
         val tahmin = Regex("""/bolum/(.+?)-\d+-sezon-\d+-bolum""").find(url)?.groupValues?.get(1)?.let { "${mainUrl}/dizi/$it" }
         if (tahmin != null) {
             val yanit = app.get(tahmin, referer = "${mainUrl}/")
@@ -264,6 +254,27 @@ class DiziPalOrijinal : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         Log.d("DZP", "data » $data")
+
+        // === EKLENEN KISIM: Doğrudan m3u8 linki ise (senin verdiğin link gibi) ===
+        if (data.contains(".m3u8")) {
+            Log.d("DZP", "Doğrudan m3u8 tespit edildi » $data")
+            callback.invoke(
+                newExtractorLink(
+                    source = this.name,
+                    name   = "DiziPal (HLS)",
+                    url    = data,
+                    type   = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = "${mainUrl}/" // Bazı CDN'ler referer ister, Dizipal domainini referer olarak gönder
+                    this.quality = Qualities.Unknown.value
+                    // Gerekirse buraya headers eklenebilir, örneğin User-Agent
+                    // this.headers = mapOf("User-Agent" to USER_AGENT)
+                }
+            )
+            return true
+        }
+        // =======================================================================
+
         val sayfa    = sayfaGetir(data)
         val document = sayfa.document
         if (document.dogrulamaSayfasi()) {
@@ -272,7 +283,6 @@ class DiziPalOrijinal : MainAPI() {
         }
         val cfg = document.selectFirst("#videoContainer")?.attr("data-cfg")?.takeIf { it.isNotBlank() } ?: return false
 
-        // data-cfg anahtarı oturuma bağlı: sayfanın verdiği çerezler (PHPSESSID) olmadan "Invalid token" döner
         val config = app.post(
             "${mainUrl}/ajax-player-config",
             data    = mapOf("cfg" to cfg),
@@ -296,7 +306,6 @@ class DiziPalOrijinal : MainAPI() {
             video
         }
 
-        // Doğrudan m3u8
         if (config.config?.t == "m3u8" || iframe.contains(".m3u8")) {
             callback.invoke(
                 newExtractorLink(this.name, this.name, iframe, ExtractorLinkType.M3U8) {
@@ -307,26 +316,10 @@ class DiziPalOrijinal : MainAPI() {
             return true
         }
 
-        // Diğer tüm gömülü oynatıcılar için genel extractor
         loadExtractor(iframe, "${mainUrl}/", subtitleCallback, callback)
         return true
     }
 
-    /**
-     * NOT: Eğer projenizde VidMolyNeo / JwKaynak sınıfları varsa, ilgili import'ları ekleyip
-     * aşağıdaki bloğu loadExtractor satırının ÜSTÜNE koyabilirsiniz:
-     *
-     *   if (iframe.contains("vidmoly")) {
-     *       VidMolyNeo().getUrl(iframe, "${mainUrl}/", subtitleCallback, callback)
-     *       return true
-     *   }
-     *   if (Regex("""/embed-[a-z0-9]{12}\.html""").containsMatchIn(iframe)) {
-     *       JwKaynak().getUrl(iframe, "${mainUrl}/", subtitleCallback, callback)
-     *       return true
-     *   }
-     */
-
-    /** Oynatıcı adresi AES-256-CBC ile şifrelenmiş halde gelir; anahtar k1 XOR k2 ile elde edilir. */
     private fun coz(enc: EncData): String? {
         return runCatching {
             val k1  = base64DecodeArray(enc.k1 ?: return null)
