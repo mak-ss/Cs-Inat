@@ -16,30 +16,42 @@ class DiziPal : MainAPI() {
     override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    override val mainPage = mainPageOf(
-        "${mainUrl}/bolumler" to "Son Bölümler",
-        "${mainUrl}/diziler"  to "Yabancı Diziler",
-        "${mainUrl}/filmler"  to "Filmler",
-        "${mainUrl}/populer"  to "Popüler",
-    )
+override val mainPage = mainPageOf(
+    "${mainUrl}/bolumler"           to "Son Bölümler",
+    "${mainUrl}/diziler"            to "Yabancı Diziler",
+    "${mainUrl}/filmler"            to "Filmler",
+    "${mainUrl}/populer"            to "Popüler",
+    "${mainUrl}/platform/netflix"   to "Netflix",
+    "${mainUrl}/platform/exxen"     to "Exxen",
+    "${mainUrl}/platform/amazon-prime-video" to "Amazon Prime",
+    "${mainUrl}/platform/disney-plus" to "Disney+",
+    "${mainUrl}/platform/hbo-max"   to "HBO Max",
+    "${mainUrl}/platform/apple-tv-plus" to "Apple TV+",
+    "${mainUrl}/platform/blutv"     to "BluTV",
+    "${mainUrl}/platform/mubi"      to "Mubi",
+)
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val sayfali = request.data.endsWith("/diziler") || request.data.endsWith("/filmler")
-        if (!sayfali && page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
+override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    val sayfali = request.data.endsWith("/diziler") ||
+                  request.data.endsWith("/filmler")  ||
+                  request.data.contains("/platform/")
+    if (!sayfali && page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
-        val url      = if (page > 1) "${request.data}?page=${page}" else request.data
-        val document = app.get(url, referer = "${mainUrl}/").document
+    val url      = if (page > 1) "${request.data}?page=${page}" else request.data
+    val document = app.get(url, referer = "${mainUrl}/").document
 
-        val home = if (request.data.endsWith("/bolumler")) {
-            document.select("a[href^='/bolumler/']").filter { it.selectFirst("img") != null }.mapNotNull { it.sonBolumler() }
-        } else {
-            document.select("a.group.block[href^='/diziler/'], a.group.block[href^='/filmler/']").mapNotNull { it.toSearchResult() }
-        }.distinctBy { it.url }
+    val home = if (request.data.endsWith("/bolumler")) {
+        document.select("a[href^='/bolumler/']").filter { it.selectFirst("img") != null }.mapNotNull { it.sonBolumler() }
+    } else {
+        // /diziler, /filmler ve /platform/* sayfaları aynı grid yapısını kullanıyor
+        document.select("a.group.block[href^='/diziler/'], a.group.block[href^='/filmler/']")
+            .mapNotNull { it.toSearchResult() }
+    }.distinctBy { it.url }
 
-        val hasNext = sayfali && document.selectFirst("a[href*='page=${page + 1}']") != null
+    val hasNext = sayfali && document.selectFirst("a[href*='page=${page + 1}']") != null
 
-        return newHomePageResponse(request.name, home, hasNext)
-    }
+    return newHomePageResponse(request.name, home, hasNext)
+}
 
     private fun Element.sonBolumler(): SearchResponse? {
         val satirlar = this.select("p")
