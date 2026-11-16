@@ -1,10 +1,9 @@
-package com.neowatch
+package com.Blockades
 
 import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-
 import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.nicehttp.NiceResponse
@@ -29,20 +28,20 @@ class DiziPalOrijinal : MainAPI() {
     override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/bolumler"                 to "Son Bölümler",
-        "${mainUrl}/diziler"                  to "Yeni Diziler",
-        "${mainUrl}/filmler"                  to "Yeni Filmler",
-        "${mainUrl}/platform/netflix"         to "Netflix",
-        "${mainUrl}/platform/exxen"           to "Exxen",
-        "${mainUrl}/platform/blutv"           to "BluTV",
-        "${mainUrl}/platform/disney-plus"     to "Disney+",
-        "${mainUrl}/platform/prime-video"     to "Amazon Prime",
-        "${mainUrl}/platform/max"             to "Max",
-        "${mainUrl}/platform/gain"            to "Gain",
-        "${mainUrl}/platform/tabii"           to "Tabii",
-        "${mainUrl}/kategori/bilim-kurgu"     to "Bilimkurgu",
-        "${mainUrl}/kategori/komedi"          to "Komedi",
-        "${mainUrl}/kategori/belgesel"        to "Belgesel",
+        "${mainUrl}/bolumler"             to "Son Bölümler",
+        "${mainUrl}/diziler"              to "Yeni Diziler",
+        "${mainUrl}/filmler"              to "Yeni Filmler",
+        "${mainUrl}/platform/netflix"     to "Netflix",
+        "${mainUrl}/platform/exxen"       to "Exxen",
+        "${mainUrl}/platform/blutv"       to "BluTV",
+        "${mainUrl}/platform/disney-plus" to "Disney+",
+        "${mainUrl}/platform/prime-video" to "Amazon Prime",
+        "${mainUrl}/platform/max"         to "Max",
+        "${mainUrl}/platform/gain"        to "Gain",
+        "${mainUrl}/platform/tabii"       to "Tabii",
+        "${mainUrl}/kategori/bilim-kurgu" to "Bilimkurgu",
+        "${mainUrl}/kategori/komedi"      to "Komedi",
+        "${mainUrl}/kategori/belgesel"    to "Belgesel",
     )
 
     // Ekim 2026: bölüm (/bolum/) ve film (/film/) sayfaları önce sitenin kendi "Doğrulama · DiziPAL" ara sayfasını
@@ -258,7 +257,12 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         Log.d("DZP", "data » $data")
         val sayfa    = sayfaGetir(data)
         val document = sayfa.document
@@ -266,7 +270,7 @@ class DiziPalOrijinal : MainAPI() {
             dogrulamaUyarisi()
             return false
         }
-        val cfg      = document.selectFirst("#videoContainer")?.attr("data-cfg")?.takeIf { it.isNotBlank() } ?: return false
+        val cfg = document.selectFirst("#videoContainer")?.attr("data-cfg")?.takeIf { it.isNotBlank() } ?: return false
 
         // data-cfg anahtarı oturuma bağlı: sayfanın verdiği çerezler (PHPSESSID) olmadan "Invalid token" döner
         val config = app.post(
@@ -274,7 +278,11 @@ class DiziPalOrijinal : MainAPI() {
             data    = mapOf("cfg" to cfg),
             referer = data,
             cookies = dogrulamaCerezleri + sayfa.cookies,
-            headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Origin" to mainUrl, "User-Agent" to USER_AGENT)
+            headers = mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "Origin"           to mainUrl,
+                "User-Agent"       to USER_AGENT
+            )
         ).parsedSafe<PlayerConfig>() ?: return false
         if (config.success == false) Log.d("DZP", "ajax-player-config başarısız » cfg=$cfg")
 
@@ -288,29 +296,35 @@ class DiziPalOrijinal : MainAPI() {
             video
         }
 
-        when {
-            config.config?.t == "m3u8" || iframe.contains(".m3u8") -> {
-                callback.invoke(
-                    newExtractorLink(this.name, this.name, iframe, ExtractorLinkType.M3U8) {
-                        this.referer = "${mainUrl}/"
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-            }
-            iframe.contains("vidmoly") -> {
-                VidMolyNeo().getUrl(iframe, "${mainUrl}/", subtitleCallback, callback)
-            }
-            Regex("""/embed-[a-z0-9]{12}\.html""").containsMatchIn(iframe) -> {
-                // formationfeed.net vb. XFileSharing oynatıcıları
-                var bulundu = false
-                JwKaynak().getUrl(iframe, "${mainUrl}/", subtitleCallback) { bulundu = true; callback.invoke(it) }
-                if (!bulundu) loadExtractor(iframe, "${mainUrl}/", subtitleCallback, callback)
-            }
-            else -> loadExtractor(iframe, "${mainUrl}/", subtitleCallback, callback)
+        // Doğrudan m3u8
+        if (config.config?.t == "m3u8" || iframe.contains(".m3u8")) {
+            callback.invoke(
+                newExtractorLink(this.name, this.name, iframe, ExtractorLinkType.M3U8) {
+                    this.referer = "${mainUrl}/"
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+            return true
         }
 
+        // Diğer tüm gömülü oynatıcılar için genel extractor
+        loadExtractor(iframe, "${mainUrl}/", subtitleCallback, callback)
         return true
     }
+
+    /**
+     * NOT: Eğer projenizde VidMolyNeo / JwKaynak sınıfları varsa, ilgili import'ları ekleyip
+     * aşağıdaki bloğu loadExtractor satırının ÜSTÜNE koyabilirsiniz:
+     *
+     *   if (iframe.contains("vidmoly")) {
+     *       VidMolyNeo().getUrl(iframe, "${mainUrl}/", subtitleCallback, callback)
+     *       return true
+     *   }
+     *   if (Regex("""/embed-[a-z0-9]{12}\.html""").containsMatchIn(iframe)) {
+     *       JwKaynak().getUrl(iframe, "${mainUrl}/", subtitleCallback, callback)
+     *       return true
+     *   }
+     */
 
     /** Oynatıcı adresi AES-256-CBC ile şifrelenmiş halde gelir; anahtar k1 XOR k2 ile elde edilir. */
     private fun coz(enc: EncData): String? {
@@ -328,9 +342,9 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     data class PlayerConfig(
-        @JsonProperty("success") val success: Boolean?     = null,
-        @JsonProperty("config")  val config: ConfigData?   = null,
-        @JsonProperty("enc")     val enc: EncData?         = null
+        @JsonProperty("success") val success: Boolean?   = null,
+        @JsonProperty("config")  val config: ConfigData? = null,
+        @JsonProperty("enc")     val enc: EncData?       = null
     )
 
     data class ConfigData(
