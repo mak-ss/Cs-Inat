@@ -20,7 +20,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class Rec : MainAPI() {
-    override var mainUrl              = "https://a.psrectv80.xyz"
+    override var mainUrl              = "https://floral-star-55c8.cloudflareaccess.com"
     override var name                 = "RecTV"
     override val hasMainPage          = true
     override var lang                 = "tr"
