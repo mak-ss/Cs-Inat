@@ -1,7 +1,5 @@
 package com.Blockades
 
-import com.Blockades.browserHeaders
-import com.Blockades.posterSrcLazy
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -27,6 +25,45 @@ import com.lagradost.cloudstream3.utils.getQualityFromName
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
+
+// ---- Gömülü yardımcılar (eski Common.kt yerine) ----
+
+private val browserHeaders: Map<String, String> =
+    java.util.TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER).apply {
+        put(
+            "user-agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        )
+        put("accept-language", "tr-TR,tr;q=0.9")
+    }
+
+private val PLACEHOLDER_IMG = Regex(
+    """^(data:|about:|javascript:)|/(pixel|blank|lazy|placeholder|empty|spacer|transparent|altyazi|dublaj|tr-flag|en-flag)\.(png|gif|jpg|jpeg|svg|webp)""",
+    RegexOption.IGNORE_CASE,
+)
+private val BG_URL = Regex("""url\(['"]?([^'")\s]+)['"]?\)""", RegexOption.IGNORE_CASE)
+
+private fun Element.posterSrcLazy(): String? {
+    for (attrName in listOf(
+        "data-src", "data-original", "data-lazy-src", "data-wpfc-original-src",
+        "data-lazy", "data-bg", "data-background", "data-image", "data-poster", "src"
+    )) {
+        val v = attr(attrName).trim()
+        if (v.isNotEmpty() && !PLACEHOLDER_IMG.containsMatchIn(v)) return v
+    }
+    for (attrName in listOf("data-srcset", "srcset")) {
+        val v = attr(attrName).trim().substringBefore(',').trim().substringBefore(' ').trim()
+        if (v.isNotEmpty() && !PLACEHOLDER_IMG.containsMatchIn(v)) return v
+    }
+    val style = attr("style").trim()
+    if (style.isNotEmpty()) {
+        val bg = BG_URL.find(style)?.groupValues?.get(1)?.trim().orEmpty()
+        if (bg.isNotEmpty() && !PLACEHOLDER_IMG.containsMatchIn(bg)) return bg
+    }
+    return null
+}
 
 private fun cleanTitle(raw: String?): String = (raw ?: "")
     .replace(Regex("""\s*\|.*$"""), "")
@@ -36,7 +73,7 @@ private fun cleanTitle(raw: String?): String = (raw ?: "")
     .replace(Regex("""\s+(?:Türkçe|Dublaj|Altyazılı)\b.*$""", RegexOption.IGNORE_CASE), "")
     .trim().trim('-', '–', '|', ',')
 
-class Filmizyon : MainAPI() {
+class Dizilla : MainAPI() {
     private val uaHeaders get() = browserHeaders
 
     override var mainUrl = "https://www.filmizyon.net"
