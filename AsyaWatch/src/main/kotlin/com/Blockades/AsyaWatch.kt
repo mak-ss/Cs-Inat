@@ -55,15 +55,11 @@ class AsyaWatch : MainAPI() {
 
     private val uaHeaders get() = browserHeaders
 
-    override val mainPage get() = ROWS.mapNotNull { row ->
-        if (!Settings.rowEnabled(row)) return@mapNotNull null
-        when (row) {
-            "Yeni Diziler" -> MainPageData(row, "$mainUrl/")
-            "Son Bölümler" -> MainPageData(row, "$mainUrl/dizi-izle")
-            "Son Filmler" -> MainPageData(row, "$mainUrl/film-izle")
-            else -> null
-        }
-    }
+    override val mainPage get() = listOf(
+        MainPageData("Yeni Diziler", "$mainUrl/"),
+        MainPageData("Son Bölümler", "$mainUrl/dizi-izle"),
+        MainPageData("Son Filmler", "$mainUrl/film-izle"),
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
