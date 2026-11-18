@@ -1,5 +1,4 @@
 package com.Blockades
-
 import android.util.Base64
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
@@ -39,7 +38,7 @@ import org.json.JSONTokener
  * Oynatıcı iframe'i (pichive) `window.NP_CONFIG.sources[].master` altında bir HLS master m3u8 verir,
  * master ve segmentler yalnızca pichive origin'ini referer kabul eder.
  */
-class SelcukFlixProvider : MainAPI() {
+class SelcukFlix : MainAPI() {
     override var mainUrl = "https://selcukflix.app"
     override var name = "SelcukFlix"
     override var lang = "tr"
@@ -57,7 +56,6 @@ class SelcukFlixProvider : MainAPI() {
     )
 
     override val mainPage get() = ROWS.mapNotNull { name ->
-        if (!Settings.rowEnabled(name)) return@mapNotNull null
         val data = when (name) {
             "Yeni Filmler" -> "$mainUrl/film-izle"
             "Yeni Diziler" -> "$mainUrl/dizi-izle"
@@ -170,7 +168,7 @@ class SelcukFlixProvider : MainAPI() {
         val emitted = mutableSetOf<String>()
         val embeds = mutableSetOf<String>()
         suspend fun emit(url: String, label: String, quality: Int, referer: String) {
-            if (!emitted.add(url) || !Settings.qualityAllowed(quality)) return
+            if (!emitted.add(url)) return
             val type = if (url.contains(".mp4")) ExtractorLinkType.VIDEO else ExtractorLinkType.M3U8
             callback(newExtractorLink(name, label, url, type) {
                 this.referer = referer
