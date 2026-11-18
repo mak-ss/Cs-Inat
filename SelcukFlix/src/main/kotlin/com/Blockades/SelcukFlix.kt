@@ -1,365 +1,386 @@
 package com.Blockades
 
 import android.util.Log
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.KotlinModule
-import com.lagradost.cloudstream3.Episode
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.fixUrl
-import com.lagradost.cloudstream3.fixUrlNull
-import com.lagradost.cloudstream3.mainPageOf
-import com.lagradost.cloudstream3.newEpisode
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.newTvSeriesSearchResponse
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import org.jsoup.Jsoup
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
+// Kasım 2026: site DiziPalGuncel ile aynı Next.js altyapısına geçti. __NEXT_DATA__/secureData ve /api/bg/* uçları kalktı.
+// Kartlar a.tc (dizi/film) ve div.ec > a.ecl (bölüm); bilgiler, sezon-bölüm listesi ve şifreli oynatıcı adresi RSC verisinde.
 class SelcukFlix : MainAPI() {
     override var mainUrl              = "https://selcukflix.app"
     override var name                 = "SelcukFlix"
     override val hasMainPage          = true
     override var lang                 = "tr"
     override val hasQuickSearch       = true
-    override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
+    override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
+    // ! CloudFlare bypass
     override var sequentialMainPage = true
-    override var sequentialMainPageDelay       = 150L
-    override var sequentialMainPageScrollDelay = 150L
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/dizi-izle"          to "Yeni Diziler",
-        "${mainUrl}/film-izle"          to "Yeni Filmler",
-        "${mainUrl}/trend"              to "Trend",
-        "${mainUrl}/kesfet"             to "Keşfet"
+        "${mainUrl}/tum-bolumler"                to "Son Bölümler",
+        "${mainUrl}/dizi-izle"                   to "Diziler",
+        "${mainUrl}/film-izle"                   to "Filmler",
+        "${mainUrl}/yabanci-film-izle"           to "Yabancı Filmler",
+        "${mainUrl}/turkce-dublaj-dizi-izle"     to "Türkçe Dublaj Diziler",
+        "${mainUrl}/turkce-altyazili-dizi-izle"  to "Türkçe Altyazılı Diziler",
+        "${mainUrl}/kdrama-izle"                 to "Kore Dizileri",
+        "${mainUrl}/anime-izle"                  to "Anime",
+        "${mainUrl}/imdb-top-250-film"           to "IMDb Top 250",
+        "${mainUrl}/kesfet"                      to "Keşfet",
+        "${mainUrl}/kanal/netflix"               to "Netflix",
+        "${mainUrl}/kanal/disney"                to "Disney+",
+        "${mainUrl}/kanal/amazon"                to "Amazon Prime",
+        "${mainUrl}/kanal/hbo-max"               to "HBO Max",
+        "${mainUrl}/kanal/apple-tv"              to "Apple TV+",
     )
 
-    private val headers = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8"
-    )
+    // Kanal sayfaları sayfalı değil; diğer listeler ?page=N
+    private fun sayfali(adres: String) = !adres.contains("/kanal/")
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page > 1) "${request.data}?sayfa=$page" else request.data
-        Log.d("SelcukFlix", "getMainPage çağrıldı: ${request.name} -> $url")
-        val document = app.get(url, headers = headers, referer = mainUrl).document
-        val html = document.html()
-        Log.d("SelcukFlix", "getMainPage HTML uzunluk: ${html.length}")
+        val sayfaVar = sayfali(request.data)
+        if (!sayfaVar && page > 1) return newHomePageResponse(request.name, emptyList(), hasNext = false)
 
-        // 1) Önce __NEXT_DATA__ içindeki initialSeries'i dene (kategori sayfaları için)
-        val nextDataMatch = Regex("""<script id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL).find(html)
-        if (nextDataMatch != null) {
-            val json = nextDataMatch.groupValues[1]
-            Log.d("SelcukFlix", "initialSeries aranıyor...")
-            val initialMatch = Regex(""""initialSeries"\s*:\s*"([^"]+)"""").find(json)
-            Log.d("SelcukFlix", "initialMatch: ${initialMatch != null}")
-            if (initialMatch != null) {
-                Log.d("SelcukFlix", "initialSeries uzunluk: ${initialMatch.groupValues[1].length}")
-                val decoded = SelcukFlixDecryptor.decryptSecureData(initialMatch.groupValues[1])
-                Log.d("SelcukFlix", "decoded uzunluk: ${decoded.length}, ilk 50: ${decoded.take(50)}")
-                if (decoded.isNotEmpty() && decoded.startsWith("[")) {
-                    val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-                    try {
-                        val array = mapper.readTree(decoded)
-                        val home = array.mapNotNull { node ->
-                            val slug = node.get("used_slug")?.asText() ?: return@mapNotNull null
-                            val title = node.get("original_title")?.asText()?.ifBlank { null }
-                                ?: node.get("culture_title")?.asText()?.ifBlank { null }
-                                ?: return@mapNotNull null
-                            val poster = node.get("poster_url")?.asText()?.ifBlank { null }
-                                ?: node.get("face_url")?.asText()?.ifBlank { null }
-                            val typeId = node.get("type_id")?.asInt() ?: 0
-                            val itemUrl = fixUrl(slug)
-                            val isMovie = slug.startsWith("film/") || typeId == 1
-                            if (isMovie) {
-                                newMovieSearchResponse(title, itemUrl, TvType.Movie) { this.posterUrl = poster }
-                            } else {
-                                newTvSeriesSearchResponse(title, itemUrl, TvType.TvSeries) { this.posterUrl = poster }
-                            }
-                        }
-                        Log.d("SelcukFlix", "Parse sonucu: ${home.size} dizi")
-                        if (home.isNotEmpty()) {
-                            return newHomePageResponse(request.name, home, hasNext = home.size > 20)
-                        }
-                    } catch (e: Exception) {
-                        Log.e("SelcukFlix", "initialSeries parse hatası: ${e.message}")
-                    }
-                }
-            }
-        }
+        val adres    = if (sayfaVar && page > 1) "${request.data}?page=$page" else request.data
+        val document = app.get(adres, referer = "${mainUrl}/").document
+        val anime    = request.data.contains("/anime")
 
-        // 2) Fallback: HTML kartları
-        val home = document.select("a[href^='dizi/'], a[href^='/dizi/'], a[href^='film/'], a[href^='/film/']")
-            .mapNotNull { it.toSearchResult() }
-            .distinctBy { it.url }
+        val home = (document.select("div.ec > a.ecl, a.ecl").mapNotNull { it.bolumKarti() } +
+                    document.select("a.tc").mapNotNull { it.icerikKarti(anime) }).distinctBy { it.url }
 
-        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
+        return newHomePageResponse(request.name, home, hasNext = sayfaVar && home.isNotEmpty())
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        // Sadece içinde img olan kartları al
+    private fun Element.posterAl(): String? {
         val img = this.selectFirst("img") ?: return null
-        val href = fixUrlNull(this.attr("href")) ?: return null
+        val src = img.attr("data-src").ifBlank { img.attr("data-srcset").substringBefore(" ") }
+            .ifBlank { img.attr("srcset").substringBefore(" ") }.ifBlank { img.attr("src") }
+        return if (src.isBlank() || src.startsWith("data:")) null else fixUrlNull(src)
+    }
 
-        // Dizi detay sayfası linkleri sadece (sezon/bolum içermeyen)
-        if (href.contains("/sezon-") || href.contains("/bolum-")) return null
+    // Bölüm kartı: div.ec > a.ecl + span (resim) + div > span.tn (dizi adı) + span (sezon/bölüm)
+    private fun Element.bolumKarti(): SearchResponse? {
+        val href  = fixUrlNull(this.attr("href")) ?: return null
+        val kutu  = this.parent() ?: this
+        val dizi  = kutu.selectFirst("span.tn")?.text()?.trim()?.ifBlank { null }
+            ?: this.attr("aria-label").substringBefore(",").trim().ifBlank { null } ?: return null
+        val bilgi = kutu.selectFirst("span.tn + span")?.text()?.trim()
+            ?.replace(". Sezon ", "x")?.replace(". Bölüm", "")?.ifBlank { null }
 
-        val alt = img.attr("alt").trim()
-        val title = alt.removeSuffix(" izle").removeSuffix(" full hd izle").trim()
-        if (title.isEmpty()) return null
+        return newTvSeriesSearchResponse(if (bilgi == null) dizi else "$dizi $bilgi", href, TvType.TvSeries) {
+            this.posterUrl = kutu.posterAl() ?: this@bolumKarti.posterAl()
+        }
+    }
 
-        val posterUrl = fixUrlNull(img.attr("data-src").ifBlank { img.attr("src") })
+    // Dizi/film kartı: a.tc > span.fr (resim) + span.tt|span.ft1 (ad) + span (yıl / türler · yıl)
+    private fun Element.icerikKarti(anime: Boolean = false): SearchResponse? {
+        val href  = fixUrlNull(this.attr("href")) ?: return null
+        val title = this.selectFirst("span.tt, span.ft1")?.text()?.trim()?.ifBlank { null }
+            ?: this.attr("aria-label").substringBefore(",").trim().ifBlank { null } ?: return null
+        val year  = Regex("""\b(19|20)\d{2}\b""").find(this.selectFirst("span.tt + span, span.ft1 + span")?.text().orEmpty())?.value?.toIntOrNull()
 
-        val isMovie = href.contains("/film/")
-        val tvType  = if (isMovie) TvType.Movie else TvType.TvSeries
-
-        return if (isMovie) {
-            newMovieSearchResponse(title, href, tvType) { this.posterUrl = posterUrl }
+        return if (href.contains("/film/")) {
+            newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = this@icerikKarti.posterAl()
+                this.year      = year
+            }
         } else {
-            newTvSeriesSearchResponse(title, href, tvType) { this.posterUrl = posterUrl }
+            newTvSeriesSearchResponse(title, href, if (anime) TvType.Anime else TvType.TvSeries) {
+                this.posterUrl = this@icerikKarti.posterAl()
+                this.year      = year
+            }
+        }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val govde = """{"action":"searchContent","params":[${mapper.writeValueAsString(query)}]}"""
+        val yanit = app.post(
+            "${mainUrl}/api/mj",
+            requestBody = govde.toRequestBody("application/json".toMediaType()),
+            referer     = "${mainUrl}/",
+            headers     = mapOf("Origin" to mainUrl, "Accept" to "application/json")
+        ).text
+
+        return jsonOku<AramaYanit>(yanit)?.result.orEmpty().mapNotNull { item ->
+            val title = item.name ?: return@mapNotNull null
+            val slug  = item.slug?.trim()?.trimStart('/') ?: return@mapNotNull null
+            val film  = item.type.equals("Movies", true) || item.type.equals("Movie", true) || slug.startsWith("film")
+
+            // Film bağlantıları izleme sayfasına (/film/<slug>/izle) gider
+            val yol   = if (film && !slug.endsWith("/izle")) "/${slug.trimEnd('/')}/izle" else "/$slug"
+            val href  = fixUrl(yol)
+
+            if (film) {
+                newMovieSearchResponse(title, href, TvType.Movie) {
+                    this.posterUrl = item.poster
+                    this.year      = item.year
+                    this.score     = Score.from10(item.imdb)
+                }
+            } else {
+                newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+                    this.posterUrl = item.poster
+                    this.year      = item.year
+                    this.score     = Score.from10(item.imdb)
+                }
+            }
         }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        return try {
-            // searchterm URL'de query olarak gidiyor (body BOŞ)
-            val searchUrl = "${mainUrl}/api/bg/searchContent?searchterm=" + java.net.URLEncoder.encode(query, "UTF-8")
-
-            val resp = app.post(
-                searchUrl,
-                headers = headers + mapOf(
-                    "Accept" to "application/json, text/plain, */*",
-                    "Origin" to mainUrl,
-                    "Referer" to "$mainUrl/mobil-arama"
-                )
-            ).text
-
-            val decoded = SelcukFlixDecryptor.decryptResponse(resp)
-            val mapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
-            val root = mapper.readTree(decoded)
-            val results = root.get("result") ?: return emptyList()
-
-            results.mapNotNull { node ->
-                val slug = node.get("used_slug")?.asText()?.ifBlank { null }
-                    ?: return@mapNotNull null
-
-                // Arama sonuçları: object_name, used_type, object_poster_url
-                val title = node.get("object_name")?.asText()?.ifBlank { null }
-                    ?: node.get("object_alternative_name")?.asText()?.ifBlank { null }
-                    ?: node.get("used_title")?.asText()?.ifBlank { null }
-                    ?: node.get("original_title")?.asText()?.ifBlank { null }
-                    ?: node.get("culture_title")?.asText()?.ifBlank { null }
-                    ?: slug.substringAfterLast("/").replace("-", " ")
-
-                val poster = node.get("object_poster_url")?.asText()?.ifBlank { null }
-                    ?: node.get("object_face_url")?.asText()?.ifBlank { null }
-                    ?: node.get("poster_url")?.asText()?.ifBlank { null }
-                    ?: node.get("face_url")?.asText()?.ifBlank { null }
-
-                val usedType = node.get("used_type")?.asText()?.lowercase() ?: ""
-                val typeId = node.get("type_id")?.asInt() ?: 0
-                val url = fixUrl(slug)
-                val isMovie = slug.startsWith("film/") || usedType.contains("movie") || typeId == 2
-
-                if (isMovie) {
-                    newMovieSearchResponse(title, url, TvType.Movie) { this.posterUrl = poster }
-                } else {
-                    newTvSeriesSearchResponse(title, url, TvType.TvSeries) { this.posterUrl = poster }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("SelcukFlix", "Search error: ${e.message}")
-            emptyList()
-        }
-    }
-
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = headers, referer = mainUrl).document
+        var adres = url.substringBefore("?")
+        // Eski sürümden kalan film bağlantıları (/film/<slug>) izleme sayfasına çevrilir
+        if (Regex("""/film/[^/]+/?$""").containsMatchIn(adres)) adres = adres.trimEnd('/') + "/izle"
 
-        val title = document.selectFirst("meta[property=og:title]")?.attr("content")?.trim()?.removeSuffix(" izle")
-            ?: document.selectFirst("h1")?.text()?.trim()
+        var html = app.get(adres, referer = "${mainUrl}/").text
+        var rsc  = Rsc.metin(html)
+
+        // Son bölümler listesinden gelen bölüm bağlantısını dizi sayfasına çevir
+        if (adres.contains("/sezon-") && adres.contains("/bolum-")) {
+            val dizi = rsc.jsonDeger("seriesHref")?.let { fixUrl(it) }
+                ?: Regex("""(/dizi/[^/]+)/sezon-""").find(adres)?.groupValues?.get(1)?.let { fixUrl(it) }
+                ?: return null
+            adres = dizi
+            html  = app.get(dizi, referer = "${mainUrl}/").text
+            rsc   = Rsc.metin(html)
+        }
+
+        val baslik = rsc.jsonDeger("mjTitle")?.trim()?.ifBlank { null }
+            ?: Regex("""<h1[^>]*>(.*?)</h1>""").find(html)?.groupValues?.get(1)?.replace(Regex("<[^>]+>"), "")?.trim()?.ifBlank { null }
             ?: return null
+        val poster  = rsc.jsonDeger("mjPoster")?.ifBlank { null }
+        val yil     = rsc.jsonDeger("mjYear")?.let { Regex("""\d{4}""").find(it)?.value?.toIntOrNull() }
+        val konu    = rsc.jsonDeger("mjOverview")?.trim()?.ifBlank { null }
+        val puan    = rsc.jsonDeger("mjImdb")?.trim()?.ifBlank { null }
+        val sure    = rsc.jsonDeger("mjRuntime")?.let { Regex("""(\d+)""").find(it)?.groupValues?.get(1)?.toIntOrNull() }
+        val turler  = rsc.etiketler("mjGenres")
+        val oyuncu  = rsc.etiketler("mjCast").map { Actor(it) }
 
-        val description = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
-            ?: document.selectFirst("meta[name=description]")?.attr("content")?.trim()
-
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: document.selectFirst("img[alt]")?.attr("src")
-
-        val year = Regex("""(19|20)\d{2}""").find(title)?.value?.toIntOrNull()
-            ?: document.selectFirst("a[href^='/yil/']")?.text()?.toIntOrNull()
-
-        // Bölüm listesi
-        val seasonLinks = document.select("a[href*='/sezon-']")
-            .mapNotNull { el ->
-                val href = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-                if (!Regex("/sezon-\\d+$").containsMatchIn(href)) return@mapNotNull null
-                href
+        if (adres.contains("/film/")) {
+            return newMovieLoadResponse(baslik, adres, TvType.Movie, adres) {
+                this.posterUrl = poster
+                this.year      = yil
+                this.plot      = konu
+                this.tags      = turler
+                this.duration  = sure
+                this.score     = Score.from10(puan)
+                addActors(oyuncu)
             }
-            .distinct()
+        }
 
-        Log.d("SelcukFlix", "Bulunan sezon sayısı: ${seasonLinks.size}")
+        val episodes = Rsc.bolumler(rsc).map { b ->
+            newEpisode(fixUrl(b.href)) {
+                this.name    = b.baslik?.ifBlank { null } ?: b.no?.let { "$it. Bölüm" }
+                this.season  = b.sezon
+                this.episode = b.no
+            }
+        }.distinctBy { it.data }
 
-        val allEpisodes = mutableListOf<com.lagradost.cloudstream3.Episode>()
-        val episodeUrls = mutableSetOf<String>()
+        val tvType = if (turler.any { it.contains("Anime", true) }) TvType.Anime else TvType.TvSeries
 
-        if (seasonLinks.isNotEmpty()) {
-            seasonLinks.forEach { seasonUrl ->
-                try {
-                    val seasonDoc = app.get(seasonUrl, headers = headers, referer = url).document
-                    val seasonEpisodes = seasonDoc.select("a[href*='/sezon-'][href*='/bolum-']")
-                    Log.d("SelcukFlix", "$seasonUrl -> ${seasonEpisodes.size} bölüm")
+        return newTvSeriesLoadResponse(baslik, adres, tvType, episodes) {
+            this.posterUrl = poster
+            this.year      = yil
+            this.plot      = konu
+            this.tags      = turler
+            this.duration  = sure
+            this.score     = Score.from10(puan)
+            addActors(oyuncu)
+        }
+    }
 
-                    seasonEpisodes.forEach { el ->
-                        val epHref = fixUrlNull(el.attr("href")) ?: return@forEach
-                        if (episodeUrls.contains(epHref)) return@forEach
-                        episodeUrls.add(epHref)
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        Log.d("SCF", "data » $data")
+        val html = app.get(data, referer = "${mainUrl}/").text
+        val rsc  = Rsc.metin(html)
 
-                        val m = Regex("/sezon-(\\d+)/bolum-(\\d+)").find(epHref) ?: return@forEach
-                        val season = m.groupValues[1].toIntOrNull() ?: 1
-                        val episode = m.groupValues[2].toIntOrNull() ?: return@forEach
+        // Her kaynak (PUB+, Uptobox, dublaj…) kendi sayfasında kendi şifreli oynatıcı adresini taşır
+        val kaynaklar = mutableListOf<Pair<String?, String>>()   // etiket → oynatıcı adresi
+        oynaticiCoz(rsc)?.let { kaynaklar.add(Rsc.etiket(rsc, Rsc.yol(data)) to it) }
 
-                        val epName = el.selectFirst("h2, h3, span")?.text()?.trim()
-                            ?.takeIf { it.isNotBlank() }
-                            ?: "$season. Sezon $episode. Bölüm"
+        Rsc.kaynaklar(rsc).filter { Rsc.yol(fixUrl(it.second)) != Rsc.yol(data) }.forEach { (etiket, href) ->
+            runCatching {
+                val diger = app.get(fixUrl(href), referer = data).text
+                oynaticiCoz(Rsc.metin(diger))?.let { kaynaklar.add(etiket to it) }
+            }
+        }
 
-                        allEpisodes.add(
-                            newEpisode(epHref) {
-                                this.name = epName
-                                this.season = season
-                                this.episode = episode
-                            }
-                        )
-                    }
-                } catch (e: Exception) {
-                    Log.e("SelcukFlix", "Sezon hatası ($seasonUrl): ${e.message}")
+        Log.d("SCF", "sayfa uzunluk=${html.length} rsc=${rsc.length} player=${rsc.contains("\"player\":{")} kaynak=${kaynaklar.size}")
+        var bulundu = false
+        for ((etiket, adres) in kaynaklar.distinctBy { it.second }) {
+            val iframe = if (adres.startsWith("//")) "https:$adres" else adres
+            if (!iframe.startsWith("http")) continue
+            Log.d("SCF", "iframe » $etiket » $iframe")
+            val ek = etiket?.trim()?.ifBlank { null }
+
+            val toplanan = mutableListOf<ExtractorLink>()
+            runCatching {
+                if (ContentXGenel.uygunMu(iframe)) {
+                    ContentXGenel().getUrl(iframe, "${mainUrl}/", subtitleCallback) { toplanan.add(it) }
+                } else {
+                    loadExtractor(iframe, "${mainUrl}/", subtitleCallback) { toplanan.add(it) }
+                }
+            }.onFailure { Log.w("SCF", "oynatıcı hatası » ${it.message}") }
+
+            for (link in toplanan) {
+                bulundu = true
+                if (ek == null) {
+                    callback.invoke(link)
+                } else {
+                    callback.invoke(
+                        newExtractorLink(link.source, "${link.name} · $ek", link.url, link.type) {
+                            this.referer = link.referer
+                            this.quality = link.quality
+                            this.headers = link.headers
+                        }
+                    )
                 }
             }
         }
 
-        val episodeElements = allEpisodes
-        Log.d("SelcukFlix", "Toplam bölüm: ${episodeElements.size}")
-
-
-        return if (episodeElements.isNotEmpty()) {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodeElements) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-            }
-        } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = poster
-                this.year = year
-                this.plot = description
-            }
-        }
+        return bulundu
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        Log.d("SelcukFlix", "loadLinks çağrıldı: $data")
+    /** RSC'deki player.enc {ciphertext, iv, salt} + "k" parolasıyla iframe adresini çözer. */
+    private fun oynaticiCoz(rsc: String): String? {
+        val oyuncu = rsc.indexOf("\"player\":{").takeIf { it >= 0 } ?: return null
+        val enc    = Rsc.nesne(rsc, "\"enc\":", oyuncu) ?: return null
+        val parola = rsc.jsonDeger("k", rsc.indexOf("\"enc\":", oyuncu)) ?: RmkCoz.PAROLA
+        return (RmkCoz.coz(enc, parola) ?: RmkCoz.coz(enc))?.trim()?.ifBlank { null }
+    }
 
-        val document = try {
-            app.get(data, headers = headers, referer = mainUrl).document
-        } catch (e: Exception) {
-            Log.e("SelcukFlix", "Sayfa yükleme hatası: ${e.message}")
-            return false
+    private fun String.jsonDeger(anahtar: String, baslangic: Int = 0): String? = Rsc.deger(this, anahtar, baslangic)
+    private fun String.etiketler(anahtar: String): List<String> = Rsc.etiketListesi(this, anahtar)
+
+    data class AramaYanit(
+        @JsonProperty("ok")     val ok: Boolean?             = null,
+        @JsonProperty("result") val result: List<AramaItem>? = null
+    )
+
+    data class AramaItem(
+        @JsonProperty("object_name")               val name: String?   = null,
+        @JsonProperty("used_slug")                 val slug: String?   = null,
+        @JsonProperty("used_type")                 val type: String?   = null,
+        @JsonProperty("object_release_year")       val year: Int?      = null,
+        @JsonProperty("object_related_imdb_point") val imdb: Double?   = null,
+        @JsonProperty("object_poster_url")         val poster: String? = null
+    )
+}
+
+/** Next.js RSC verisini (self.__next_f.push([1,"..."])) birleştirip içinden alan okuyan yardımcılar. */
+internal object Rsc {
+    data class Bolum(val href: String, val no: Int?, val sezon: Int?, val baslik: String?)
+
+    private const val ISARET = "self.__next_f.push([1,\""
+
+    fun metin(html: String): String {
+        val sb = StringBuilder()
+        var i  = html.indexOf(ISARET)
+        while (i >= 0) {
+            val (parca, son) = dizeOku(html, i + ISARET.length)
+            sb.append(parca)
+            i = html.indexOf(ISARET, son)
         }
-        val html = document.html()
-        Log.d("SelcukFlix", "HTML uzunluk: ${html.length}")
+        return sb.toString()
+    }
 
-        // __NEXT_DATA__ bul
-        val nextDataMatch = Regex("""<script id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL).find(html)
-        if (nextDataMatch == null) {
-            Log.e("SelcukFlix", "__NEXT_DATA__ bulunamadı")
-            return false
-        }
-
-        val json = nextDataMatch.groupValues[1]
-        Log.d("SelcukFlix", "__NEXT_DATA__ uzunluk: ${json.length}")
-
-        // secureData'yı çek
-        val secureMatch = Regex(""""secureData"\s*:\s*"([^"]+)"""").find(json)
-        if (secureMatch == null) {
-            Log.e("SelcukFlix", "secureData bulunamadı")
-            return false
-        }
-        val secureLen = secureMatch.groupValues[1].length
-        Log.d("SelcukFlix", "secureData bulundu, uzunluk: $secureLen")
-
-        // Decode et
-        val decoded = SelcukFlixDecryptor.decryptSecureData(secureMatch.groupValues[1])
-        if (decoded.isEmpty()) {
-            Log.e("SelcukFlix", "secureData decode başarısız")
-            return false
-        }
-        Log.d("SelcukFlix", "Decoded uzunluk: ${decoded.length}")
-
-        // iframe src'lerini bul — hem " hem \" hem de escape'siz varyantlar
-        val iframeUrls = mutableSetOf<String>()
-
-        // 1) Doğrudan src="..." (escape'siz)
-        Regex("""<iframe[^>]*src="([^"]+)"""").findAll(decoded).forEach {
-            iframeUrls.add(it.groupValues[1])
-        }
-
-        // 2) src=\"...\" (escape'li) — Kotlin raw string'de \ = iki backslash
-        Regex("""src=\\?"([^"\\]+)"""").findAll(decoded).forEach {
-            iframeUrls.add(it.groupValues[1])
-        }
-
-        // 3) pichive.online geçen tüm URL'leri direkt bul (en garantili yol!)
-        Regex("""(//[a-z0-9.-]*pichive\.online/iframe\.php\?v=[a-f0-9]+)""").findAll(decoded).forEach {
-            iframeUrls.add(it.groupValues[1])
-        }
-
-        // 4) Generic iframe.php?v= de yakala
-        Regex("""(//[a-z0-9.-]+/iframe\.php\?v=[a-zA-Z0-9]+)""").findAll(decoded).forEach {
-            iframeUrls.add(it.groupValues[1])
-        }
-
-        val iframes = iframeUrls
-            .map { it.replace("\\", "") }
-            .map { if (it.startsWith("//")) "https:$it" else if (it.startsWith("/")) "$mainUrl$it" else it }
-            .filter { it.contains("iframe.php") }
-            .distinct()
-
-        Log.d("SelcukFlix", "Bulunan iframe sayısı: ${iframes.size}")
-        iframes.forEach { Log.d("SelcukFlix", "  iframe: $it") }
-
-        if (iframes.isEmpty()) {
-            Log.e("SelcukFlix", "Hiç iframe bulunamadı!")
-            return false
-        }
-
-        iframes.forEach { iframeUrl ->
-            Log.d("SelcukFlix", "İşleniyor iframe: $iframeUrl")
-            try {
-                PichiveExtractor().getUrl(iframeUrl, data, subtitleCallback, callback)
-                Log.d("SelcukFlix", "Extractor tamamlandı: $iframeUrl")
-            } catch (e: Exception) {
-                Log.e("SelcukFlix", "Extractor hatası: ${e.message}", e)
+    /** [bas] konumundan kapanış tırnağına kadar JSON dizesini okur; (metin, bitiş konumu) döndürür. */
+    fun dizeOku(s: String, bas: Int): Pair<String, Int> {
+        val sb = StringBuilder()
+        var j  = bas
+        while (j < s.length) {
+            val c = s[j]
+            if (c == '\\' && j + 1 < s.length) {
+                when (val n = s[j + 1]) {
+                    'n'  -> sb.append('\n')
+                    't'  -> sb.append('\t')
+                    'r'  -> sb.append('\r')
+                    'b'  -> sb.append('\u0008')
+                    'f'  -> sb.append('\u000c')
+                    'u'  -> {
+                        val kod = if (j + 6 <= s.length) s.substring(j + 2, j + 6).toIntOrNull(16) else null
+                        if (kod != null) { sb.append(kod.toChar()); j += 4 } else sb.append('u')
+                    }
+                    else -> sb.append(n)
+                }
+                j += 2
+            } else if (c == '"') {
+                return sb.toString() to j + 1
+            } else {
+                sb.append(c); j++
             }
         }
-
-        return iframes.isNotEmpty()
+        return sb.toString() to j
     }
+
+    fun deger(s: String, anahtar: String, baslangic: Int = 0): String? {
+        val desen = "\"$anahtar\":\""
+        val i = s.indexOf(desen, maxOf(0, baslangic)).takeIf { it >= 0 } ?: return null
+        return dizeOku(s, i + desen.length).first
+    }
+
+    /** "anahtar":{ ... } ya da "anahtar":[ ... ] bölümünü (dizelerin içini sayarak) döndürür. */
+    fun nesne(s: String, anahtar: String, baslangic: Int = 0): String? {
+        val i = s.indexOf(anahtar, maxOf(0, baslangic)).takeIf { it >= 0 } ?: return null
+        var j = i + anahtar.length
+        while (j < s.length && s[j] != '{' && s[j] != '[') { if (!s[j].isWhitespace()) return null; j++ }
+        if (j >= s.length) return null
+        val bas = j
+        var derinlik = 0
+        while (j < s.length) {
+            when (s[j]) {
+                '"'      -> { j = dizeOku(s, j + 1).second; continue }
+                '{', '[' -> derinlik++
+                '}', ']' -> { derinlik--; if (derinlik == 0) return s.substring(bas, j + 1) }
+            }
+            j++
+        }
+        return null
+    }
+
+    fun etiketListesi(s: String, anahtar: String): List<String> {
+        val dizi = nesne(s, "\"$anahtar\":") ?: return emptyList()
+        return Regex(""""label":"((?:[^"\\]|\\.)*)"""").findAll(dizi).map { dizeOku(it.groupValues[1] + "\"", 0).first.trim() }
+            .filter { it.isNotBlank() }.distinct().toList()
+    }
+
+    /** "seasons":[{"no":1,"label":…,"episodes":[{"n":1,"title":…,"href":"/dizi/<slug>/sezon-1/bolum-1"}]}] */
+    fun bolumler(s: String): List<Bolum> {
+        val sezonlar = nesne(s, "\"seasons\":") ?: return emptyList()
+        val sezonKonum = Regex(""""no":(\d+),"label":""").findAll(sezonlar).map { it.range.first to it.groupValues[1].toInt() }.toList()
+        return Regex(""""n":(\d+),"title":"((?:[^"\\]|\\.)*)"[^{}]*?"href":"([^"]+)"""").findAll(sezonlar).map { m ->
+            val href  = m.groupValues[3]
+            val sxe   = Regex("""/sezon-(\d+)/bolum-(\d+)""").find(href)
+            val sezon = sxe?.groupValues?.get(1)?.toIntOrNull() ?: sezonKonum.lastOrNull { it.first < m.range.first }?.second
+            Bolum(
+                href   = href,
+                no     = m.groupValues[1].toIntOrNull() ?: sxe?.groupValues?.get(2)?.toIntOrNull(),
+                sezon  = sezon,
+                baslik = dizeOku(m.groupValues[2] + "\"", 0).first
+            )
+        }.toList()
+    }
+
+    /** player.sources → (etiket, href) */
+    fun kaynaklar(s: String): List<Pair<String?, String>> {
+        val oyuncu = s.indexOf("\"player\":{").takeIf { it >= 0 } ?: return emptyList()
+        val dizi   = nesne(s, "\"sources\":", oyuncu) ?: return emptyList()
+        return Regex("""\{[^{}]*\}""").findAll(dizi).mapNotNull { m ->
+            val nesne = m.value
+            val href  = deger(nesne, "href") ?: return@mapNotNull null
+            deger(nesne, "label") to href
+        }.toList()
+    }
+
+    /** Geçerli sayfanın kaynak etiketi (ör. "PUB+ · Türkçe Altyazı") */
+    fun etiket(s: String, yol: String): String? = kaynaklar(s).firstOrNull { yol(it.second) == yol }?.first
+
+    fun yol(adres: String): String = adres.substringAfter("://", adres).let { if (adres.contains("://")) "/" + it.substringAfter("/") else it }
 }
