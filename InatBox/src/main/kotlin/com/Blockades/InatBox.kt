@@ -759,7 +759,7 @@ open class InatPlatformProvider(private val cfg: InatCfg) : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.Live, TvType.Movie, TvType.TvSeries)
 
-    override val mainPage get() = if (!Settings.rowEnabled(cfg.name)) emptyList() else listOf(
+    override val mainPage get() = listOf(
         MainPageData(cfg.group.ifBlank { cfg.name }, cfg.url),
     )
 
@@ -871,7 +871,6 @@ open class InatPlatformProvider(private val cfg: InatCfg) : MainAPI() {
                     }
                     is InatStream.Direct -> {
                         val quality = qualityOf(label)
-                        if (!Settings.qualityAllowed(quality)) continue
                         callback.invoke(newExtractorLink(name, label, stream.url, linkTypeOf(stream.url)) {
                             this.referer = refererOf(stream)
                             this.headers = mediaHeaders(stream.headers)
