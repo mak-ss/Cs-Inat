@@ -1135,7 +1135,7 @@ open class InatPlatformProvider(private val cfg: InatCfg) : MainAPI() {
  * No-argument entry point for the local runner; the plugin registers one
  * [InatPlatformProvider] per list through [ALL].
  */
-class InatProvider : InatPlatformProvider(InatCfgRegistry.ALL.first()) {
+class Inat : InatPlatformProvider(InatCfgRegistry.ALL.first()) {
     companion object {
         val ALL: List<InatPlatformProvider> = InatCfgRegistry.ALL.map { InatPlatformProvider(it) }
     }
