@@ -1,768 +1,815 @@
 package com.Blockades
 
-import android.util.Base64
-import android.util.Log
-import com.lagradost.cloudstream3.DubStatus
-import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.LiveStreamLoadResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SeasonData
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.mainPageOf
-import com.lagradost.cloudstream3.newAnimeLoadResponse
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newLiveSearchResponse
 import com.lagradost.cloudstream3.newLiveStreamLoadResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.nicehttp.NiceResponse
-import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
-import org.json.JSONException
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.net.URI
+import java.net.URLDecoder
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.util.UUID
+import android.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class InatBox : MainAPI() {
-    override var name = "InatBox"
-    override val hasMainPage = true
-    override var lang = "tr"
-    override val hasQuickSearch = true
-    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Live)
-    override var sequentialMainPage = true
-    override var sequentialMainPageDelay = 120L
+private const val REPORT_HINT = "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
 
-    private val tag = "UlgenInat"
+private const val TOKEN_PREFIX = "inatbox:v1"
+private const val MODE_ITEM = "item"
+private const val MODE_LIST = "list"
+private const val MODE_ROW = "row"
+private const val MODE_SINGLE = "single"
+private const val MODE_EMBED = "embed"
 
-    private var contentUrl = "https://dizilabmedia.click/CDN/001/002/dizilab"
-    private var cfUrl = "https://dizilabmedia.click/CDN/001/002/dizilab/v2/cf.php"
-    private var ctUrl = "https://dizilabmedia.click/CDN/001/002/dizilab/v2/ct.php"
+// Keys of the Inat Android client: the signing key is XOR-derived from the encoded
+// key material and the certificate hex digest, one byte per position.
+private const val CERTIFICATE_SHA256 = "7cc771973665660f0653fce2e9490e48b92be8432a88d74f91703a716f6b4692"
+private const val ENCODED_KEY_HEX = "4c50054a43216168797045480a046734372e298080c489a2f8a4b8b5819a9f93efb3bbf0f2525a4ca6"
+private const val RAW_RESPONSE_KEY = "a4osa8x1yl4w3vrk"
 
-    // Canlı Yedek & Hibrit Motor (SelçukSports + RecTV + CanlıTV M3U)
-    private var rectvUrl = "https://m.prectv72.lol"
-    private var selcukUrl = "https://www.selcuksportshdfe44b96fcb.xyz"
-    private var selcukPlayerUrl = "https://main.uxsyplayer6859599e6c.click"
-    private var selcukStreamBase = "https://dga1op10s1u3lea.82250d06d39d38.click/live/"
-    private var canliTvM3uUrl = "https://raw.githubusercontent.com/feroxx/test/refs/heads/main/Kanallar/canlitv.m3u"
-    private val browserUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+private const val BROWSER_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+private const val LIST_TTL = 5 * 60_000L
+// The 4K catalogues are larger than 10 MB; the phone client's 2 MB cap cannot hold them.
+private const val RESPONSE_LIMIT = 32 * 1024 * 1024
+// The 4K lists hold 17k rows, so keep the cache small instead of counting 128 large lists.
+private const val CACHE_LIMIT = 16
 
-    private val swKey = "4F5A9C3D9A86FA54EACEDDD635185/c3c5bd17-e37b-4b94-a944-8a3688a30452"
-    private val rectvHmacKey = "3508611138826751fdf77beaa6f93eb93fd27e6a5acb910e7aad22665513dd6e"
+// Upstream rotates the catalogue host (diziboxen.help -> dizilabmedia.click) while keeping the
+// CDN paths and the signing scheme, so a failed host is retried on its alternate.
+// `str.filmizleeeee.cfd` is the sibling CDN observed during the protocol probe.
+// shortcut: assumes the alternate serves identical paths; sprboxs.bar has no observed alternate.
+private val HOST_ALTERNATES = mapOf(
+    "diziboxen.help" to "dizilabmedia.click",
+    "4k.filmizleeeee.cfd" to "str.filmizleeeee.cfd",
+)
+private val HOST_FAILURE_CODES = setOf(403, 520)
 
-    private val masterCertKey = "a4osa8x1yl4w3vrk"
-    private val hmacSecretKey = "x7kkk0qmqz63kj68tla5i7u26192v7zqnnddhjgm"
+private val SIGNING_KEY: ByteArray = run {
+    val encoded = hexToBytes(ENCODED_KEY_HEX)
+    ByteArray(40) { index ->
+        ((encoded[index].toInt() and 0xFF) xor
+            (encoded[40].toInt() and 0xFF) xor
+            ((index * 7) and 0xFF) xor
+            0xA5 xor
+            CERTIFICATE_SHA256[index].code).toByte()
+    }
+}
 
-    private var timeOffset: Long = 0L
-    private var isConfigInitialized = false
-    private val urlToSearchResponse = ConcurrentHashMap<String, SearchResponse>()
-    private val dynamicCategoriesMap = ConcurrentHashMap<String, String>()
-    private var m3uCache: String? = null
+private val API_HEADERS = mapOf(
+    "user-agent" to "speedrestapi",
+    "referer" to "https://speedrestapi.com/",
+    "x-requested-with" to "com.bp.box",
+    "cache-control" to "no-cache",
+)
 
-    private val secureRandom = SecureRandom()
-    private val alphaNumericChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    private val hexChars = "0123456789abcdef"
+private val HEX_64 = Regex("^[a-fA-F0-9]{64}$")
+private val BASE64_BODY = Regex("^[A-Za-z0-9+/]+={0,2}$")
+private val SERVER_TIME = Regex("^\\d{1,12}$")
+private val HEADER_NAME = Regex("^[!#$%&'*+.^_`|~0-9a-z-]+$")
+private val HEADER_VALUE_BAD = Regex("[^\\t\\x20-\\x7e\\x80-\\xff]")
+private val EPISODE_NAME = Regex("""(?:bölüm|bolum|episode)""", RegexOption.IGNORE_CASE)
+private val SEASON_NAME = Regex("""(?:sezon|season)""", RegexOption.IGNORE_CASE)
+private val EPISODE_NUMBER = Regex("""(\d+)\s*[.\-]?\s*(?:bölüm|bolum|episode)""", RegexOption.IGNORE_CASE)
+private val MEDIA_URL = Regex("""\.(?:m3u8|mp4|webm|ts|mkv)(?:[?#].*)?$""", RegexOption.IGNORE_CASE)
+private val FORBIDDEN_HEADERS = setOf(
+    "host", "connection", "content-length", "transfer-encoding", "proxy-authorization",
+    "proxy-connection", "x-ts", "x-nc", "x-sg", "x-st",
+)
+private val FALLBACK_URL_PATTERNS = listOf(
+    Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""", RegexOption.IGNORE_CASE),
+    Regex("""https?://[^\s"'<>]+\.(?:mp4|webm|ts|mkv)[^\s"'<>]*""", RegexOption.IGNORE_CASE),
+    Regex("""file:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']""", RegexOption.IGNORE_CASE),
+    Regex("""source:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+    Regex("""src:\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+)
+private val RESOLVER_URL_PATTERNS = listOf(
+    Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""", RegexOption.IGNORE_CASE),
+    Regex("""https?://[^\s"'<>]+\.(?:mp4|webm|ts|mkv)[^\s"'<>]*""", RegexOption.IGNORE_CASE),
+    Regex("""["'](https?:\\/\\/[^\s"'<>]+\.m3u8[^\s"'<>]*)["']""", RegexOption.IGNORE_CASE),
+)
 
-    override val mainPage = mainPageOf(
-        "https://sprboxs.bar/CDN/001/SPR/v2/spor_v3.php"            to "Spor ve Kanallar",
-        "https://sprboxs.bar/CDN/001/SPR/v2/ccc/a/index.php"        to "Kanallar Liste 1 (TOD)",
-        "https://sprspr.help/CDN/SSP/bir-p-no-cron.php"             to "Kanallar Liste 2 (S Sport+)",
-        "v2/tv/sinema.php"                                          to "Sinema Kanalları",
-        "v2/tv/belgesel.php"                                        to "Belgesel Kanalları",
-        "v2/tv/ulusal.php"                                          to "Ulusal Kanallar",
-        "v2/tv/haber.php"                                           to "Haber Kanalları",
-        "v2/tv/cocuk.php"                                           to "Çocuk Kanalları",
-        "v2/tv/dini.php"                                            to "Dini Kanallar",
-        "v2/ex/index.php"                                           to "EXXEN",
-        "v2/ga/index.php"                                           to "Gain",
-        "v2/nf/index.php"                                           to "Netflix",
-        "v2/dsny/index.php"                                         to "Disney+",
-        "v2/amz/index.php"                                          to "Amazon Prime",
-        "v2/hb/index.php"                                           to "HBO Max",
-        "v2/tbi/index.php"                                          to "Tabii",
-        "v2/film/mubi.php"                                          to "Mubi",
-        "v2/yabanci-dizi/index.php"                                 to "Yabancı Diziler",
-        "v2/yerli-dizi/index.php"                                   to "Yerli Diziler",
-        "v2/film/yerli-filmler.php"                                 to "Yerli Filmler",
-        "https://4k.filmizleeeee.cfd/4k/01/public/catalog-exo.php"  to "4K Film İzle"
+private fun hexToBytes(value: String): ByteArray = ByteArray(value.length / 2) {
+    value.substring(it * 2, it * 2 + 2).toInt(16).toByte()
+}
+
+private fun ByteArray.toHex(): String {
+    val digits = "0123456789abcdef"
+    val result = StringBuilder(size * 2)
+    for (byte in this) {
+        result.append(digits[(byte.toInt() shr 4) and 0xF])
+        result.append(digits[byte.toInt() and 0xF])
+    }
+    return result.toString()
+}
+
+private fun sha256Hex(value: String): String =
+    MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).toHex()
+
+private fun hmacSha256(key: ByteArray, value: String): ByteArray =
+    Mac.getInstance("HmacSHA256")
+        .apply { init(SecretKeySpec(key, "HmacSHA256")) }
+        .doFinal(value.toByteArray(Charsets.UTF_8))
+
+private fun base64Decode(value: String): ByteArray {
+    val padded = value + "=".repeat((4 - value.length % 4) % 4)
+    return try {
+        Base64.decode(padded, Base64.DEFAULT)
+    } catch (e: IllegalArgumentException) {
+        throw InatDecodeException()
+    }
+}
+
+private fun base64UrlEncode(value: String): String =
+    Base64.encodeToString(value.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+private fun base64UrlDecode(value: String): String = try {
+    String(Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING), Charsets.UTF_8)
+} catch (e: IllegalArgumentException) {
+    ""
+}
+
+private fun text(value: Any?): String {
+    val raw = when (value) {
+        null, JSONObject.NULL -> ""
+        is String -> value
+        else -> value.toString()
+    }.trim()
+    return if (raw.equals("null", ignoreCase = true)) "" else raw
+}
+
+private fun JSONObject.firstOf(vararg keys: String): Any? {
+    for (key in keys) {
+        if (!has(key)) continue
+        val value = opt(key)
+        if (value == null || value == JSONObject.NULL) continue
+        return value
+    }
+    return null
+}
+
+private fun parseValue(value: String): Any? = try {
+    JSONTokener(value).nextValue()
+} catch (e: Exception) {
+    null
+}
+
+/** Keeps a valid HMAC trailer when present and returns the raw body otherwise. */
+private fun optionalPayload(value: String): String {
+    if (value.length < 64) return value
+    val trailer = value.takeLast(64)
+    if (!HEX_64.matches(trailer)) return value
+    val payload = value.dropLast(64)
+    val expected = hmacSha256(SIGNING_KEY, payload)
+    val actual = runCatching { hexToBytes(trailer.lowercase()) }.getOrNull() ?: return value
+    return if (MessageDigest.isEqual(expected, actual)) payload else value
+}
+
+private fun decodeLayer(value: String, keyText: String): String {
+    val parts = value.trim().removePrefix("\uFEFF").split(":")
+    if (parts.size != 2 || parts.any { !BASE64_BODY.matches(it) }) throw InatDecodeException()
+    val encrypted = base64Decode(parts[0])
+    val iv = base64Decode(parts[1])
+    if (iv.size != 16 || encrypted.isEmpty() || encrypted.size % 16 != 0) throw InatDecodeException()
+    val key = (keyText + "0000000000000000").take(16).toByteArray(Charsets.ISO_8859_1)
+    return try {
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        String(cipher.doFinal(encrypted), Charsets.UTF_8).removePrefix("\uFEFF")
+    } catch (e: Exception) {
+        throw InatDecodeException()
+    }
+}
+
+private fun decodeJson(value: String): JSONObject? {
+    val trimmed = value.trim()
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
+    for (candidate in listOf(optionalPayload(trimmed), trimmed)) {
+        val parsed = parseValue(candidate) ?: continue
+        if (parsed is JSONObject) return parsed
+    }
+    return null
+}
+
+private fun matchUrl(value: String, patterns: List<Regex>): String? {
+    for (pattern in patterns) {
+        val match = pattern.find(value) ?: continue
+        val found = match.groupValues.getOrNull(1)?.ifEmpty { match.value } ?: match.value
+        return found.replace("\\/", "/").trim('\'', '"')
+    }
+    return null
+}
+
+private fun targetOf(resolved: JSONObject): String? {
+    for (key in listOf("chUrl", "url", "stream", "file", "src", "link", "video", "hls")) {
+        text(resolved.opt(key)).takeIf { it.isNotEmpty() }?.let { return it }
+    }
+    val data = resolved.optJSONObject("data") ?: return null
+    for (key in listOf("url", "stream")) {
+        text(data.opt(key)).takeIf { it.isNotEmpty() }?.let { return it }
+    }
+    return null
+}
+
+private fun decodeResolver(value: String, configuration: Map<String, String>): JSONObject {
+    val trimmed = value.trim()
+    decodeJson(trimmed)?.let { return it }
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        return JSONObject().put("chUrl", trimmed)
+    }
+    matchUrl(trimmed, RESOLVER_URL_PATTERNS)?.let { return JSONObject().put("chUrl", it) }
+
+    val keys = listOf(
+        configuration["Regex1"],
+        configuration["Regex2"],
+        configuration["Regex2p"],
+        RAW_RESPONSE_KEY,
+    ).map { it?.trim().orEmpty() }.filter { it.isNotEmpty() }.distinct()
+
+    for (key in keys) {
+        val inner = runCatching { decodeLayer(trimmed, key) }.getOrNull()?.trim() ?: continue
+        decodeJson(inner)?.let { return it }
+        if (inner.startsWith("http://") || inner.startsWith("https://")) return JSONObject().put("chUrl", inner)
+        for (secondKey in keys) {
+            val second = runCatching { decodeLayer(inner, secondKey) }.getOrNull()?.trim() ?: continue
+            decodeJson(second)?.let { return it }
+        }
+    }
+    throw ErrorLoadingException("Inat: kaynak yanıtı çözülemedi. $REPORT_HINT")
+}
+
+private fun literalPattern(value: String): String {
+    val result = StringBuilder()
+    var index = 0
+    while (index < value.length) {
+        val character = value[index]
+        if (character == '\\') {
+            index++
+            if (index >= value.length || value[index].isLetterOrDigit()) throw InatDecodeException()
+            result.append(value[index])
+        } else {
+            if (character in ".*+?^\${}()|[]\\") throw InatDecodeException()
+            result.append(character)
+        }
+        index++
+    }
+    return result.toString()
+}
+
+private fun captureFirst(body: String, pattern: String): String {
+    if (pattern.isEmpty() || pattern.length > 512) throw InatDecodeException()
+    val marker = if (pattern.contains("(.*?)")) "(.*?)" else "(.*)"
+    val index = pattern.indexOf(marker)
+    if (index < 0) throw InatDecodeException()
+    val prefix = literalPattern(pattern.substring(0, index))
+    val suffix = literalPattern(pattern.substring(index + marker.length))
+    val greedy = marker == "(.*)"
+    for (line in body.split('\r', '\n', '\u2028', '\u2029')) {
+        val matchStart = if (prefix.isEmpty()) 0 else line.indexOf(prefix)
+        if (matchStart < 0) continue
+        val start = matchStart + prefix.length
+        val end = when {
+            suffix.isEmpty() -> if (greedy) line.length else start
+            greedy -> line.lastIndexOf(suffix)
+            else -> line.indexOf(suffix, start)
+        }
+        if (end >= start) return line.substring(start, end)
+    }
+    throw InatDecodeException()
+}
+
+private fun decodeCapturedUrl(value: String): String {
+    var result = value.trim()
+    if (result.contains('\\')) {
+        result = parseValue("\"$result\"") as? String ?: throw InatDecodeException()
+    }
+    return result
+}
+
+private fun captureTarget(body: String, pattern: String?, replace: Pair<String, String>? = null): String? {
+    if (!pattern.isNullOrBlank()) {
+        val captured = runCatching { decodeCapturedUrl(captureFirst(body, pattern)) }.getOrNull()
+        if (!captured.isNullOrBlank()) {
+            val value = if (replace != null && replace.first.isNotEmpty()) {
+                captured.replace(replace.first, replace.second)
+            } else {
+                captured
+            }
+            if (value.isNotBlank()) return value
+        }
+    }
+    return matchUrl(body, FALLBACK_URL_PATTERNS)
+}
+
+private fun httpUri(value: String): URI {
+    val uri = try {
+        URI(value.trim())
+    } catch (e: Exception) {
+        throw ErrorLoadingException("Inat: geçersiz adres. $REPORT_HINT")
+    }
+    val scheme = uri.scheme?.lowercase()
+    if ((scheme != "http" && scheme != "https") || uri.host.isNullOrEmpty()) {
+        throw ErrorLoadingException("Inat: geçersiz adres. $REPORT_HINT")
+    }
+    return uri
+}
+
+private fun originOf(value: String): String {
+    val uri = httpUri(value)
+    val port = if (uri.port > 0) ":${uri.port}" else ""
+    return "${uri.scheme}://${uri.host}$port"
+}
+
+private fun webTarget(value: String): String {
+    val uri = httpUri(value)
+    if (!uri.rawPath.orEmpty().endsWith("/web.php")) return value
+    val encoded = uri.rawQuery.orEmpty().split("&")
+        .firstOrNull { it.startsWith("url=") }?.substringAfter('=') ?: return value
+    return runCatching { URLDecoder.decode(encoded, "UTF-8") }
+        .getOrNull()?.takeIf { it.startsWith("http") } ?: value
+}
+
+/** Rewrites the same path onto the rotated host; null when the host has no known alternate. */
+private fun alternateUrl(uri: URI): String? {
+    val host = uri.host?.lowercase() ?: return null
+    val alternate = HOST_ALTERNATES[host] ?: return null
+    val port = if (uri.port > 0) ":${uri.port}" else ""
+    val path = uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/"
+    val query = uri.rawQuery?.let { "?$it" } ?: ""
+    val fragment = uri.rawFragment?.let { "#$it" } ?: ""
+    return "${uri.scheme}://$alternate$port$path$query$fragment"
+}
+
+private fun entryObject(value: Any?): JSONObject {
+    var current = value
+    var depth = 0
+    while (current is String && depth < 2) {
+        if (text(current).isEmpty()) return JSONObject()
+        current = parseValue(current) ?: return JSONObject()
+        depth++
+    }
+    if (current == null || current == JSONObject.NULL) return JSONObject()
+    val rows = if (current is JSONArray) {
+        (0 until current.length()).map { current.opt(it) }
+    } else {
+        listOf(current)
+    }
+    val merged = JSONObject()
+    for (row in rows) {
+        val obj = row as? JSONObject ?: continue
+        for (key in obj.keys()) {
+            if (key == "__proto__" || key == "constructor" || key == "prototype") continue
+            merged.put(key, obj.opt(key))
+        }
+    }
+    return merged
+}
+
+private fun normalizeHeaders(value: Any?): Map<String, String> {
+    val source = entryObject(value)
+    val result = LinkedHashMap<String, String>()
+    for (name in source.keys()) {
+        val normalized = when (name.lowercase().replace("-", "")) {
+            "useragent" -> "user-agent"
+            "xrequestedwith" -> "x-requested-with"
+            "referrer" -> "referer"
+            else -> name.lowercase()
+        }
+        if (normalized in FORBIDDEN_HEADERS) continue
+        val header = text(source.opt(name))
+        if (header.isEmpty()) continue
+        if (!HEADER_NAME.matches(normalized) || HEADER_VALUE_BAD.containsMatchIn(header)) continue
+        result[normalized] = header
+    }
+    return result
+}
+
+private fun stringMap(value: JSONObject): Map<String, String> {
+    val result = LinkedHashMap<String, String>()
+    for (key in value.keys()) {
+        val item = text(value.opt(key))
+        if (item.isNotEmpty()) result[key] = item
+    }
+    return result
+}
+
+private fun jsonOf(values: Map<String, String>): String {
+    val obj = JSONObject()
+    for ((key, value) in values) obj.put(key, value)
+    return obj.toString()
+}
+
+private class InatDecodeException : Exception()
+
+/**
+ * One Inat Baks list. Kept in this file (rather than a helper file) so the local
+ * JVM test runner, which only copies *Provider.kt, sees the same configuration.
+ */
+data class InatCfg(
+    val id: String,
+    val name: String,
+    val group: String,
+    val type: String,
+    val dataType: String,
+    val url: String,
+    val host: String,
+    val sha: String,
+    val fallbackUrl: String = "",
+) {
+    val displayName: String get() = "Inat — $name"
+    val isMovieList: Boolean get() = name.contains("4K Film", true) || name.contains("Sinema", true) ||
+        name.contains("Yerli Filmler", true) || name.contains("Mubi", true)
+    val isLiveList: Boolean get() = type == "tv_mode" && !isMovieList
+    val isEmbedOnly: Boolean get() = type == "link_mode" || type == "web_mode"
+}
+
+object InatCfgRegistry {
+    private const val DIZIBOX = "diziboxen.help"
+    private const val DIZIBOX_SHA = "sha256/LwJtYGEjL1fpZQHDsjX5Hb1G1cmszajwrB1Dv/BVGVU="
+    private const val SPRBOX = "sprboxs.bar"
+    private const val SPRBOX_SHA = "sha256/JFjoNaa3b0S9jWfpaRtapv8CvczX+y7ibxXcVOdagUQ="
+    private const val FOURK = "4k.filmizleeeee.cfd"
+    private const val FOURK_SHA = "sha256/NVrd940rwzL1bav4hRkzjaIDJTqVyo4TixmgNqG7NYY="
+
+    // Lists come from this static catalogue instead of the ironsdk bootstrap, whose certificate
+    // pin no longer matches upstream, so a broken bootstrap cannot hide the live lists.
+    // Hosts/pins are advisory only: the shared Cloudstream client cannot pin per host, and the
+    // source itself downgrades an unmatched pin to a warning. Unknown hosts stay "NULL".
+    val ALL: List<InatCfg> = listOf(
+        InatCfg("plat_hklZHuRuuNFJu_hnQLNFtxDX", "Liste 1 - TR", "CANLI TV KANALLARI", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/list1.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_-0X2wFp7VAyL4BiETr3DGzxp", "Liste 2 - GLB", "CANLI TV KANALLARI", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/list2.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_X_-78W4CyMj4kge0pzB5pBxa", "Liste 3 - TR", "CANLI TV KANALLARI", "tv_mode", "raw_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/list3.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_KDLoyZzhSK8eO3SP7pl-lVah", "Spor", "CANLI YAYIN & SPOR", "tv_mode", "tv_mode", "https://sprboxs.bar/CDN/001/SPR/v2/spor_v3.php", SPRBOX, SPRBOX_SHA),
+        InatCfg("plat_x1xrQpb1cnjXNQlhHJJh-d-7", "Derbiler", "CANLI YAYIN & SPOR", "dizi_mode", "tv_mode", "https://sprboxs.bar/CDN/001/SPR/v2/derbiler.php", SPRBOX, SPRBOX_SHA),
+        InatCfg("plat_XbOO87izu6ge2wsD9dQda4gF", "Premium", "DİĞER", "link_mode", "", "https://inattv257.cfd/premium/", "NULL", "NULL"),
+        InatCfg("plat_5BtmCy7tc7RE19th4-8ZI645", "Sinema", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/sinema.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_IPwgYtD4Iaa-f1mu1G603Cwy", "Belgesel", "TEMATİK & TV", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/belgesel.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_QyP4YpaqWR_fPnSL3FXk1t3p", "Ulusal", "CANLI TV KANALLARI", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/ulusal.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_MZOJ3eZThBuLqmehbmefruZ4", "Haber", "CANLI TV KANALLARI", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/haber.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_B159Mech2izHkFn7NQD6AlOE", "EBA TV", "DİĞER", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/eba.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_B03_bguqxzvRzyvPeiExd_xO", "Çocuk", "TEMATİK & TV", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/cocuk.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_1p78-p683RKRQmhQj_bhfaHO", "Dini", "DİĞER", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tv/dini.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_BSwGQS-pp65t7fK5csiC9l2g", "EXXEN", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/ex/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_jz59NDtYLsawgRseigIswAEf", "Gain", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/ga/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_b6c0fgN5DT1TlQLs3X4DFEUC", "Netflix", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/nf/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_0vOwWIPu3PDT0Jivm4ICbCYO", "HBO Max - (BLUTV)", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/hb/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_nKFKpIsaKwC_hjUOBLcrYJrI", "Disney+", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/dsny/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_htbHFdgXWa6QAiUxh2m_iFAc", "Amazon Prime", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/amz/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_W9cS1zuzIl3eLwopo6DWoRtH", "Tabii", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/tbi/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_pfMNTPEDYNErCM1RafOgADx-", "Mubi", "YAYIN PLATFORMLARI", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/film/mubi.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_QVYYoekBIvGw1KFR0wdQE8gu", "TOD", "YAYIN PLATFORMLARI", "dizi_mode", "tv_mode", "https://sprboxs.bar/CDN/001/SPR/v2/ccc/a/index.php", SPRBOX, SPRBOX_SHA),
+        InatCfg("plat_Eezq0PIaOgfuROrP97RMrve8", "Yabancı Diziler", "DİZİLER", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/yabanci-dizi/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat__LKyrd8ppH12JNFYVgUX1rJO", "Yerli Diziler", "DİZİLER", "dizi_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/yerli-dizi/index.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_Q9tlKwxINorm6gHWwjkJigM9", "Yerli Filmler", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://diziboxen.help/CDN/001/002/dizibox/v2/film/yerli-filmler.php", DIZIBOX, DIZIBOX_SHA),
+        InatCfg("plat_OzD_GAgae020FLn469Yovxu6", "4K Film 01 | Exo", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/01/public/catalog-exo.php", FOURK, FOURK_SHA, "https://4k.filmizleeeee.cfd/4k/01/public/catalog-web.php"),
+        InatCfg("plat_wxEuxB5TlyyVLJArm_5c3DBM", "4K Film 01 | Web", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/01/public/catalog-web.php", FOURK, FOURK_SHA, "https://4k.filmizleeeee.cfd/4k/01/public/catalog-exo.php"),
+        InatCfg("plat_ieEMdam3q5hzCPiZLQaAgEeF", "4K Film 02 | Web", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/02/public/catalog-web.php", FOURK, FOURK_SHA),
+        InatCfg("plat_Y4HmB7sMjvY66BrS0pt6gGGY", "4K Film 03 | Exo", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/03/public/catalog-exo.php", FOURK, FOURK_SHA),
+        InatCfg("plat_MZnH69UAsd7FH44OlNWkGgv8", "4K Film 03 | Web", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/03/public/catalog-web.php", FOURK, FOURK_SHA, "https://4k.filmizleeeee.cfd/4k/03/public/catalog-exo.php"),
+        InatCfg("plat_t7JZ3C-uIcJSLkkhYwXYzgxO", "4K Film 04 | Exo", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/04/public/catalog-exo.php", FOURK, FOURK_SHA, "https://4k.filmizleeeee.cfd/4k/04/public/catalog-web.php"),
+        InatCfg("plat_BLrJGGw4JpbX2e5aXlrYd57y", "4K Film 04 | Web", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/04/public/catalog-web.php", FOURK, FOURK_SHA),
+        InatCfg("plat_a058YtcuPSN0YdqLdc-_b6YU", "4K Film 06 | Exo", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/06/public/catalog-exo.php", FOURK, FOURK_SHA),
+        InatCfg("plat_k2jK8cUekQuL1CcWqMAzuE2d", "4K Film 06 | Web", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/06/public/catalog-web.php", FOURK, FOURK_SHA, "https://4k.filmizleeeee.cfd/4k/06/public/catalog-exo.php"),
+        InatCfg("plat_LILDAcQf-pW0mx2p_ZhFL2XS", "4K Film 07 | Web", "SİNEMA & FİLMLER", "tv_mode", "tv_mode", "https://4k.filmizleeeee.cfd/4k/07/public/catalog-web.php", FOURK, FOURK_SHA),
     )
+}
 
-    private fun generateRandomKey(length: Int = 16): String {
-        return (1..length)
-            .map { alphaNumericChars[secureRandom.nextInt(alphaNumericChars.length)] }
-            .joinToString("")
+internal data class InatEntry(
+    val name: String,
+    val url: String,
+    val type: String,
+    val img: String,
+    val plot: String,
+    val headers: Map<String, String>,
+    val params: Map<String, String>,
+    val host: String,
+    val pin: String,
+    val dataType: String,
+    val season: Boolean,
+    val episode: Boolean,
+)
+
+internal sealed class InatStream {
+    data class Direct(val url: String, val headers: Map<String, String>) : InatStream()
+    data class Embed(val url: String, val headers: Map<String, String>) : InatStream()
+}
+
+/**
+ * Signed Inat protocol: x-ts/x-nc/x-sg on every tier except the tekli_regex page reads,
+ * double AES-128-CBC response layers, and the resolver/event handlers.
+ */
+internal object InatClient {
+    private val random = SecureRandom()
+    private val listCache = ConcurrentHashMap<String, Pair<Long, List<InatEntry>>>()
+
+    @Volatile
+    private var clockOffset = 0L
+
+    suspend fun entries(url: String, host: String, pin: String, dataType: String): List<InatEntry> {
+        val key = "$url|$dataType|$host"
+        listCache[key]?.let { (at, rows) -> if (System.currentTimeMillis() - at < LIST_TTL) return rows }
+        httpUri(url)
+        val parsed = if (dataType == "raw_mode") rawJson(url) else postJson(url)
+        val list = parsed as? JSONArray
+            ?: throw ErrorLoadingException("Inat: liste yanıtı desteklenmiyor. $REPORT_HINT")
+        val rows = (0 until list.length()).mapNotNull { index ->
+            (list.opt(index) as? JSONObject)?.let { parseEntry(it, host, pin, dataType) }
+        }
+        if (listCache.size > CACHE_LIMIT) listCache.clear()
+        listCache[key] = System.currentTimeMillis() to rows
+        return rows
     }
 
-    private fun generateRandomHex(length: Int = 16): String {
-        return (1..length)
-            .map { hexChars[secureRandom.nextInt(hexChars.length)] }
-            .joinToString("")
-    }
-
-    private suspend fun ensureConfig() {
-        if (isConfigInitialized) return
-        isConfigInitialized = true
-
-        // 1. Kendi GitLab/Codeberg sunucularımızdan güncel domainleri al
-        val backupUrls = listOf(
-            "https://gitlab.com/ulgenzade/ulgencs3/-/raw/master/domains.json",
-            "https://codeberg.org/Ulgenzade/ulgencs3/raw/branch/master/domains.json"
-        )
-        for (serverUrl in backupUrls) {
-            try {
-                val configStr = app.get(serverUrl, timeout = 5).text
-                val cfg = JSONObject(configStr)
-                cfg.optString("inatbox").takeIf { it.isNotBlank() }?.let {
-                    contentUrl = it.trimEnd('/')
-                    cfUrl = "$contentUrl/v2/cf.php"
-                    ctUrl = "$contentUrl/v2/ct.php"
+    suspend fun resolve(entry: InatEntry): InatStream {
+        if (entry.url.isEmpty()) throw ErrorLoadingException("Inat: ${entry.name} için yayın adresi yok. $REPORT_HINT")
+        val headers = entry.headers + ("cache-control" to "no-cache")
+        val handler = entry.type.replace(Regex("_(u|s)_mode$"), "_mode")
+        return when {
+            handler == "web_mode" || handler == "link_mode" -> {
+                httpUri(entry.url)
+                InatStream.Embed(webTarget(entry.url), entry.headers)
+            }
+            handler == "SSprDrm_event" -> {
+                val body = request(
+                    entry.url,
+                    "GET",
+                    entry.headers + mapOf("content-type" to "application/json", "accept" to "application/json"),
+                    null,
+                    signed = true,
+                )
+                val target = try {
+                    decodeCapturedUrl(captureFirst(body, entry.params["Regex1"].orEmpty()))
+                } catch (e: InatDecodeException) {
+                    throw ErrorLoadingException("Inat: ${entry.name} etkinlik adresi çözülemedi. $REPORT_HINT")
                 }
-                cfg.optString("rectv").takeIf { it.isNotBlank() }?.let { rectvUrl = it.trimEnd('/') }
-                cfg.optString("selcuksports").takeIf { it.isNotBlank() }?.let { selcukUrl = it.trimEnd('/') }
-                cfg.optString("selcuksports_player").takeIf { it.isNotBlank() }?.let { selcukPlayerUrl = it.trimEnd('/') }
-                cfg.optString("selcuksports_stream_base").takeIf { it.isNotBlank() }?.let {
-                    selcukStreamBase = if (it.endsWith("/")) it else "$it/"
+                httpUri(target)
+                InatStream.Direct(target, entry.headers)
+            }
+            handler.startsWith("SSprDrm") ->
+                throw ErrorLoadingException(
+                    "Inat: ${entry.name} bir etkinlik listesi; oynatmak için bir etkinlik seçin. $REPORT_HINT",
+                )
+            handler == "tekli_regex_mode" || handler == "tekli_regex_no_sh_mode" ||
+                handler == "tekli_regex_replace_mode" -> {
+                // Replace mode swaps the literal chReg Regex2 with Regex3 on the captured value.
+                // shortcut: the upstream JS port has no replace step, so this swap is unverified
+                // against a live replace row; drop it if Show TV/Show Türk stop resolving.
+                val replacement = if (handler == "tekli_regex_replace_mode") {
+                    entry.params["Regex2"].orEmpty() to entry.params["Regex3"].orEmpty()
+                } else {
+                    null
                 }
-                cfg.optString("canlitv").takeIf { it.isNotBlank() }?.let { canliTvM3uUrl = it }
-                break
-            } catch (_: Exception) { }
-        }
-
-        // 2. Birincil InatBox SDK bootstrap sunucuları (ironsdk.net / speedrestapi.com)
-        for (sdkUrl in listOf("https://ironsdk.net/api/sdk/", "https://speedrestapi.com/rest/api/")) {
-            try {
-                val sdkJsonStr = makeInatRequest(sdkUrl)
-                if (!sdkJsonStr.isNullOrBlank()) {
-                    val sdkObj = JSONObject(sdkJsonStr)
-                    sdkObj.optString("DC1").takeIf { it.isNotBlank() }?.let { cfUrl = it }
-                    sdkObj.optString("DC2").takeIf { it.isNotBlank() }?.let { ctUrl = it }
-                    val base = cfUrl.substringBefore("/v2/cf.php").substringBefore("/v2/ct.php")
-                    if (base.isNotBlank() && base.startsWith("http")) {
-                        contentUrl = base.trimEnd('/')
-                        break
-                    }
+                val body = request(entry.url, "GET", headers, null, signed = false)
+                val target = captureTarget(body, entry.params["Regex1"], replacement)
+                    ?: return InatStream.Embed(entry.url, entry.headers)
+                httpUri(target)
+                InatStream.Direct(target, entry.headers)
+            }
+            handler.contains("regex_lb") || entry.params["Regex1"].orEmpty().isNotEmpty() -> {
+                val encoded = request(entry.url, "GET", headers, null, signed = true)
+                val resolved = try {
+                    decodeResolver(encoded, entry.params)
+                } catch (e: ErrorLoadingException) {
+                    return InatStream.Embed(entry.url, entry.headers)
                 }
-            } catch (_: Exception) { }
-        }
-
-        // 3. Dinamik SSL sertifikası (cencbit) kontrolü
-        try {
-            val certResp = app.get(
-                "https://raw.githubusercontent.com/cencbit/ssl/main/certificate.pem",
-                headers = mapOf("User-Agent" to "speedrestapi"),
-                timeout = 5
-            ).text
-            val cleanCert = certResp
-                .replace("-----BEGIN CERTIFICATE-----", "")
-                .replace("-----END CERTIFICATE-----", "")
-                .trim()
-            val configJson = decryptCertificateConfig(cleanCert, masterCertKey)
-            if (configJson != null) {
-                configJson.optString("DC1").takeIf { it.isNotBlank() }?.let { cfUrl = it }
-                configJson.optString("DC2").takeIf { it.isNotBlank() }?.let { ctUrl = it }
-                val base = cfUrl.substringBefore("/v2/cf.php")
-                if (base.isNotBlank() && base.startsWith("http")) {
-                    contentUrl = base.trimEnd('/')
+                val target = targetOf(resolved) ?: return InatStream.Embed(entry.url, entry.headers)
+                httpUri(target)
+                val targetHeaders = entry.headers + normalizeHeaders(
+                    resolved.firstOf("chHeaders", "headers", "playHeaders"),
+                )
+                val mode = text(resolved.opt("chType"))
+                    .ifEmpty { text(resolved.opt("type")) }
+                    .ifEmpty { text(resolved.opt("mode")) }
+                if (mode == "web_mode" || target.contains("/embed/") || target.contains("player.php")) {
+                    InatStream.Embed(target, targetHeaders)
+                } else {
+                    InatStream.Direct(target, targetHeaders)
                 }
             }
-        } catch (_: Exception) { }
-
-        // 4. Eğer ctUrl erişilebilirse v16 dinamik kategori URL haritasını hazırla
-        try {
-            val catJsonStr = makeInatRequest(ctUrl)
-            if (!catJsonStr.isNullOrBlank()) {
-                val arr = JSONArray(catJsonStr)
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    val cName = obj.optString("catName").trim()
-                    val cUrl = obj.optString("catUrl").trim()
-                    if (cName.isNotBlank() && cUrl.isNotBlank()) {
-                        dynamicCategoriesMap[cName.lowercase()] = cUrl
-                    }
-                }
+            MEDIA_URL.containsMatchIn(entry.url) -> {
+                httpUri(entry.url)
+                InatStream.Direct(entry.url, entry.headers)
             }
-        } catch (_: Exception) { }
-    }
-
-    // ---- RecTV & SelçukSports Hibrit Yardımcıları ----
-    private suspend fun getRectvNonce(): String? {
-        return try {
-            val resp = app.get("$rectvUrl/api/attest/nonce", headers = mapOf("User-Agent" to "googleusercontent"), timeout = 5)
-            JSONObject(resp.text).optString("nonce").takeIf { it.isNotBlank() }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private suspend fun getRectvSignedHeaders(path: String): Map<String, String> {
-        val ts = (System.currentTimeMillis() / 1000L).toString()
-        val nonce = UUID.randomUUID().toString()
-        val bodyHash = sha256("")
-        val message = "GET\n$path\n$ts\n$nonce\n$bodyHash"
-        val signature = hmacSha256(rectvHmacKey, message)
-        val headers = mutableMapOf(
-            "User-Agent" to "googleusercontent",
-            "Referer" to "https://twitter.com/",
-            "X-Timestamp" to ts,
-            "X-Nonce" to nonce,
-            "X-Signature" to signature,
-            "X-App-Version" to "141",
-            "X-Client-Id" to "rectv-android"
-        )
-        getRectvNonce()?.let { headers["Authorization"] = "Bearer $it" }
-        return headers
-    }
-
-    private suspend fun fetchRectvJson(path: String): String? {
-        return try {
-            val cleanPath = "/" + path.trimStart('/')
-            val headers = getRectvSignedHeaders(cleanPath)
-            val resp = app.get("$rectvUrl$cleanPath", headers = headers, timeout = 8)
-            if (resp.isSuccessful) resp.text else null
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun buildSelcukSportsItems(): List<SearchResponse> {
-        val list = mutableListOf<SearchResponse>()
-        val channels = listOf(
-            Triple("beIN Sports 1 HD (Canlı Maç)", "selcukbeinsports1", "https://i.imgur.com/Vtk2cGI.png"),
-            Triple("beIN Sports 2 HD", "selcukbeinsports2", "https://i.imgur.com/vUJZSvs.png"),
-            Triple("beIN Sports 3 HD", "selcukbeinsports3", "https://i.imgur.com/UYSMao3.png"),
-            Triple("beIN Sports 4 HD", "selcukbeinsports4", "https://i.imgur.com/vwAgJNi.png"),
-            Triple("beIN Sports 5 HD", "selcukbeinsports5", "https://i.imgur.com/2Rha5aY.png"),
-            Triple("beIN Sports Max 1 HD", "selcukbeinsportsmax1", "https://i.imgur.com/RLrMBlm.png"),
-            Triple("beIN Sports Max 2 HD", "selcukbeinsportsmax2", "https://i.imgur.com/RLrMBlm.png"),
-            Triple("beIN Sports Haber HD", "selcukbeinsportshaber", "https://i.imgur.com/QWo0x7S.jpg"),
-            Triple("Exxen Spor 1 HD", "selcukexxen1", "https://i.imgur.com/d9P2t5r.png"),
-            Triple("Exxen Spor 2 HD", "selcukexxen2", "https://i.imgur.com/d9P2t5r.png"),
-            Triple("Exxen Spor 3 HD", "selcukexxen3", "https://i.imgur.com/d9P2t5r.png"),
-            Triple("Exxen Spor 4 HD", "selcukexxen4", "https://i.imgur.com/d9P2t5r.png"),
-            Triple("Tabii Spor 1 HD", "selcuktabiispor1", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("Tabii Spor 2 HD", "selcuktabiispor2", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("Tabii Spor 3 HD", "selcuktabiispor3", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("Tabii Spor 4 HD", "selcuktabiispor4", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("Tabii Spor 5 HD", "selcuktabiispor5", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("Tabii Spor 6 HD", "selcuktabiispor6", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("S Sport 1 HD", "selcukssport", "https://upload.wikimedia.org/wikipedia/commons/a/a9/S_Sport_logo1.png"),
-            Triple("S Sport 2 HD", "selcukssport2", "https://i.imgur.com/2jIItAy.png"),
-            Triple("Tivibu Spor 1 HD", "selcuktivibuspor1", "https://i.imgur.com/qvrKQY3.png"),
-            Triple("Tivibu Spor 2 HD", "selcuktivibuspor2", "https://i.imgur.com/fZMSjNE.png"),
-            Triple("Tivibu Spor 3 HD", "selcuktivibuspor3", "https://i.imgur.com/qvrKQY3.png"),
-            Triple("Tivibu Spor 4 HD", "selcuktivibuspor4", "https://i.imgur.com/qvrKQY3.png"),
-            Triple("Spor Smart 1 HD", "selcuksmartspor", "https://i.imgur.com/blu6v6P.png"),
-            Triple("Spor Smart 2 HD", "selcuksmartspor2", "https://i.imgur.com/blu6v6P.png"),
-            Triple("TRT Spor HD", "selcuktrtspor", "https://i.imgur.com/6tv0zxh.png"),
-            Triple("A Spor HD", "selcukaspor", "https://i.imgur.com/ZhkZzLf.png"),
-            Triple("HT Spor HD", "selcukhtspor", "https://ciner.daioncdn.net/ht-spor/ht-spor.png"),
-            Triple("TRT 1 HD (Canlı Maç)", "selcuktrt1", "https://cdn-i.pr.trt.com.tr/trttv/w750/h750/q100/11290409.png"),
-            Triple("TV 8.5 HD", "selcuktv85", "https://upload.wikimedia.org/wikipedia/tr/thumb/8/87/TV8_bucuk_logo.png/512px-TV8_bucuk_logo.png"),
-            Triple("ATV HD", "selcukatv", "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/ATV_logo.svg/512px-ATV_logo.svg.png")
-        )
-        for ((title, sId, logo) in channels) {
-            val streamUrl = "${selcukStreamBase}${sId}/playlist.m3u8"
-            val itemJson = JSONObject().apply {
-                put("chName", title)
-                put("chUrl", streamUrl)
-                put("chImg", logo)
-                put("chType", "live_url")
-                put("chHeaders", JSONArray().put(JSONObject().apply {
-                    put("Referer", "$selcukPlayerUrl/")
-                    put("Origin", selcukPlayerUrl)
-                    put("User-Agent", browserUa)
-                }).toString())
-            }
-            list.add(
-                newLiveSearchResponse(title, itemJson.toString(), TvType.Live) {
-                    this.posterUrl = logo
-                }
+            else -> throw ErrorLoadingException(
+                "Inat: ${entry.name} için desteklenmeyen kaynak türü: ${entry.type.ifEmpty { "bilinmiyor" }}. $REPORT_HINT",
             )
         }
-        return list
     }
 
-    private suspend fun parseRecTvLiveCategory(catId: Int): List<SearchResponse> {
-        val jsonStr = fetchRectvJson("/api/channel/by/filtres/$catId/0/0/$swKey/") ?: return emptyList()
-        val list = mutableListOf<SearchResponse>()
-        try {
-            val arr = JSONArray(jsonStr)
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val title = obj.optString("title")
-                val image = obj.optString("image")
-                val sources = obj.optJSONArray("sources") ?: continue
-                var streamUrl = ""
-                for (j in 0 until sources.length()) {
-                    val u = sources.getJSONObject(j).optString("url")
-                    if (u.isNotBlank() && u != "null") {
-                        streamUrl = u
-                        break
-                    }
-                }
-                if (streamUrl.isBlank()) continue
-                val itemJson = JSONObject().apply {
-                    put("chName", title)
-                    put("chUrl", streamUrl)
-                    put("chImg", image)
-                    put("chType", "live_url")
-                    put("chHeaders", JSONArray().put(JSONObject().apply {
-                        put("Referer", "https://twitter.com/")
-                        put("User-Agent", "googleusercontent")
-                    }).toString())
-                }
-                list.add(
-                    newLiveSearchResponse(title, itemJson.toString(), TvType.Live) {
-                        this.posterUrl = image
-                    }
-                )
+    private suspend fun postJson(url: String): Any? {
+        val nonce = randomAlphanumeric(16)
+        val form = linkedMapOf("1" to nonce, "0" to nonce)
+        val encoded = request(
+            url,
+            "POST",
+            API_HEADERS + ("content-type" to "application/x-www-form-urlencoded; charset=UTF-8"),
+            form,
+            signed = true,
+        )
+        return parseJson(optionalPayload(decodeLayer(decodeLayer(encoded, nonce), nonce)))
+    }
+
+    private suspend fun rawJson(url: String): Any? {
+        val encoded = request(url, "GET", API_HEADERS, null, signed = true)
+        return parseJson(optionalPayload(decodeLayer(decodeLayer(encoded, RAW_RESPONSE_KEY), RAW_RESPONSE_KEY)))
+    }
+
+    private suspend fun request(
+        url: String,
+        method: String,
+        headers: Map<String, String>,
+        form: Map<String, String>?,
+        signed: Boolean,
+    ): String {
+        val uri = httpUri(url)
+        val path = uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/"
+        val body = form?.entries?.joinToString("&") { "${it.key}=${it.value}" } ?: ""
+        var attempt = 0
+        var target = url
+        var rotated = false
+        val alternate = alternateUrl(uri)
+        while (true) {
+            val requestHeaders = LinkedHashMap(headers)
+            if (signed) {
+                val timestamp = (System.currentTimeMillis() / 1000 + clockOffset).toString()
+                val nonce = randomHex(16)
+                requestHeaders["x-ts"] = timestamp
+                requestHeaders["x-nc"] = nonce
+                requestHeaders["x-sg"] = hmacSha256(
+                    SIGNING_KEY,
+                    "$method\n$path\n$timestamp\n$nonce\n${sha256Hex(body)}",
+                ).toHex()
             }
-        } catch (_: Exception) { }
-        return list
-    }
-
-    private suspend fun parseM3uByKeywords(keywords: List<String>): List<SearchResponse> {
-        val rawM3u = m3uCache ?: try {
-            app.get(canliTvM3uUrl, timeout = 8).text.also { m3uCache = it }
-        } catch (_: Exception) {
-            ""
-        }
-        if (rawM3u.isBlank()) return emptyList()
-
-        val list = mutableListOf<SearchResponse>()
-        val lines = rawM3u.lines()
-        var currentTitle = ""
-        var currentLogo = ""
-        var currentGroup = ""
-
-        for (line in lines) {
-            val l = line.trim()
-            if (l.startsWith("#EXTINF:")) {
-                currentTitle = l.substringAfterLast(",").trim()
-                currentLogo = Regex("""tvg-logo="([^"]+)"""").find(l)?.groupValues?.get(1) ?: ""
-                currentGroup = Regex("""group-title="([^"]+)"""").find(l)?.groupValues?.get(1) ?: ""
-            } else if (l.startsWith("http") && currentTitle.isNotBlank()) {
-                val combined = "$currentTitle $currentGroup".lowercase()
-                if (keywords.isEmpty() || keywords.any { combined.contains(it) }) {
-                    val itemJson = JSONObject().apply {
-                        put("chName", currentTitle)
-                        put("chUrl", l)
-                        put("chImg", currentLogo.ifBlank { "https://gitlab.com/ulgenzade/ulgencs3/-/raw/master/assets/ulgen.ico" })
-                        put("chType", "live_url")
-                    }
-                    list.add(
-                        newLiveSearchResponse(currentTitle, itemJson.toString(), TvType.Live) {
-                            this.posterUrl = currentLogo.ifBlank { "https://gitlab.com/ulgenzade/ulgencs3/-/raw/master/assets/ulgen.ico" }
-                        }
-                    )
-                }
-                currentTitle = ""
-            }
-        }
-        return list
-    }
-
-    private suspend fun fetchRecTvVodAsInatItems(endpointPath: String, isSeries: Boolean): List<SearchResponse> {
-        val jsonStr = fetchRectvJson(endpointPath) ?: return emptyList()
-        val list = mutableListOf<SearchResponse>()
-        try {
-            val arr = JSONArray(jsonStr)
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val id = obj.optInt("id")
-                val title = obj.optString("title")
-                val poster = obj.optString("image")
-                val desc = obj.optString("description")
-                if (title.isBlank()) continue
-
-                if (isSeries || obj.optString("type") == "serie") {
-                    val itemJson = JSONObject().apply {
-                        put("diziType", "rectv_serie")
-                        put("rectvId", id)
-                        put("diziName", title)
-                        put("diziImg", poster)
-                        put("diziDetay", desc)
-                    }
-                    list.add(
-                        newTvSeriesSearchResponse(title, itemJson.toString()) {
-                            this.posterUrl = poster
-                        }
-                    )
+            val response = try {
+                if (method == "POST") {
+                    app.post(target, data = form ?: emptyMap(), headers = requestHeaders)
                 } else {
-                    val sources = obj.optJSONArray("sources") ?: JSONArray()
-                    val itemJson = JSONObject().apply {
-                        put("diziType", "rectv_movie")
-                        put("rectvId", id)
-                        put("diziName", title)
-                        put("diziImg", poster)
-                        put("diziDetay", desc)
-                        put("sources", sources)
-                    }
-                    list.add(
-                        newMovieSearchResponse(title, itemJson.toString()) {
-                            this.posterUrl = poster
-                        }
-                    )
+                    app.get(target, headers = requestHeaders)
                 }
+            } catch (e: Exception) {
+                // IO failures rotate like upstream errors do; path, body and signature stay as-is.
+                if (!rotated && alternate != null) {
+                    rotated = true
+                    target = alternate
+                    continue
+                }
+                if (e is ErrorLoadingException) throw e
+                throw ErrorLoadingException("Inat: istek başarısız (${e.javaClass.simpleName}: ${e.message}). $REPORT_HINT")
             }
-        } catch (_: Exception) { }
-        return list
-    }
-
-    private suspend fun getFallbackCategoryItems(dataPath: String, catName: String): List<SearchResponse> {
-        val clean = dataPath.trimStart('/')
-        val norm = clean.removePrefix("v2/").trimStart('/')
-        return when {
-            norm == "tv/list1.php" || norm.contains("spor_v3.php") -> {
-                val selcuk = buildSelcukSportsItems()
-                val rectv0 = parseRecTvLiveCategory(0)
-                (selcuk + rectv0).distinctBy { it.name }
+            // shortcut: a 403 thrown by the client never reaches here, so clock skew is only
+            // corrected from responses the client returns without throwing.
+            val serverTime = response.headers["x-st"]
+            val corrected = if (signed && serverTime != null && SERVER_TIME.matches(serverTime)) {
+                val offset = serverTime.toLong() - System.currentTimeMillis() / 1000
+                val changed = kotlin.math.abs(offset - clockOffset) > 2
+                if (changed) clockOffset = offset
+                changed
+            } else {
+                false
             }
-            norm == "tv/cable.php" || norm.contains("ccc/a/index.php") -> {
-                val rectv0 = parseRecTvLiveCategory(0)
-                val selcuk = buildSelcukSportsItems()
-                (rectv0 + selcuk).distinctBy { it.name }
+            if (response.code == 403 && signed && corrected && attempt == 0) {
+                attempt++
+                continue
             }
-            norm == "tv/list2.php" || norm.contains("bir-p-no-cron.php") -> {
-                val rectv1 = parseRecTvLiveCategory(1)
-                val rectv3 = parseRecTvLiveCategory(3)
-                (rectv1 + rectv3 + buildSelcukSportsItems()).distinctBy { it.name }
+            if (!rotated && alternate != null && response.code in HOST_FAILURE_CODES) {
+                rotated = true
+                target = alternate
+                continue
             }
-            norm == "tv/sinema.php" -> {
-                val m3u = parseM3uByKeywords(listOf("sinema", "film", "movie", "dizi", "fx", "tlc", "dmax", "beyaz"))
-                val vod = fetchRecTvVodAsInatItems("/api/movie/by/filtres/0/created/0/$swKey/", false)
-                (m3u + vod.take(15)).distinctBy { it.name }
+            if (response.code !in 200..299) {
+                throw ErrorLoadingException("Inat: upstream HTTP ${response.code}. $REPORT_HINT")
             }
-            norm == "tv/belgesel.php" -> {
-                val rectv2 = parseRecTvLiveCategory(2)
-                val m3u = parseM3uByKeywords(listOf("belgesel", "discovery", "nat geo", "history", "trt belgesel", "yaban", "tarih"))
-                (rectv2 + m3u).distinctBy { it.name }
+            val text = response.text
+            if (text.length > RESPONSE_LIMIT) {
+                throw ErrorLoadingException("Inat: upstream yanıtı çok büyük. $REPORT_HINT")
             }
-            norm == "tv/ulusal.php" -> {
-                val rectv3 = parseRecTvLiveCategory(3)
-                val m3u = parseM3uByKeywords(listOf("ulusal", "trt 1", "atv", "kanald", "kanal d", "show", "star", "tv8", "now", "kanal 7", "teve2"))
-                (rectv3 + m3u).distinctBy { it.name }
-            }
-            norm == "tv/haber.php" -> {
-                parseM3uByKeywords(listOf("haber", "cnn", "ntv", "habertürk", "haberturk", "sözcü", "halk", "trt haber", "a haber", "tv100", "ulke", "ülke", "tgrt", "bloomberg", "ekol"))
-            }
-            norm == "tv/cocuk.php" -> {
-                val m3u = parseM3uByKeywords(listOf("çocuk", "cocuk", "cartoon", "minika", "trt çocuk", "disney", "nick", "baby", "zarok"))
-                val anim = fetchRecTvVodAsInatItems("/api/movie/by/filtres/13/created/0/$swKey/", false)
-                (m3u + anim.take(12)).distinctBy { it.name }
-            }
-            norm == "tv/dini.php" -> {
-                val m3u = parseM3uByKeywords(listOf("dini", "diyanet", "semerkant", "semerkand", "lalegül", "kabe", "mekke", "medine", "kudüs", "hilal", "dost", "aksu"))
-                val rectv3 = parseRecTvLiveCategory(3).filter { it.name.contains("SEMERKAND", true) || it.name.contains("TRT", true) }
-                (m3u + rectv3).distinctBy { it.name }
-            }
-            norm == "ex/index.php" -> {
-                val yerli = fetchRecTvVodAsInatItems("/api/serie/by/filtres/23/created/0/$swKey/", true)
-                val komedi = fetchRecTvVodAsInatItems("/api/serie/by/filtres/3/created/0/$swKey/", true)
-                (yerli + komedi).distinctBy { it.name }
-            }
-            norm == "ga/index.php" -> {
-                val yerli = fetchRecTvVodAsInatItems("/api/serie/by/filtres/23/created/1/$swKey/", true)
-                val suc = fetchRecTvVodAsInatItems("/api/serie/by/filtres/22/created/0/$swKey/", true)
-                (yerli + suc).distinctBy { it.name }
-            }
-            norm == "nf/index.php" -> {
-                val nfSeries = fetchRecTvVodAsInatItems("/api/serie/by/filtres/57/created/0/$swKey/", true)
-                val nfMovies = fetchRecTvVodAsInatItems("/api/movie/by/filtres/57/created/0/$swKey/", false)
-                (nfSeries + nfMovies).distinctBy { it.name }
-            }
-            norm == "dsny/index.php" -> {
-                val dsSeries = fetchRecTvVodAsInatItems("/api/serie/by/filtres/67/created/0/$swKey/", true)
-                val dsMovies = fetchRecTvVodAsInatItems("/api/movie/by/filtres/67/created/0/$swKey/", false)
-                (dsSeries + dsMovies).distinctBy { it.name }
-            }
-            norm == "amz/index.php" -> {
-                val amzSeries = fetchRecTvVodAsInatItems("/api/serie/by/filtres/75/created/0/$swKey/", true)
-                val amzMovies = fetchRecTvVodAsInatItems("/api/movie/by/filtres/75/created/0/$swKey/", false)
-                (amzSeries + amzMovies).distinctBy { it.name }
-            }
-            norm == "hb/index.php" -> {
-                val hboSeries = fetchRecTvVodAsInatItems("/api/serie/by/filtres/62/created/0/$swKey/", true)
-                val hboMovies = fetchRecTvVodAsInatItems("/api/movie/by/filtres/62/created/0/$swKey/", false)
-                (hboSeries + hboMovies).distinctBy { it.name }
-            }
-            norm == "tbi/index.php" -> {
-                val tabiiSpor = buildSelcukSportsItems().filter { it.name.contains("Tabii", true) || it.name.contains("TRT", true) }
-                val yerli = fetchRecTvVodAsInatItems("/api/serie/by/filtres/23/created/0/$swKey/", true)
-                (tabiiSpor + yerli).distinctBy { it.name }
-            }
-            norm == "film/mubi.php" -> {
-                val odullu = fetchRecTvVodAsInatItems("/api/movie/by/filtres/20/created/0/$swKey/", false)
-                val dram = fetchRecTvVodAsInatItems("/api/movie/by/filtres/2/created/0/$swKey/", false)
-                (odullu + dram).distinctBy { it.name }
-            }
-            norm == "yabanci-dizi/index.php" -> {
-                val s0 = fetchRecTvVodAsInatItems("/api/serie/by/filtres/0/created/0/$swKey/", true)
-                val s1 = fetchRecTvVodAsInatItems("/api/serie/by/filtres/0/created/1/$swKey/", true)
-                (s0 + s1).distinctBy { it.name }
-            }
-            norm == "yerli-dizi/index.php" -> {
-                fetchRecTvVodAsInatItems("/api/serie/by/filtres/23/created/0/$swKey/", true)
-            }
-            norm == "film/yerli-filmler.php" -> {
-                fetchRecTvVodAsInatItems("/api/movie/by/filtres/23/created/0/$swKey/", false)
-            }
-            norm == "film/4k-film-exo.php" || norm.contains("catalog-exo.php") -> {
-                val f4k = fetchRecTvVodAsInatItems("/api/movie/by/filtres/42/created/0/$swKey/", false)
-                val fNew = fetchRecTvVodAsInatItems("/api/movie/by/filtres/0/created/0/$swKey/", false)
-                (f4k + fNew).distinctBy { it.name }
-            }
-            else -> fetchRecTvVodAsInatItems("/api/movie/by/filtres/0/created/0/$swKey/", false)
+            return text
         }
     }
+
+    private fun parseJson(value: String): Any? {
+        val parsed = parseValue(value.trim())
+        if (parsed == null || parsed == JSONObject.NULL) {
+            throw ErrorLoadingException("Inat: yanıt çözülemedi. $REPORT_HINT")
+        }
+        return parsed
+    }
+
+    private fun parseEntry(row: JSONObject, host: String, pin: String, dataType: String): InatEntry {
+        val label = text(row.firstOf("sezonName", "diziName", "bolumName", "title", "name", "chName", "filmName"))
+        val type = text(row.firstOf("chType", "bolumType", "filmType", "diziType", "type"))
+        val rowType = text(row.opt("diziType")).ifEmpty { text(row.opt("chType")).ifEmpty { text(row.opt("catType")) } }
+        val episode = row.has("bolumName") || row.has("bolumUrl") || rowType == "bolum_mode" ||
+            EPISODE_NAME.containsMatchIn(label)
+        val season = !episode && (row.has("sezonName") || row.has("sezonUrl") || rowType == "sezon_mode" ||
+            SEASON_NAME.containsMatchIn(label))
+        return InatEntry(
+            name = text(row.firstOf("chName", "bolumName", "filmName", "diziName", "title", "name")),
+            url = text(row.firstOf("chUrl", "bolumUrl", "filmUrl", "diziUrl", "url")),
+            type = type,
+            img = text(row.firstOf("chImg", "chResim", "filmImg", "filmResim", "diziImg", "diziResim", "img", "resim", "poster")),
+            plot = text(row.firstOf("diziDetay", "filmDetay", "chDetay", "detay", "plot", "description")),
+            headers = normalizeHeaders(row.firstOf("chHeaders", "bolumHeaders", "filmHeaders", "diziHeaders", "headers")),
+            params = stringMap(entryObject(row.firstOf("chReg", "bolumReg", "filmReg", "diziReg", "reg"))),
+            host = text(row.firstOf("chHost", "filmHost", "bolumHost", "diziHost", "host")).ifEmpty { host },
+            pin = text(row.firstOf("chSha", "filmSha", "bolumSha", "diziSha", "sha")).ifEmpty { pin },
+            dataType = text(row.firstOf("filmDataType", "diziDataType", "chDataType")).ifEmpty { dataType },
+            season = season,
+            episode = episode,
+        )
+    }
+
+    private fun randomAlphanumeric(length: Int): String {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        return buildString { repeat(length) { append(alphabet[random.nextInt(alphabet.length)]) } }
+    }
+
+    private fun randomHex(bytes: Int): String = ByteArray(bytes).also { random.nextBytes(it) }.toHex()
+}
+
+open class InatPlatformProvider(private val cfg: InatCfg) : MainAPI() {
+    override var mainUrl = originOf(cfg.url)
+    override var name = cfg.displayName
+    override var lang = "tr"
+    override val hasMainPage = true
+    override val supportedTypes = setOf(TvType.Live, TvType.Movie, TvType.TvSeries)
+
+    override val mainPage get() = if (!Settings.rowEnabled(cfg.name)) emptyList() else listOf(
+        MainPageData(cfg.group.ifBlank { cfg.name }, cfg.url),
+    )
+
+    private val hasList: Boolean get() = cfg.dataType.isNotEmpty() && !cfg.isEmbedOnly
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        ensureConfig()
-
-        // 1. Önce v16 dinamik kategori URL haritası veya doğrudan InatBox v2 / sprboxs / 4K isteği dene
-        val dynamicUrl = dynamicCategoriesMap[request.name.lowercase()]
-        var jsonResponse = if (dynamicUrl != null) makeInatRequest(dynamicUrl) else null
-        if (jsonResponse.isNullOrBlank()) {
-            val targetUrl = if (request.data.startsWith("http")) {
-                request.data
-            } else {
-                "$contentUrl/" + request.data.trimStart('/')
-            }
-            jsonResponse = makeInatRequest(targetUrl)
-            if (jsonResponse.isNullOrBlank() && !request.data.startsWith("http")) {
-                jsonResponse = makeInatRequest("https://diziboxen.help/CDN/001/002/dizibox/" + request.data.trimStart('/'))
-            }
-        }
-
-        var searchResults = if (!jsonResponse.isNullOrBlank()) {
-            getSearchResponseList(jsonResponse)
-        } else {
-            emptyList()
-        }
-
-        // 2. Eğer sunucu Cloudflare 1006 (VPN) / 404 döndürdüyse, canlı yedek motorumuzdan kategoriyi eksiksiz doldur!
-        if (searchResults.isEmpty()) {
-            searchResults = getFallbackCategoryItems(request.data, request.name)
-        }
-
-        for (item in searchResults) {
-            urlToSearchResponse[item.url] = item
-        }
-
-        return newHomePageResponse(request.name, searchResults, hasNext = false)
+        if (page > 1) return newHomePageResponse(request.name, emptyList(), false)
+        if (!hasList) return newHomePageResponse(request.name, listOf(embedSearch()), false)
+        val items = rows().mapIndexedNotNull { index, entry -> entry.toSearch(index) }
+        return newHomePageResponse(request.name, items, false)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        ensureConfig()
-        val matchingResults = mutableListOf<SearchResponse>()
-        val q = query.trim()
-        if (q.isBlank()) return emptyList()
-
-        // 1. Önbellekteki öğeleri tara
-        val regex = try {
-            Regex(q, RegexOption.IGNORE_CASE)
-        } catch (_: Exception) {
-            Regex(Regex.escape(q), RegexOption.IGNORE_CASE)
+        val term = query.trim()
+        if (term.isEmpty()) return emptyList()
+        if (!hasList) return if (cfg.name.contains(term, ignoreCase = true)) listOf(embedSearch()) else emptyList()
+        return rows().mapIndexedNotNull { index, entry ->
+            if (entry.name.contains(term, ignoreCase = true)) entry.toSearch(index) else null
         }
-
-        for ((_, searchResponse) in urlToSearchResponse) {
-            if (regex.containsMatchIn(searchResponse.name)) {
-                matchingResults.add(searchResponse)
-            }
-        }
-
-        // 2. Canlı spor kanallarını tara
-        for (item in buildSelcukSportsItems()) {
-            if (regex.containsMatchIn(item.name)) {
-                matchingResults.add(item)
-            }
-        }
-
-        // 3. RecTV API üzerinden canlı arama yap
-        try {
-            val encoded = java.net.URLEncoder.encode(q, "UTF-8").replace("+", "%20")
-            val searchJson = fetchRectvJson("/api/search/$encoded/$swKey/")
-            if (!searchJson.isNullOrBlank()) {
-                val obj = JSONObject(searchJson)
-                val posters = obj.optJSONArray("posters") ?: JSONArray()
-                for (i in 0 until posters.length()) {
-                    val p = posters.getJSONObject(i)
-                    val id = p.optInt("id")
-                    val title = p.optString("title")
-                    val poster = p.optString("image")
-                    val desc = p.optString("description")
-                    val pType = p.optString("type")
-                    if (pType == "serie") {
-                        val itemJson = JSONObject().apply {
-                            put("diziType", "rectv_serie")
-                            put("rectvId", id)
-                            put("diziName", title)
-                            put("diziImg", poster)
-                            put("diziDetay", desc)
-                        }
-                        matchingResults.add(newTvSeriesSearchResponse(title, itemJson.toString()) { this.posterUrl = poster })
-                    } else {
-                        val itemJson = JSONObject().apply {
-                            put("diziType", "rectv_movie")
-                            put("rectvId", id)
-                            put("diziName", title)
-                            put("diziImg", poster)
-                            put("diziDetay", desc)
-                            put("sources", p.optJSONArray("sources") ?: JSONArray())
-                        }
-                        matchingResults.add(newMovieSearchResponse(title, itemJson.toString()) { this.posterUrl = poster })
-                    }
-                }
-            }
-        } catch (_: Exception) { }
-
-        return matchingResults.distinctBy { it.name }
-    }
-
-    override suspend fun quickSearch(query: String): List<SearchResponse> {
-        return search(query)
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        ensureConfig()
-        val raw = if (url.trim().startsWith("{")) url.trim() else url.substringAfterLast("/")
-        val item = try {
-            JSONObject(raw)
-        } catch (_: Exception) {
-            JSONObject(url)
-        }
-
-        if (!inatContentAllowed(item)) {
-            return null
-        }
-
-        if (item.has("diziType")) {
-            return when (item.getString("diziType")) {
-                "rectv_serie" -> parseRecTvSeriesLoad(item)
-                "rectv_movie" -> parseRecTvMovieLoad(item)
-                "dizi", "dizi_mode" -> parseTvSeriesResponse(item)
-                "film", "film_mode" -> parseMovieResponse(item)
-                else -> null
-            }
-        } else if (item.has("chName") && item.has("chUrl")) {
-            val chType = item.optString("chType", "live_url")
-            return when (chType) {
-                "live_url", "cable_sh" -> parseLiveStreamLoadResponse(item)
-                "tekli_regex_lb_sh_3" -> parseLiveSportsStreamLoadResponse(item)
-                else -> parseMovieResponse(item)
-            }
-        } else {
-            return null
-        }
-    }
-
-    private suspend fun parseRecTvSeriesLoad(item: JSONObject): LoadResponse? {
-        val id = item.optInt("rectvId")
-        val name = item.optString("diziName")
-        val posterUrl = item.optString("diziImg")
-        val plot = item.optString("diziDetay")
-
-        val seasonsJson = fetchRectvJson("/api/season/by/serie/$id/$swKey/") ?: return null
-        val seasonsArr = JSONArray(seasonsJson)
-        val episodes = mutableMapOf<DubStatus, MutableList<Episode>>()
-        val seasonDataList = mutableListOf<SeasonData>()
-
-        for (i in 0 until seasonsArr.length()) {
-            val sObj = seasonsArr.getJSONObject(i)
-            val sTitle = sObj.optString("title", "${i + 1}. Sezon")
-            val sNum = Regex("\\d+").find(sTitle)?.value?.toIntOrNull() ?: (i + 1)
-            seasonDataList.add(SeasonData(sNum, sTitle))
-
-            val epArr = sObj.optJSONArray("episodes") ?: continue
-            for (j in 0 until epArr.length()) {
-                val epObj = epArr.getJSONObject(j)
-                val epTitle = epObj.optString("title", "${j + 1}. Bölüm")
-                val epNum = Regex("\\d+").find(epTitle)?.value?.toIntOrNull() ?: (j + 1)
-                val srcArr = epObj.optJSONArray("sources") ?: continue
-                val chArray = JSONArray()
-                for (k in 0 until srcArr.length()) {
-                    val s = srcArr.getJSONObject(k)
-                    val sUrl = s.optString("url")
-                    if (sUrl.isNotBlank() && sUrl != "null") {
-                        chArray.put(JSONObject().apply {
-                            put("chName", "$name - $sTitle $epTitle (${s.optString("title", "HD")})")
-                            put("chUrl", sUrl)
-                            put("chImg", posterUrl)
-                            put("chType", "url")
-                            put("chHeaders", JSONArray().put(JSONObject().apply {
-                                put("Referer", "https://twitter.com/")
-                                put("User-Agent", "googleusercontent")
-                            }).toString())
-                        })
+        val ref = parseToken(url) ?: throw ErrorLoadingException("$name: içerik bağlantısı okunamadı. $REPORT_HINT")
+        return when (ref.mode) {
+            MODE_EMBED -> newLiveStreamLoadResponse(ref.name.ifBlank { cfg.name }, url, url)
+            MODE_ITEM -> {
+                val entry = pick(rows(), ref)
+                    ?: throw ErrorLoadingException("$name: ${ref.name} bulunamadı. $REPORT_HINT")
+                val single = cfg.isMovieList && entry.type.isNotEmpty() &&
+                    entry.type !in setOf("tv_mode", "dizi_mode", "sezon_mode", "bolum_mode")
+                if (single) {
+                    newMovieLoadResponse(entry.name.ifBlank { cfg.name }, url, TvType.Movie,
+                        tokenUrl(
+                            MODE_SINGLE, entry.url, ref.index, entry.name,
+                            entry.host, entry.pin, entry.type,
+                            headers = entry.headers, params = entry.params,
+                        )) {
+                        this.posterUrl = entry.img.ifBlank { null }
+                        this.plot = entry.plot.ifBlank { null }
                     }
-                }
-                if (chArray.length() > 0) {
-                    episodes.getOrPut(DubStatus.None) { mutableListOf() }.add(
-                        newEpisode(chArray.toString()) {
-                            this.name = epTitle
-                            this.season = sNum
-                            this.episode = epNum
-                            this.posterUrl = posterUrl
-                        }
-                    )
+                } else if (cfg.isLiveList) liveLoad(entry, url) else catalogueLoad(entry, url)
+            }
+            else -> {
+                val entry = pick(rows(ref.url, ref.host, ref.pin, ref.dataType), ref)
+                    ?: throw ErrorLoadingException("$name: ${ref.name} bulunamadı. $REPORT_HINT")
+                newMovieLoadResponse(entry.name.ifBlank { cfg.name }, url, TvType.Movie, url) {
+                    this.posterUrl = entry.img.ifBlank { null }
+                    this.plot = entry.plot.ifBlank { null }
                 }
             }
-        }
-
-        return newAnimeLoadResponse(name, item.toString(), TvType.TvSeries, false) {
-            this.episodes = episodes.mapValues { it.value.toList() }.toMutableMap()
-            this.posterUrl = posterUrl
-            this.plot = plot
-            this.seasonNames = seasonDataList
-        }
-    }
-
-    private suspend fun parseRecTvMovieLoad(item: JSONObject): LoadResponse? {
-        val name = item.optString("diziName")
-        val posterUrl = item.optString("diziImg")
-        val plot = item.optString("diziDetay")
-        val srcArr = item.optJSONArray("sources") ?: JSONArray()
-        val chArray = JSONArray()
-        for (i in 0 until srcArr.length()) {
-            val s = srcArr.getJSONObject(i)
-            val sUrl = s.optString("url")
-            if (sUrl.isNotBlank() && sUrl != "null") {
-                chArray.put(JSONObject().apply {
-                    put("chName", "$name (${s.optString("title", "1080p HD")})")
-                    put("chUrl", sUrl)
-                    put("chImg", posterUrl)
-                    put("chType", "url")
-                    put("chHeaders", JSONArray().put(JSONObject().apply {
-                        put("Referer", "https://twitter.com/")
-                        put("User-Agent", "googleusercontent")
-                    }).toString())
-                })
-            }
-        }
-        return newMovieLoadResponse(name, item.toString(), TvType.Movie, chArray.toString()) {
-            this.posterUrl = posterUrl
-            this.plot = plot
         }
     }
 
@@ -770,470 +817,336 @@ class InatBox : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        ensureConfig()
-        return try {
-            val trimmed = data.trim()
-            if (trimmed.startsWith("[")) {
-                val chContentJsonArray = JSONArray(trimmed)
-                for (i in 0 until chContentJsonArray.length()) {
-                    val chContentJsonObject = chContentJsonArray.getJSONObject(i)
-                    val chContent = parseToChContent(chContentJsonObject)
-                    loadChContentLinks(chContent, subtitleCallback, callback)
-                }
-            } else {
-                val chContentJsonObject = JSONObject(trimmed)
-                val chContent = parseToChContent(chContentJsonObject)
-                loadChContentLinks(chContent, subtitleCallback, callback)
-            }
-            true
-        } catch (e: Exception) {
-            Log.e(tag, "loadLinks hatası: ${e::class.simpleName} - ${e.message}")
-            false
-        }
-    }
-
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
-        return Interceptor { chain ->
-            val originalRequest = chain.request()
-            val url = originalRequest.url.toString()
-            val isSelcuk = url.contains(".click") || url.contains(".cfd") || url.contains("touraddalf") || url.contains("uxsyplayer")
-            val linkRef = extractorLink.headers["Referer"]?.takeIf { it.isNotBlank() }
-                ?: extractorLink.referer.takeIf { it.isNotBlank() }
-            val referer = when {
-                isSelcuk -> "$selcukPlayerUrl/"
-                !linkRef.isNullOrBlank() -> linkRef
-                else -> "https://twitter.com/"
-            }
-            val ua = when {
-                isSelcuk -> browserUa
-                !extractorLink.headers["User-Agent"].isNullOrBlank() -> extractorLink.headers["User-Agent"]!!
-                else -> "googleusercontent"
-            }
-            val builder = originalRequest.newBuilder()
-                .removeHeader("If-None-Match")
-                .header("User-Agent", ua)
-                .header("Referer", referer)
-            if (isSelcuk) {
-                builder.header("Origin", selcukPlayerUrl)
-            }
-            chain.proceed(builder.build())
-        }
-    }
-
-    private suspend fun parseTvSeriesResponse(
-        item: JSONObject,
-        tvType: TvType = TvType.TvSeries
-    ): LoadResponse? {
-        val episodes = mutableMapOf<DubStatus, MutableList<Episode>>()
-        val seasonDataList = mutableListOf<SeasonData>()
-
-        val name = item.getString("diziName")
-        val url = item.getString("diziUrl")
-        val plot = item.optString("diziDetay")
-
-        val jsonResponse = makeInatRequest(url) ?: return null
-        val jsonArray = JSONArray(jsonResponse)
-
-        try {
-            for (i in 0 until jsonArray.length()) {
-                val seasonItem = jsonArray.getJSONObject(i)
-                val seasonName = seasonItem.getString("diziName")
-                val seasonData = SeasonData(season = (i + 1), name = seasonName)
-                seasonDataList.add(seasonData)
-
-                val seasonUrl = seasonItem.getString("diziUrl")
-                val episodeResponse = makeInatRequest(seasonUrl) ?: continue
-                val episodeArray = try {
-                    JSONArray(episodeResponse)
-                } catch (e: Exception) {
-                    continue
-                }
-
-                for (j in 0 until episodeArray.length()) {
+        val ref = parseToken(data) ?: throw ErrorLoadingException("$name: kaynak bağlantısı okunamadı. $REPORT_HINT")
+        val targets: List<Pair<String, InatEntry>> = when (ref.mode) {
+            MODE_EMBED -> listOf(cfg.name to embedEntry(ref.url))
+            MODE_SINGLE -> {
+                val direct = InatEntry(
+                    name = ref.name,
+                    url = ref.url,
+                    type = ref.dataType,
+                    img = "",
+                    plot = "",
+                    headers = ref.headers,
+                    params = ref.params,
+                    host = ref.host,
+                    pin = ref.pin,
+                    dataType = ref.dataType,
+                    season = false,
+                    episode = false,
+                )
+                val candidates = mutableListOf(direct)
+                if (cfg.fallbackUrl.isNotBlank()) {
                     try {
-                        val episodeItem = episodeArray.getJSONObject(j)
-                        val rawEpName = episodeItem.getString("chName").trim()
-                        val cleanEpTitle = rawEpName
-                            .replace(Regex("""^\s*\d+\.\s*Sezon\s*""", RegexOption.IGNORE_CASE), "")
-                            .replace(Regex("""^\s*\d+\.\s*Bölüm\s*[-–:]*\s*""", RegexOption.IGNORE_CASE), "")
-                            .replace(Regex("""^Bölüm\s*\d+\s*[-–:]*\s*""", RegexOption.IGNORE_CASE), "")
-                            .trim()
-                        val finalName = cleanEpTitle.takeIf { it.isNotBlank() && !it.equals("Bölüm", ignoreCase = true) && it != "${j + 1}" }
-                        val episodePoster = episodeItem.optString("chImg")
-                        episodes.getOrPut(DubStatus.None) { mutableListOf() }.add(
-                            newEpisode(episodeItem.toString()) {
-                                this.name = finalName
-                                this.posterUrl = episodePoster
-                                this.season = i + 1
-                                this.episode = j + 1
-                            }
-                        )
-                    } catch (_: JSONException) {
-                        continue
+                        InatClient.entries(cfg.fallbackUrl, cfg.host, cfg.sha, cfg.dataType)
+                            .firstOrNull { it.name == direct.name }
+                            ?.let { candidates += it }
+                    } catch (_: Exception) {
+                    }
+                }
+                candidates.map { it.name.ifBlank { "Kaynak" } to it }
+            }
+            MODE_LIST -> rows(ref.url, ref.host, ref.pin, ref.dataType)
+                .filter { !it.season && it.url.isNotEmpty() }
+                .mapIndexed { index, entry -> entry.name.ifBlank { "Kaynak ${index + 1}" } to entry }
+            else -> {
+                val entry = pick(rows(ref.url, ref.host, ref.pin, ref.dataType), ref)
+                    ?: throw ErrorLoadingException("$name: ${ref.name} bulunamadı. $REPORT_HINT")
+                listOf(entry.name.ifBlank { "Kaynak" } to entry)
+            }
+        }
+        var sent = 0
+        var failure: String? = null
+        for ((label, entry) in targets) {
+            try {
+                when (val stream = InatClient.resolve(entry)) {
+                    is InatStream.Embed -> {
+                        if (loadExtractor(stream.url, refererOf(stream), subtitleCallback, callback)) {
+                            sent++
+                        } else {
+                            failure = failure ?: "$name: $label oynatıcısı çözülemedi."
+                        }
+                    }
+                    is InatStream.Direct -> {
+                        val quality = qualityOf(label)
+                        if (!Settings.qualityAllowed(quality)) continue
+                        callback.invoke(newExtractorLink(name, label, stream.url, linkTypeOf(stream.url)) {
+                            this.referer = refererOf(stream)
+                            this.headers = mediaHeaders(stream.headers)
+                            this.quality = quality
+                        })
+                        sent++
+                    }
+                }
+            } catch (e: ErrorLoadingException) {
+                failure = failure ?: e.message
+            } catch (e: Exception) {
+                failure = failure ?: "$name: $label kaynağı çözülemedi. $REPORT_HINT"
+            }
+        }
+        if (sent == 0) throw ErrorLoadingException(failure ?: "$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
+        return true
+    }
+
+    private suspend fun rows(): List<InatEntry> = try {
+        InatClient.entries(cfg.url, cfg.host, cfg.sha, cfg.dataType)
+    } catch (e: Exception) {
+        if (cfg.fallbackUrl.isBlank()) throw e
+        try {
+            InatClient.entries(cfg.fallbackUrl, cfg.host, cfg.sha, cfg.dataType)
+        } catch (_: Exception) {
+            throw e
+        }
+    }
+
+    private suspend fun rows(entry: InatEntry): List<InatEntry> =
+        InatClient.entries(entry.url, entry.host, entry.pin, entry.dataType)
+
+    private suspend fun rows(url: String, host: String, pin: String, dataType: String): List<InatEntry> =
+        InatClient.entries(url, host, pin, dataType)
+
+    private fun embedSearch(): SearchResponse =
+        newLiveSearchResponse(cfg.name, tokenUrl(MODE_EMBED, cfg.url, 0, cfg.name), TvType.Live, false)
+
+    private fun embedEntry(url: String) = InatEntry(
+        name = cfg.name,
+        url = url,
+        type = "web_mode",
+        img = "",
+        plot = "",
+        headers = emptyMap(),
+        params = emptyMap(),
+        host = cfg.host,
+        pin = cfg.sha,
+        dataType = cfg.dataType,
+        season = false,
+        episode = false,
+    )
+
+    private fun InatEntry.toSearch(index: Int): SearchResponse? {
+        val title = this.name
+        if (title.isBlank()) return null
+        if (season || episode) return null
+        val target = tokenUrl(MODE_ITEM, cfg.url, index, title)
+        val image = img.ifBlank { null }
+        return when {
+            cfg.isLiveList -> newLiveSearchResponse(title, target, TvType.Live, false) { posterUrl = image }
+            isSeriesRow(this) -> newTvSeriesSearchResponse(title, target, TvType.TvSeries, false) { posterUrl = image }
+            else -> newMovieSearchResponse(title, target, TvType.Movie, false) { posterUrl = image }
+        }
+    }
+
+    private fun isSeriesRow(entry: InatEntry): Boolean = when (entry.type) {
+        "sezon_mode", "dizi_mode", "sezonlar" -> true
+        "film_mode" -> false
+        else -> cfg.name.contains("dizi", ignoreCase = true) && !cfg.name.contains("film", ignoreCase = true)
+    }
+
+    private suspend fun liveLoad(entry: InatEntry, url: String): LoadResponse =
+        newLiveStreamLoadResponse(entry.name.ifBlank { cfg.name }, url, url) {
+            this.posterUrl = entry.img.ifBlank { null }
+        }
+
+    private suspend fun catalogueLoad(entry: InatEntry, url: String): LoadResponse {
+        if (entry.url.isBlank()) throw ErrorLoadingException("$name: ${entry.name} için içerik adresi yok. $REPORT_HINT")
+        val children = rows(entry)
+        if (children.isEmpty()) throw ErrorLoadingException("$name: ${entry.name} için kaynak bulunamadı. $REPORT_HINT")
+        val poster = entry.img.ifBlank { children.firstNotNullOfOrNull { it.img.ifBlank { null } }.orEmpty() }
+        val plot = entry.plot.ifBlank { children.firstNotNullOfOrNull { it.plot.ifBlank { null } }.orEmpty() }
+
+        if (children.any { it.season }) {
+            val seasons = children.mapIndexedNotNull { index, season ->
+                if (season.season && season.url.isNotBlank()) (index + 1) to season else null
+            }
+            if (seasons.isEmpty()) {
+                throw ErrorLoadingException("$name: ${entry.name} için sezon adresi yok. $REPORT_HINT")
+            }
+            val episodes = seasons.flatMap { (seasonNumber, season) ->
+                rows(season).mapIndexed { index, row ->
+                    newEpisode(tokenUrl(MODE_ROW, season.url, index, row.name, season.host, season.pin, season.dataType)) {
+                        this.name = row.name.ifBlank { "${index + 1}. Bölüm" }
+                        this.season = seasonNumber
+                        this.episode = episodeNumber(row.name) ?: (index + 1)
+                        this.posterUrl = row.img.ifBlank { poster }.ifBlank { null }
                     }
                 }
             }
-
-            val firstSeason = jsonArray.getJSONObject(0)
-            val posterUrl = firstSeason.optString("diziImg")
-
-            return newAnimeLoadResponse(
-                name = name,
-                url = item.toString(),
-                type = tvType,
-                comingSoonIfNone = false
-            ) {
-                this.episodes = episodes.mapValues { it.value.toList() }.toMutableMap()
-                this.posterUrl = posterUrl
-                this.plot = plot
-                this.seasonNames = seasonDataList
+            if (episodes.isEmpty()) throw ErrorLoadingException("$name: ${entry.name} için bölüm bulunamadı. $REPORT_HINT")
+            return newTvSeriesLoadResponse(entry.name, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster.ifBlank { null }
+                this.plot = plot.ifBlank { null }
             }
-        } catch (e: Exception) {
-            return null
         }
-    }
 
-    private suspend fun parseMovieResponse(item: JSONObject): LoadResponse? {
-        try {
-            if (item.has("diziType")) {
-                val name = item.getString("diziName")
-                val url = item.getString("diziUrl")
-                val posterUrl = item.optString("diziImg")
-                val plot = item.optString("diziDetay")
-
-                val jsonResponse = makeInatRequest(url) ?: return null
-                val jsonArray = JSONArray(jsonResponse)
-
-                return newMovieLoadResponse(
-                    name = name,
-                    url = item.toString(),
-                    type = TvType.Movie,
-                    dataUrl = jsonArray.toString()
-                ) {
-                    this.posterUrl = posterUrl
-                    this.plot = plot
-                }
-            } else {
-                val name = item.getString("chName")
-                val posterUrl = item.optString("chImg")
-                return newMovieLoadResponse(name, item.toString(), TvType.Movie, item.toString()) {
-                    this.posterUrl = posterUrl
+        if (isSeriesRow(entry) || children.any { it.episode }) {
+            val episodes = children.mapIndexed { index, row ->
+                newEpisode(tokenUrl(MODE_ROW, entry.url, index, row.name, entry.host, entry.pin, entry.dataType)) {
+                    this.name = row.name.ifBlank { "${index + 1}. Bölüm" }
+                    this.season = 1
+                    this.episode = episodeNumber(row.name) ?: (index + 1)
+                    this.posterUrl = row.img.ifBlank { null }
                 }
             }
-        } catch (e: Exception) {
-            return null
-        }
-    }
-
-    private suspend fun parseLiveSportsStreamLoadResponse(item: JSONObject): LiveStreamLoadResponse? {
-        return try {
-            val chContent = parseToChContent(item)
-            newLiveStreamLoadResponse(chContent.chName, item.toString(), item.toString()) {
-                this.posterUrl = chContent.chImg
+            return newTvSeriesLoadResponse(entry.name, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster.ifBlank { null }
+                this.plot = plot.ifBlank { null }
             }
-        } catch (e: Exception) {
-            null
+        }
+
+        return newMovieLoadResponse(
+            entry.name,
+            url,
+            TvType.Movie,
+            tokenUrl(MODE_LIST, entry.url, 0, entry.name, entry.host, entry.pin, entry.dataType),
+        ) {
+            this.posterUrl = poster.ifBlank { null }
+            this.plot = plot.ifBlank { null }
         }
     }
 
-    private suspend fun parseLiveStreamLoadResponse(item: JSONObject): LiveStreamLoadResponse? {
-        return try {
-            val chContent = parseToChContent(item)
-            newLiveStreamLoadResponse(chContent.chName, item.toString(), item.toString()) {
-                this.posterUrl = chContent.chImg
-            }
-        } catch (e: Exception) {
-            null
+    private fun episodeNumber(value: String): Int? =
+        EPISODE_NUMBER.find(value)?.groupValues?.get(1)?.toIntOrNull()
+
+    private fun qualityOf(label: String): Int {
+        if (cfg.name.contains("4K", ignoreCase = true)) return Qualities.P2160.value
+        val text = label.lowercase()
+        return when {
+            text.contains("2160") || text.contains("4k") -> Qualities.P2160.value
+            text.contains("1080") -> Qualities.P1080.value
+            text.contains("720") -> Qualities.P720.value
+            text.contains("480") -> Qualities.P480.value
+            text.contains("360") -> Qualities.P360.value
+            else -> Qualities.Unknown.value
         }
     }
 
-    private fun inatContentAllowed(item: JSONObject): Boolean {
-        val type: String = if (item.has("diziType")) {
-            item.getString("diziType")
-        } else if (item.has("chType")) {
-            item.getString("chType")
+    private fun linkTypeOf(url: String): ExtractorLinkType =
+        if (url.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
+    private fun refererOf(stream: InatStream): String {
+        val headers = when (stream) {
+            is InatStream.Direct -> stream.headers
+            is InatStream.Embed -> stream.headers
+        }
+        return headers["referer"] ?: "$mainUrl/"
+    }
+
+    private fun mediaHeaders(headers: Map<String, String>): Map<String, String> {
+        val result = LinkedHashMap<String, String>()
+        for ((key, value) in headers) {
+            if (key == "authorization" || key == "cookie" || key == "accept-encoding") continue
+            result[key] = value
+        }
+        val userAgent = result["user-agent"]
+        if (userAgent.isNullOrEmpty() || userAgent == "speedrestapi") result["user-agent"] = BROWSER_UA
+        if (result["referer"] == "https://speedrestapi.com/") result.remove("referer")
+        return result
+    }
+
+    private fun tokenUrl(
+        mode: String,
+        url: String,
+        index: Int,
+        name: String,
+        host: String = cfg.host,
+        pin: String = cfg.sha,
+        dataType: String = cfg.dataType,
+        headers: Map<String, String> = emptyMap(),
+        params: Map<String, String> = emptyMap(),
+    ): String {
+        val separator = if (cfg.url.contains('?')) "&" else "?"
+        return cfg.url + separator + "inat=" +
+            base64UrlEncode(token(mode, url, index, name, host, pin, dataType, headers, params))
+    }
+
+    /**
+     * The row's own headers and resolver parameters ride along, because a single-row link never
+     * re-reads the list: without them the resolver loses its Regex1 and the embed-page session.
+     */
+    private fun token(
+        mode: String,
+        url: String,
+        index: Int,
+        name: String,
+        host: String = cfg.host,
+        pin: String = cfg.sha,
+        dataType: String = cfg.dataType,
+        headers: Map<String, String> = emptyMap(),
+        params: Map<String, String> = emptyMap(),
+    ): String = listOf(
+        TOKEN_PREFIX,
+        mode,
+        url,
+        index.toString(),
+        base64UrlEncode(name),
+        host,
+        pin,
+        dataType,
+        base64UrlEncode(jsonOf(headers)),
+        base64UrlEncode(jsonOf(params)),
+    ).joinToString("|")
+
+    private fun parseToken(data: String): ItemRef? {
+        val raw = if (data.startsWith("$TOKEN_PREFIX|")) {
+            data
         } else {
-            ""
+            val query = runCatching { URI(data).rawQuery }.getOrNull() ?: return null
+            val value = query.split("&").firstOrNull { it.startsWith("inat=") }?.substringAfter('=') ?: return null
+            base64UrlDecode(value)
         }
-
-        return when (type) {
-            "link", "web" -> false
-            else -> true
-        }
-    }
-
-    private fun String.vkSourceFix(): String {
-        if (this.startsWith("act")) {
-            return "https://vk.com/al_video.php?${this}"
-        }
-        return this
-    }
-
-    private fun parseToChContent(item: JSONObject): ChContent {
-        return ChContent(
-            chName = item.optString("chName"),
-            chUrl = item.optString("chUrl").vkSourceFix(),
-            chImg = item.optString("chImg"),
-            chHeaders = item.optString("chHeaders"),
-            chReg = item.optString("chReg"),
-            chType = item.optString("chType")
+        if (!raw.startsWith("$TOKEN_PREFIX|")) return null
+        val parts = raw.split("|")
+        // Tokens written before the header/param fields have eight parts and stay readable.
+        if (parts.size != 8 && parts.size != 10) return null
+        return ItemRef(
+            mode = parts[1],
+            url = parts[2],
+            index = parts[3].toIntOrNull() ?: return null,
+            name = base64UrlDecode(parts[4]),
+            host = parts[5],
+            pin = parts[6],
+            dataType = parts[7],
+            headers = if (parts.size == 10) normalizeHeaders(base64UrlDecode(parts[8])) else emptyMap(),
+            params = if (parts.size == 10) stringMap(entryObject(base64UrlDecode(parts[9]))) else emptyMap(),
         )
     }
 
-    private suspend fun loadChContentLinks(
-        chContent: ChContent,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val chType = chContent.chType
-        val contentToProcess: ChContent
-
-        if (chType == "tekli_regex_lb_sh_3") {
-            val name = chContent.chName
-            val url = chContent.chUrl
-            val posterUrl = chContent.chImg
-            val headers = chContent.chHeaders
-            val reg = chContent.chReg
-            val type = chContent.chType
-
-            val jsonResponse = runCatching { makeInatRequest(url) }.getOrNull()
-                ?: return
-            val firstItem = JSONObject(jsonResponse)
-            firstItem.put("chHeaders", headers)
-            firstItem.put("chReg", reg)
-            firstItem.put("chName", name)
-            firstItem.put("chImg", posterUrl)
-            firstItem.put("chType", type)
-            contentToProcess = parseToChContent(firstItem)
-        } else {
-            contentToProcess = chContent
-        }
-
-        var sourceUrl = contentToProcess.chUrl
-        if (sourceUrl.contains("/live/selcuk")) {
-            sourceUrl = sourceUrl.replace(Regex("^https?://[^/]+/live/"), selcukStreamBase)
-        }
-        val headers: MutableMap<String, String> = mutableMapOf()
-        try {
-            val chHeaders = contentToProcess.chHeaders
-            val chReg = contentToProcess.chReg
-            if (chHeaders.isNotBlank() && chHeaders != "null") {
-                val jsonHeaders = JSONArray(chHeaders).getJSONObject(0)
-                for (entry in jsonHeaders.keys()) {
-                    headers[entry] = jsonHeaders[entry].toString()
-                }
-            }
-            if (chReg.isNotBlank() && chReg != "null") {
-                val jsonReg = JSONArray(chReg).getJSONObject(0)
-                val cookie = jsonReg.optString("playSH2")
-                if (cookie.isNotBlank()) {
-                    headers["Cookie"] = cookie
-                }
-            }
-        } catch (_: Exception) {
-        }
-
-        val extractorFound = loadExtractor(sourceUrl, subtitleCallback, callback)
-        if (!extractorFound) {
-            callback.invoke(
-                newExtractorLink(
-                    source = this.name,
-                    name = contentToProcess.chName,
-                    url = sourceUrl,
-                    type = if (sourceUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else if (sourceUrl.contains(".mpd")) ExtractorLinkType.DASH else ExtractorLinkType.VIDEO
-                ) {
-                    this.headers = headers
-                    this.quality = Qualities.P1080.value
-                }
-            )
-        }
+    private fun pick(rows: List<InatEntry>, ref: ItemRef): InatEntry? {
+        val indexed = rows.getOrNull(ref.index)
+        if (indexed != null && (ref.name.isEmpty() || indexed.name == ref.name)) return indexed
+        return rows.firstOrNull { it.name == ref.name } ?: indexed
     }
 
-    private suspend fun makeInatRequest(url: String): String? {
-        val uri = try {
-            URI(url)
-        } catch (e: Exception) {
-            return null
-        }
-        val path = uri.rawPath.takeIf { !it.isNullOrBlank() } ?: "/"
+    private data class ItemRef(
+        val mode: String,
+        val url: String,
+        val index: Int,
+        val name: String,
+        val host: String,
+        val pin: String,
+        val dataType: String,
+        val headers: Map<String, String> = emptyMap(),
+        val params: Map<String, String> = emptyMap(),
+    )
+}
 
-        val sessionKey = generateRandomKey(16)
-        val requestBody = "1=$sessionKey&0=$sessionKey"
-        val bodyHash = sha256(requestBody)
-
-        suspend fun execute(offset: Long): NiceResponse? {
-            val nowSec = (System.currentTimeMillis() / 1000) + offset
-            val nonce = generateRandomHex(16)
-            val signString = "POST\n$path\n$nowSec\n$nonce\n$bodyHash"
-            val signature = hmacSha256(hmacSecretKey, signString)
-
-            val hostHeader = uri.host?.takeIf { it.isNotBlank() } ?: "speedrestapi.com"
-            val headers = mapOf(
-                "User-Agent" to "speedrestapi",
-                "X-Requested-With" to "com.bp.box",
-                "Referer" to "https://speedrestapi.com/",
-                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
-                "Cache-Control" to "no-cache",
-                "Host" to hostHeader,
-                "X-Ts" to nowSec.toString(),
-                "X-Nc" to nonce,
-                "X-Sg" to signature
-            )
-
-            return try {
-                app.post(
-                    url = url,
-                    headers = headers,
-                    requestBody = requestBody.toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaType()),
-                    timeout = 6
-                )
-            } catch (e: Exception) {
-                null
-            }
-        }
-
-        var response = execute(timeOffset) ?: return null
-
-        val serverTimeStr = response.headers["X-St"] ?: response.headers["x-st"]
-        if (serverTimeStr != null && (response.code == 403 || !response.isSuccessful)) {
-            val serverTime = serverTimeStr.toLongOrNull()
-            if (serverTime != null) {
-                val now = System.currentTimeMillis() / 1000
-                timeOffset = serverTime - now
-                response = execute(timeOffset) ?: return null
-            }
-        }
-
-        return if (response.isSuccessful) {
-            val encryptedResponse = response.body.string().trim()
-            decryptInatResponse(encryptedResponse, sessionKey)
-        } else {
-            null
-        }
+/**
+ * No-argument entry point for the local runner; the plugin registers one
+ * [InatPlatformProvider] per list through [ALL].
+ */
+class InatProvider : InatPlatformProvider(InatCfgRegistry.ALL.first()) {
+    companion object {
+        val ALL: List<InatPlatformProvider> = InatCfgRegistry.ALL.map { InatPlatformProvider(it) }
     }
+}
 
-    private fun decryptAesCbc(encryptedText: String, keyStr: String): String? {
-        return try {
-            val parts = encryptedText.trim().split(":")
-            val ct = Base64.decode(parts[0].trim(), Base64.DEFAULT)
-            val iv = try {
-                if (parts.size > 1 && parts[1].trim().isNotBlank()) {
-                    val decoded = Base64.decode(parts[1].trim(), Base64.DEFAULT)
-                    if (decoded.size == 16) decoded else keyStr.toByteArray(Charsets.ISO_8859_1)
-                } else {
-                    keyStr.toByteArray(Charsets.ISO_8859_1)
-                }
-            } catch (_: Exception) {
-                keyStr.toByteArray(Charsets.ISO_8859_1)
-            }
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            val keySpec = SecretKeySpec(keyStr.toByteArray(Charsets.ISO_8859_1), "AES")
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(iv))
-            val pt = cipher.doFinal(ct)
-            String(pt, Charsets.UTF_8)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun stripHmacSuffix(raw: String): String {
-        val t = raw.trim()
-        if (t.length > 64) {
-            val tail = t.substring(t.length - 64)
-            if (tail.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
-                return t.substring(0, t.length - 64).trim()
-            }
-        }
-        return t
-    }
-
-    private fun decryptInatResponse(encryptedText: String, sessionKey: String): String? {
-        val keysToTry = listOf(sessionKey, "ywevqtjrurkwtqgz", "a4osa8x1yl4w3vrk")
-        for (key in keysToTry) {
-            val pass1 = decryptAesCbc(encryptedText, key) ?: continue
-            val clean1 = stripHmacSuffix(pass1)
-            if (clean1.startsWith("[") || clean1.startsWith("{")) return clean1
-
-            val pass2 = decryptAesCbc(pass1, key) ?: continue
-            val clean2 = stripHmacSuffix(pass2)
-            if (clean2.startsWith("[") || clean2.startsWith("{")) return clean2
-        }
-        return null
-    }
-
-    private fun decryptCertificateConfig(rawCert: String, keyStr: String): JSONObject? {
-        return try {
-            val pass1 = decryptAesCbc(rawCert, keyStr) ?: return null
-            val pass2 = decryptAesCbc(pass1, keyStr) ?: return null
-            val jsonStr = if (pass2.length > 64) pass2.substring(0, pass2.length - 64) else pass2
-            JSONObject(jsonStr)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun sha256(data: String): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val digest = md.digest(data.toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
-    }
-
-    private fun hmacSha256(key: String, message: String): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        val secretKey = SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256")
-        mac.init(secretKey)
-        val hash = mac.doFinal(message.toByteArray(Charsets.UTF_8))
-        return hash.joinToString("") { "%02x".format(it) }
-    }
-
-    private fun getSearchResponseList(jsonResponse: String): List<SearchResponse> {
-        val searchResults = mutableListOf<SearchResponse>()
-        try {
-            val jsonArray = JSONArray(jsonResponse)
-            for (i in 0 until jsonArray.length()) {
-                val item = jsonArray.getJSONObject(i)
-                if (!inatContentAllowed(item)) continue
-
-                if (item.has("diziType")) {
-                    val name = item.getString("diziName")
-                    val type = item.getString("diziType")
-                    val posterUrl = item.optString("diziImg")
-
-                    val searchResponse = when (type) {
-                        "dizi", "dizi_mode" -> newTvSeriesSearchResponse(name, item.toString()) {
-                            this.posterUrl = posterUrl
-                        }
-                        "film", "film_mode" -> newMovieSearchResponse(name, item.toString()) {
-                            this.posterUrl = posterUrl
-                        }
-                        else -> null
-                    }
-                    searchResponse?.let { searchResults.add(it) }
-                } else if (item.has("chName") && item.has("chUrl") && item.has("chImg")) {
-                    val name = item.getString("chName")
-                    val posterUrl = item.optString("chImg")
-                    val chType = item.optString("chType")
-
-                    val searchResponse = when (chType) {
-                        "live_url", "cable_sh", "tekli_regex_lb_sh_3" -> newLiveSearchResponse(
-                            name,
-                            item.toString(),
-                            TvType.Live
-                        ) {
-                            this.posterUrl = posterUrl
-                        }
-                        else -> newMovieSearchResponse(name, item.toString()) {
-                            this.posterUrl = posterUrl
-                        }
-                    }
-                    searchResults.add(searchResponse)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(tag, "JSON arama listesi parse hatası: ${e.message}")
-        }
-        return searchResults
-    }
+/**
+ * Spor kanalları için özelleştirilmiş provider.
+ */
+class InatSporProvider : InatPlatformProvider(
+    InatCfgRegistry.ALL.first { it.id == "plat_KDLoyZzhSK8eO3SP7pl-lVah" },
+) {
+    override var mainUrl = "https://sprboxs.bar"
 }
