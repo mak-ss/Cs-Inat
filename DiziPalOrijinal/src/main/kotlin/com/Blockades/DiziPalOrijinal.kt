@@ -49,7 +49,7 @@ import javax.crypto.spec.SecretKeySpec
  *  - `openPlayer(blob)` (multiplayer.php): `/source2.php?v=blob` JSON'u m3u8 dosya yolları verir.
  * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
  */
-class DiziPalOrijinal : MainAPI() {
+class DiziPal : MainAPI() {
     override var mainUrl = "https://dizipal2149.com"
     override var name = "DiziPal"
     override var lang = "tr"
@@ -72,7 +72,7 @@ class DiziPalOrijinal : MainAPI() {
         "$mainUrl/platform-bolumler/netflix" to "Netflix",
         "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
         "$mainUrl/platform-bolumler/disneyplus" to "Disney+",
-    ).filter { Settings.rowEnabled(it.name) }
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val paged = request.data in pagedSections
@@ -145,9 +145,6 @@ class DiziPalOrijinal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val links: (ExtractorLink) -> Unit = { if (Settings.qualityAllowed(it.quality)) callback(it) }
-        val subtitles: (SubtitleFile) -> Unit = { if (Settings.subtitleAllowed(it.lang)) subtitleCallback(it) }
-
         val pageUrl = httpsUrl(data)
         val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
             .getOrNull()
@@ -159,8 +156,8 @@ class DiziPalOrijinal : MainAPI() {
             .getOrNull()
             ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
 
-        val found = npLinks(playerHtml, playerUrl, links, subtitles) ||
-            dplayerLinks(playerHtml, playerUrl, links)
+        val found = npLinks(playerHtml, playerUrl, callback, subtitleCallback) ||
+            dplayerLinks(playerHtml, playerUrl, callback)
 
         if (!found) throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
         return true
