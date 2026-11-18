@@ -51,7 +51,7 @@ import javax.crypto.spec.SecretKeySpec
  */
 class DiziPalOrijinal : MainAPI() {
     override var mainUrl = "https://dizipal2149.com"
-    override var name = "DiziPal"
+    override var name = "DiziPalOrijinal"
     override var lang = "tr"
     override val hasMainPage = true
     override val hasQuickSearch = true
