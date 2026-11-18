@@ -1,315 +1,382 @@
 package com.Blockades
 
-import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import com.lagradost.cloudstream3.ErrorLoadingException
+import com.lagradost.cloudstream3.HomePageResponse
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MainPageData
+import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.Score
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrl
+import com.lagradost.cloudstream3.fixUrlNull
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.getQualityFromName
+import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONArray
+import org.json.JSONObject
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
-import java.util.Base64
-import java.util.regex.Pattern
+import java.net.URI
 
-class HDFilmDelisi : MainAPI() {
-    override var mainUrl = "https://hdfilmdelisi1.com"
-    override var name = "HDFilmDelisi"
-    override val hasMainPage = true
-    override var lang = "tr"
-    override val hasQuickSearch = true
-    override val supportedTypes = setOf(TvType.Movie)
+// ===== Common.kt içerikleri (tek dosyaya gömüldü) =====
 
-    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-    override val mainPage = mainPageOf(
-        "${mainUrl}" to "Son Eklenen Filmler",
-        "${mainUrl}/imdb-top-250" to "IMDb Top 250"
-    )
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val targetUrl = if (page <= 1) {
-            request.data
-        } else {
-            val base = request.data.removeSuffix("/")
-            if (base.contains("?")) "${base}&sayfa=${page}" else "${base}?sayfa=${page}"
-        }
-
-        val response = app.get(targetUrl, headers = mapOf("User-Agent" to userAgent))
-        val html = response.text
-        
-        // --- GEÇİCİ HATA AYIKLAMA (DEBUG) ---
-        println("=== DEBUG HDFilmDelisi ===")
-        println("URL: $targetUrl")
-        println("HTML Uzunluğu: ${html.length}")
-        println("HTML Başlangıcı: ${html.take(1000)}")
-        println("=== DEBUG SONU ===")
-        // -------------------------------------
-
-        val document = org.jsoup.Jsoup.parse(html, targetUrl)
-        val items = parseSearchResults(document, html)
-        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
+val browserHeaders: Map<String, String> =
+    java.util.TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER).apply {
+        put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        put("accept-language", "tr-TR,tr;q=0.9")
     }
 
-    fun toSearchResult(element: Element): SearchResponse? {
-        val link = if (element.tagName() == "a") element
-            else element.selectFirst("a[href*='/film/']") ?: return null
-        val href = fixUrlNull(link.attr("href")) ?: return null
-        if (!href.contains("/film/")) return null
+private val HLS_RES = Regex("""RESOLUTION=\d+x(\d+)""", RegexOption.IGNORE_CASE)
+private val HLS_NAME = Regex("""NAME="(\d{3,4})p?"""", RegexOption.IGNORE_CASE)
 
-        val img = element.selectFirst("img")
-            ?: link.selectFirst("img")
-            ?: element.parent()?.selectFirst("img")
-
-        val rawTitle = img?.attr("alt")?.trim()?.ifBlank { null }
-            ?: element.selectFirst(".title, h3, h2, h4, span")?.text()?.trim()
-            ?: link.text().trim().takeIf { it.isNotBlank() }
-            ?: return null
-
-        val cleanTitle = rawTitle.replace("izle", "", ignoreCase = true)
-            .replace("Türkçe Dublaj", "", ignoreCase = true)
-            .replace("ve Altyazılı", "", ignoreCase = true)
-            .trim()
-
-        val posterUrl = fixUrlNull(
-            img?.attr("data-src")?.ifBlank { null }
-                ?: img?.attr("data-lazy-src")?.ifBlank { null }
-                ?: img?.attr("data-original")?.ifBlank { null }
-                ?: img?.attr("srcset")?.substringBefore(" ")?.ifBlank { null }
-                ?: img?.attr("src")?.ifBlank { null }
-        )
-
-        return newMovieSearchResponse(cleanTitle, href, TvType.Movie) {
-            this.posterUrl = posterUrl
-        }
-    }
-
-    override suspend fun search(query: String, page: Int): SearchResponseList {
-        val targetUrl = if (page <= 1) "${mainUrl}/?s=${query}"
-            else "${mainUrl}/page/${page}/?s=${query}"
-
-        val html = app.get(targetUrl, headers = mapOf("User-Agent" to userAgent)).text
-        val document = org.jsoup.Jsoup.parse(html, targetUrl)
-        val items = parseSearchResults(document, html)
-        return newSearchResponseList(items, hasNext = false)
-    }
-
-    fun parseSearchResults(document: Document, rawHtml: String = ""): List<SearchResponse> {
-        val results = mutableListOf<SearchResponse>()
-        val seenUrls = mutableSetOf<String>()
-
-        // 1. Normal HTML etiketlerini tara
-        for (el in document.select("a[href*='/film/']")) {
-            toSearchResult(el)?.let { sr -> if (seenUrls.add(sr.url)) results.add(sr) }
-        }
-
-        // 2. HTML boşsa, script etiketlerini ve ham metni tara (Next.js / RSC payload)
-        if (results.isEmpty()) {
-            val scriptsText = document.select("script").joinToString("\n") { it.data() }
-            val searchSpace = "$scriptsText\n$rawHtml"
-
-            if (searchSpace.isNotBlank()) {
-                // Film objelerini yakalamak için daha esnek bir blok araması
-                val movieBlockPattern = Pattern.compile(
-                    """"@type"\s*:\s*"Movie"(.*?)\}""",
-                    Pattern.DOTALL
-                )
-                val mb = movieBlockPattern.matcher(searchSpace)
-                while (mb.find()) {
-                    val block = mb.group(1) ?: continue
-                    
-                    val urlMatch = Regex(""""url"\s*:\s*"([^"]+)"""").find(block)
-                    val nameMatch = Regex(""""name"\s*:\s*"([^"]+)"""").find(block)
-                    val imageMatch = Regex(""""(?:image|poster|thumbnail)"\s*:\s*"([^"]+)"""").find(block)
-
-                    val url = urlMatch?.groupValues?.get(1)?.replace("\\/", "/") ?: continue
-                    val name = nameMatch?.groupValues?.get(1)?.trim() ?: continue
-                    val image = imageMatch?.groupValues?.get(1)?.replace("\\/", "/")
-
-                    val fixedUrl = fixUrlNull(url) ?: continue
-                    if (!seenUrls.add(fixedUrl)) continue
-                    
-                    results.add(newMovieSearchResponse(name, fixedUrl, TvType.Movie) {
-                        this.posterUrl = fixUrlNull(image)
-                    })
+fun parseHlsVariants(masterUrl: String, m3u8Text: String): List<Pair<Int, String>> {
+    if (!m3u8Text.contains("#EXT-X-STREAM-INF") ||
+        m3u8Text.contains("TYPE=AUDIO", ignoreCase = true) ||
+        m3u8Text.contains("AUDIO=", ignoreCase = true)
+    ) return emptyList()
+    val base = runCatching { URI(masterUrl.trim()) }.getOrNull() ?: return emptyList()
+    val lines = m3u8Text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+    val out = ArrayList<Pair<Int, String>>()
+    val seen = HashSet<String>()
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i]
+        if (line.startsWith("#EXT-X-STREAM-INF", ignoreCase = true)) {
+            val height = HLS_RES.find(line)?.groupValues?.get(1)?.toIntOrNull()
+                ?: HLS_NAME.find(line)?.groupValues?.get(1)?.toIntOrNull()
+                ?: 0
+            var j = i + 1
+            while (j < lines.size && lines[j].startsWith("#")) j++
+            if (j < lines.size) {
+                val target = runCatching {
+                    val raw = lines[j]
+                    if (raw.startsWith("http://") || raw.startsWith("https://")) raw
+                    else base.resolve(raw).toString()
+                }.getOrNull()
+                if (!target.isNullOrBlank() && height > 0 && seen.add("$height|$target")) {
+                    out.add(height to target)
                 }
-
-                // Eğer JSON-LD Movie bloğu bulunamazsa, RSC paketindeki slug eşleşmelerini dene
-                if (results.isEmpty()) {
-                    val slugPattern = Pattern.compile(
-                        """/film/([a-zA-Z0-9_-]+)[^"]*"[^{}]*?"(?:image|poster)"\s*:\s*"([^"]+)"""",
-                        Pattern.DOTALL
-                    )
-                    val sm = slugPattern.matcher(searchSpace)
-                    while (sm.find()) {
-                        val slug = sm.group(1) ?: continue
-                        val img = sm.group(2)?.replace("\\/", "/")
-                        val fixedUrl = "${mainUrl}/film/$slug"
-                        if (!seenUrls.add(fixedUrl)) continue
-                        
-                        val title = slug.replace("-", " ")
-                            .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-                        results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie) {
-                            this.posterUrl = fixUrlNull(img)
-                        })
-                    }
-
-                    // Son çare: sadece slug bul (poster olmadan)
-                    if (results.isEmpty()) {
-                        val slugOnly = Pattern.compile(""""/film/([a-zA-Z0-9_-]+)"""")
-                        val so = slugOnly.matcher(searchSpace)
-                        while (so.find()) {
-                            val slug = so.group(1) ?: continue
-                            val fixedUrl = "${mainUrl}/film/$slug"
-                            if (!seenUrls.add(fixedUrl)) continue
-                            val title = slug.replace("-", " ")
-                                .split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-                            results.add(newMovieSearchResponse(title, fixedUrl, TvType.Movie))
-                        }
-                    }
-                }
+                i = j
             }
         }
-
-        return results.distinctBy { it.url }
+        i++
     }
+    return out.sortedByDescending { it.first }
+}
 
-    override suspend fun quickSearch(query: String): List<SearchResponse> = search(query, 1).items
-
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-        return parseLoadMetadata(document, url)
+fun Document.jsonLdDescription(): String? {
+    val nodes = select("script[type=application/ld+json]").flatMap { element ->
+        runCatching {
+            val raw = element.data().trim()
+            if (raw.startsWith("[")) {
+                val array = JSONArray(raw)
+                (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+            } else {
+                listOf(JSONObject(raw))
+            }
+        }.getOrDefault(emptyList())
+    }.flatMap { it.ldNodes() }
+    nodes.firstOrNull { it.optString("name").contains("konusu nedir", ignoreCase = true) }
+        ?.optJSONObject("acceptedAnswer")?.optString("text")
+        ?.takeIf { it.isNotBlank() }?.let { return cleanJsonLd(it) }
+    for (type in listOf("TVSeries", "Movie", "VideoObject", "CreativeWork", "Article")) {
+        nodes.firstOrNull {
+            it.optString("@type").contains(type, ignoreCase = true) && it.optString("description").isNotBlank()
+        }?.let { return cleanJsonLd(it.optString("description")) }
     }
+    return nodes.firstOrNull { it.optString("description").isNotBlank() }
+        ?.let { cleanJsonLd(it.optString("description")) }
+}
 
-    suspend fun parseLoadMetadata(document: Document, url: String): LoadResponse? {
-        val rawTitle = document.select("h1").firstOrNull { h ->
-            val t = h.text().trim()
-            !t.equals("Film izle", true) && !t.equals("Dizi izle", true)
-        }?.text()?.trim()
-            ?: document.title().substringBefore("izle").substringBefore("-").trim()
-
-        val title = rawTitle.replace("izle", "", true)
-            .replace("Türkçe Dublaj", "", true)
-            .replace("ve Altyazılı", "", true)
-            .trim()
-
-        val poster = fixUrlNull(
-            document.selectFirst("meta[property='og:image']")?.attr("content")
-                ?: document.selectFirst("img[src*='poster'], img[src*='cover'], img[src*='upload']")?.let {
-                    it.attr("data-src").ifBlank { it.attr("src") }
-                }
-        )
-
-        val description = document.selectFirst("meta[property='og:description']")?.attr("content")
-            ?: document.selectFirst("div.description, div.overview, p")?.text()?.trim()
-
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = poster
-            this.plot = description
+private fun JSONObject.ldNodes(): List<JSONObject> = buildList {
+    add(this@ldNodes)
+    for (key in listOf("@graph", "mainEntity")) {
+        when (val child = opt(key)) {
+            is JSONObject -> addAll(child.ldNodes())
+            is JSONArray -> for (i in 0 until child.length()) {
+                child.optJSONObject(i)?.let { addAll(it.ldNodes()) }
+            }
         }
+    }
+}
+
+private fun cleanJsonLd(raw: String): String = Jsoup.parse(raw).text().trim()
+
+// ===== Provider =====
+
+private fun cleanTitle(raw: String?): String = (raw ?: "")
+    .replace(Regex("""\s*\|.*$"""), "")
+    .replace(Regex("""\s*[-–]\s*(?:HDFilm|Film|Dizi|Full).*$""", RegexOption.IGNORE_CASE), "")
+    .replace(Regex("""\s+izle\b.*$""", RegexOption.IGNORE_CASE), "")
+    .replace(Regex("""\s*\(\d{4}\).*$"""), "")
+    .replace(Regex("""\s+(?:Türkçe|Dublaj|Altyazılı)\b.*$""", RegexOption.IGNORE_CASE), "")
+    .trim().trim('-', '–', '|', ',')
+
+class HDFilmDelisi : MainAPI() {
+    private val uaHeaders get() = browserHeaders
+
+    override var mainUrl = "https://hdfilmdelisi1.com"
+    override var name = "HDFilmDelisi"
+    override var lang = "tr"
+    override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+
+    override val hasMainPage = true
+    override val mainPage get() = ROWS.mapNotNull { rowName ->
+        val slug = CATEGORY_SLUGS[rowName] ?: return@mapNotNull null
+        MainPageData(rowName, "$mainUrl/api/films/category/$slug?page={page}")
+    }
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        if (request.name !in ROWS) return newHomePageResponse(request.name, emptyList(), false)
+        val url = request.data.replace("{page}", page.toString())
+        val raw = app.get(url, headers = uaHeaders).text
+        val arr = JSONObject(raw).optJSONArray("films") ?: JSONArray()
+        val out = mutableListOf<SearchResponse>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val title = o.optString("baslik").trim()
+            val slug = o.optString("slug").trim()
+            if (title.isBlank() || slug.isBlank()) continue
+            val href = if (slug.startsWith("http")) slug else "$mainUrl/film/" + slug.trimStart('/')
+            out += newMovieSearchResponse(title, href, TvType.Movie) {
+                posterUrl = fixUrlNull(o.optString("afis").takeIf { it.startsWith("http") })
+                year = o.optInt("yayinYili").takeIf { it > 1900 }
+                score = Score.from10(o.optString("imdbPuani"))
+            }
+        }
+        return newHomePageResponse(request.name, out, out.isNotEmpty() && page < 200)
     }
 
     companion object {
-        fun decryptVixolity(html: String): String? {
-            val match = Regex("""\(\s*['"]([0-9a-fA-F]+)['"]\s*,\s*(\d+)\s*\)""").find(html) ?: return null
-            val hex = match.groupValues[1]
-            val offset = match.groupValues[2].toIntOrNull() ?: return null
-            val chars = StringBuilder()
-            for (i in 0 until hex.length step 2) {
-                if (i + 2 <= hex.length) {
-                    val byteVal = hex.substring(i, i + 2).toInt(16)
-                    chars.append(byteVal.toChar())
-                }
-            }
-            val reversed = chars.reverse().toString()
-            val decodedBytes = try {
-                Base64.getDecoder().decode(reversed)
-            } catch (_: Exception) {
-                return null
-            }
-            val shifted = StringBuilder()
-            for (b in decodedBytes) {
-                val code = (b.toInt() and 0xFF) - offset
-                shifted.append(code.toChar())
-            }
-            val shiftedStr = shifted.toString()
-            val fileMatch = Regex("""file\s*:\s*['"]([^'"]+)['"]""")
-                .find(shiftedStr)?.groupValues?.get(1) ?: return null
-            return Regex("""\\x([0-9a-fA-F]{2})""").replace(fileMatch) { mr ->
-                mr.groupValues[1].toInt(16).toChar().toString()
+        private val CATEGORY_SLUGS = linkedMapOf(
+            "Aile" to "aile",
+            "Aksiyon" to "aksiyon",
+            "Animasyon" to "animasyon",
+            "Belgeseller" to "belgeseller",
+            "Bilim Kurgu" to "bilim-kurgu",
+            "Dram" to "dram",
+            "Fantastik" to "fantastik",
+            "Gerilim" to "gerilim",
+            "Gizem" to "gizem",
+            "Hint" to "hint",
+            "Komedi" to "komedi",
+            "Korku" to "korku",
+            "Macera" to "macera",
+            "Müzikal" to "muzikal",
+            "Psikolojik" to "psikolojik",
+            "Romantik" to "romantik",
+            "Savaş" to "savas",
+            "Suç" to "suc",
+            "Tarih" to "tarih",
+            "Western" to "western",
+            "Yerli" to "yerli",
+        )
+        val ROWS = CATEGORY_SLUGS.keys.toList()
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$mainUrl/api/search?q=" + java.net.URLEncoder.encode(query, "UTF-8")
+        val raw = app.get(url, headers = uaHeaders).text
+        val root = if (raw.trimStart().startsWith("[")) JSONObject() else JSONObject(raw)
+        val out = mutableListOf<SearchResponse>()
+        val arr = root.optJSONArray("results") ?: JSONArray()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val title = o.optString("baslik").trim()
+            val slug = o.optString("slug").trim()
+            if (title.isBlank() || slug.isBlank()) continue
+            val href = if (slug.startsWith("http")) slug else "$mainUrl/film/" + slug.trimStart('/')
+            out += newMovieSearchResponse(title, href, TvType.Movie) {
+                posterUrl = fixUrlNull(o.optString("afis").takeIf { it.startsWith("http") })
+                year = o.optInt("yayinYili").takeIf { it > 1900 }
+                score = Score.from10(o.optString("imdbPuani"))
             }
         }
+        return out.distinctBy { it.url }
+    }
+
+    override suspend fun load(url: String): LoadResponse? {
+        val resp = app.get(url, headers = uaHeaders)
+        val doc = resp.document
+        val raw = resp.text
+        val title = cleanTitle(
+            doc.selectFirst("meta[property=og:title]")?.attr("content")
+                ?: doc.selectFirst("h1")?.text()
+                ?: throw ErrorLoadingException("$name: başlık okunamadı")
+        ).ifBlank { throw ErrorLoadingException("$name: başlık okunamadı") }
+        val poster = fixUrlNull(doc.selectFirst("meta[property=og:image]")?.attr("content"))
+        val plot = doc.jsonLdDescription()
+            ?: doc.selectFirst("meta[name=description]")?.attr("content")?.trim()
+        val duration = Regex(""""duration"\s*:\s*"PT(?:(\d+)H)?(?:(\d+)M)?""").find(raw)?.let { match ->
+            (match.groupValues[1].toIntOrNull() ?: 0) * 60 + (match.groupValues[2].toIntOrNull() ?: 0)
+        }?.takeIf { it > 0 }
+        val year = Regex("""\b(19|20)\d{2}\b""").find(title)?.value?.toIntOrNull()
+            ?: Regex("""\b(19|20)\d{2}\b""").find(raw)?.value?.toIntOrNull()
+        val score = Score.from10(
+            doc.selectFirst("[itemprop=ratingValue]")?.attr("content")
+                ?: Regex(""""(?:imdbPuani|ratingValue|imdb)"\s*:\s*"?([0-9.]+)""").find(raw)?.groupValues?.get(1)
+        )
+        val basePath = url.substringAfter(mainUrl).substringBefore('?').trimEnd('/')
+        val slug = basePath.trim('/').split('/').lastOrNull().orEmpty()
+        val slugBase = slug.removeSuffix("-izle").removeSuffix("-film-izle")
+        val episodes = doc.select("a[href]").mapNotNull { anchor ->
+            val href = fixUrlNull(anchor.attr("href")) ?: return@mapNotNull null
+            val path = href.substringAfter(mainUrl).substringBefore('?')
+            if (basePath.isNotBlank() && !path.startsWith(basePath) &&
+                !path.contains(slug) && !path.contains(slugBase)) return@mapNotNull null
+            if (!Regex("""(?:bolum|episode|sezon|season)""", RegexOption.IGNORE_CASE).containsMatchIn(path)) return@mapNotNull null
+            val number = Regex("""(?:sezon|season)[-_/]?(\d+).*?(?:bolum|episode)[-_/]?([0-9]*)""")
+                .find(path)?.groupValues?.getOrNull(2)?.toIntOrNull()
+                ?: Regex("""(?:bolum|episode)[-_/]?(\d+)""").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: Regex("""(\d+)[-_]bolum""").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            newEpisode(href) {
+                this.name = anchor.text().trim().ifBlank { "Bölüm $number" }
+                this.episode = number
+            }
+        }.distinctBy { it.data }.sortedBy { it.episode ?: 0 }
+        if (episodes.isNotEmpty()) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = poster
+                this.plot = plot
+                this.year = year
+                this.score = score
+                this.duration = duration
+            }
+        }
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            this.posterUrl = poster
+            this.plot = plot
+            this.year = year
+            this.score = score
+            this.duration = duration
+        }
+    }
+
+    // pl.vixolity.com oynatıcısı: hex -> ters -> base64 -> karakter kaydırma -> base64 ile gizlenmiş JS; "kaynak" HLS master'dır.
+    private suspend fun vixolityMaster(embed: String): String? {
+        val html = runCatching { app.get(embed, headers = uaHeaders, referer = "$mainUrl/").text }.getOrNull() ?: return null
+        val m = Regex("""\}\)\('([0-9a-f]+)',\s*(\d+)\)""").find(html) ?: return null
+        return runCatching {
+            val rev = String(m.groupValues[1].chunked(2).map { it.toInt(16).toByte() }.toByteArray(), Charsets.ISO_8859_1).reversed()
+            val shifted = String(java.util.Base64.getDecoder().decode(rev), Charsets.ISO_8859_1)
+                .map { (it.code - m.groupValues[2].toInt()).toChar() }.joinToString("")
+            val code = String(java.util.Base64.getDecoder().decode(shifted), Charsets.UTF_8)
+            Regex(""""kaynak"\s*:\s*"([^"]+)"""").find(code)?.groupValues?.get(1)?.replace("\\/", "/")
+        }.getOrNull()
+    }
+
+    /**
+     * Vixolity altyazıyı HLS olarak sarar: `sub_tr.gif` → `#EXTM3U` → tek segment (`sub_tr.jpg`,
+     * içeriği `WEBVTT`). Oynatıcı playlist'i altyazı olarak parse edemediği için segmenti ver.
+     */
+    private suspend fun vixolitySubtitleFile(url: String, referer: String): SubtitleFile? {
+        if (!url.contains("/vtt/")) return SubtitleFile("tr", url)
+        val body = runCatching { app.get(url, headers = uaHeaders, referer = referer).text }.getOrNull() ?: return null
+        if (!body.startsWith("#EXTM3U")) return SubtitleFile("tr", url).takeIf { body.contains("WEBVTT") }
+        val segments = body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.toList()
+        // Çok segmentli altyazı tek dosyaya birleştirilemez (barındırma yok); eksik altyazı verme.
+        if (segments.size != 1) return null
+        val segment = runCatching { URI(url).resolve(segments[0]).toString() }.getOrNull() ?: return null
+        return SubtitleFile("tr", segment)
     }
 
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        val resp = app.get(data, headers = uaHeaders)
+        val text = resp.text.replace("\\/", "/").replace("\\\"", "\"")
         var found = false
-        val document = app.get(data, headers = mapOf("User-Agent" to userAgent)).document
-        val html = document.html()
-
-        val embedUrls = mutableListOf<String>()
-
-        Regex("""https?://pl\.vixolity\.com/[a-zA-Z0-9_\-]+""").findAll(html).forEach { m ->
-            embedUrls.add(m.value)
+        val seen = mutableSetOf<String>()
+        suspend fun emit(stream: String, label: String, referer: String, explicitQuality: Int? = null) {
+            if (!stream.startsWith("http") || !seen.add(stream)) return
+            val isM3u8 = stream.contains(".m3u8") || stream.contains("/vs/") || stream.endsWith(".gif")
+            val type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            val quality = explicitQuality ?: getQualityFromName(label)
+            callback.invoke(newExtractorLink(name, label, stream, type) {
+                this.referer = referer
+                this.quality = quality
+            })
+            found = true
         }
-
-        for (it in document.select("iframe[src]")) {
-            val src = fixUrlNull(it.attr("src"))
-            if (!src.isNullOrBlank() && !src.contains("google") && !src.contains("recaptcha") &&
-                !src.contains("hdfilmdelisi.one/embed") && !src.contains("hdfilmdelisi.one/vids")) {
-                embedUrls.add(src)
-            }
-        }
-
-        val candidates = embedUrls.distinct()
-        val semaphore = Semaphore(4)
-
-        coroutineScope {
-            candidates.map { embedUrl ->
-                async {
-                    semaphore.withPermit {
-                        try {
-                            if (embedUrl.contains("vixolity.com")) {
-                                val vixHtml = app.get(
-                                    embedUrl,
-                                    headers = mapOf(
-                                        "User-Agent" to userAgent,
-                                        "Referer" to data
-                                    )
-                                ).text
-                                val m3u8Url = decryptVixolity(vixHtml)
-                                if (!m3u8Url.isNullOrBlank()) {
-                                    val link = newExtractorLink(
-                                        source = name,
-                                        name = "$name Vixolity HLS",
-                                        url = m3u8Url,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = "https://pl.vixolity.com/"
-                                        this.headers = mapOf(
-                                            "Referer" to "https://pl.vixolity.com/",
-                                            "User-Agent" to userAgent
-                                        )
-                                        this.quality = Qualities.P1080.value
-                                    }
-                                    callback(link)
-                                    found = true
-                                }
-                            } else {
-                                loadExtractor(embedUrl, data, subtitleCallback, callback)
-                                found = true
-                            }
-                        } catch (_: Exception) {
-                        }
+        val media = Regex("""https?://[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?""").findAll(text)
+        for (m in media) emit(m.value, "Direct", data)
+        val embeds = Regex(""""(?:embedUrl|contentUrl|embed_url|player_url)"\s*:\s*"([^"]+)""")
+            .findAll(text).map { it.groupValues[1] }.toList()
+        for (embed in embeds) {
+            val absolute = fixUrl(embed)
+            if (absolute == data) continue
+            if (absolute.contains("vixolity.com")) {
+                vixolityMaster(absolute)?.let { m ->
+                    val vixRef = "https://pl.vixolity.com/"
+                    emit(m, "Vixolity", vixRef, Qualities.Unknown.value)
+                    val playlist = runCatching { app.get(m, headers = uaHeaders, referer = vixRef).text }.getOrNull().orEmpty()
+                    for ((h, vUrl) in parseHlsVariants(m, playlist)) {
+                        emit(vUrl, "Vixolity ${h}p", vixRef, h)
+                    }
+                    for (sub in Regex("""#EXT-X-MEDIA:[^\r\n]*TYPE=SUBTITLES[^\r\n]*""").findAll(playlist)) {
+                        val uri = Regex("""URI="([^"]+)"""").find(sub.value)?.groupValues?.get(1) ?: continue
+                        val langCode = Regex("""LANGUAGE="([^"]+)"""").find(sub.value)?.groupValues?.get(1)?.lowercase() ?: "tr"
+                        val subName = Regex("""NAME="([^"]+)"""").find(sub.value)?.groupValues?.get(1)?.trim()
+                            ?.takeIf { it.isNotEmpty() } ?: langCode
+                        val subUrl = runCatching { URI(m).resolve(uri).toString() }.getOrDefault(uri)
+                        vixolitySubtitleFile(subUrl, vixRef)?.let { subtitleCallback.invoke(SubtitleFile(subName, it.url)) }
                     }
                 }
-            }.awaitAll()
+                continue
+            }
+            if (!absolute.contains("embed") && !absolute.contains(".mp4") && !absolute.contains(".m3u8")) continue
+            if (absolute.matches(Regex(""".*\.(?:mp4|m3u8).*"""))) {
+                emit(absolute, "Embed", data)
+                continue
+            }
+            val inner = runCatching { app.get(absolute, headers = uaHeaders, referer = data).text }.getOrNull() ?: continue
+            val innerMedia = Regex("""https?://[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?""").findAll(inner)
+            for (m in innerMedia) emit(m.value, "Embed", absolute)
         }
-
+        val frames = resp.document.select("iframe").mapNotNull {
+            val raw = it.attr("src").ifBlank { it.attr("data-src") }.ifBlank { it.attr("vdo-src") }
+            fixUrlNull(raw)
+        }.distinct()
+        for (frame in frames) {
+            if (frame.contains(".mp4") || frame.contains(".m3u8")) {
+                emit(frame, "Embed", data)
+                continue
+            }
+            val inner = runCatching { app.get(frame, headers = uaHeaders, referer = data).text }.getOrNull()
+            if (inner != null) {
+                val innerText = inner.replace("\\/", "/")
+                for (m in Regex("""https?://[^"'\s<>]+?\.(?:m3u8|mp4)(?:\?[^"'\s<>]*)?""").findAll(innerText)) {
+                    emit(m.value, "Embed", frame)
+                }
+                for (sub in Regex("""<iframe[^>]+(?:src|data-src)="([^"]+)""").findAll(innerText)) {
+                    val subUrl = fixUrl(sub.groupValues[1])
+                    if (loadExtractor(subUrl, frame, subtitleCallback, callback)) found = true
+                }
+            }
+            if (loadExtractor(frame, "$mainUrl/", subtitleCallback, callback)) found = true
+        }
+        val subs = Regex("""https?://[^"'\s<>]+?\.(?:vtt|srt)(?:\?[^"'\s<>]*)""").findAll(text)
+        for (m in subs) {
+            subtitleCallback.invoke(SubtitleFile("tr", m.value))
+        }
+        if (!found && frames.isEmpty() && embeds.isEmpty() && media.none()) {
+            throw ErrorLoadingException("$name: oynatılabilir akış yok")
+        }
         return found
     }
 }
