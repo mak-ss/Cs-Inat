@@ -49,7 +49,7 @@ import javax.crypto.spec.SecretKeySpec
  *  - `openPlayer(blob)` (multiplayer.php): `/source2.php?v=blob` JSON'u m3u8 dosya yolları verir.
  * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
  */
-class DiziPal : MainAPI() {
+class DiziPalOrijinal : MainAPI() {
     override var mainUrl = "https://dizipal2149.com"
     override var name = "DiziPal"
     override var lang = "tr"
