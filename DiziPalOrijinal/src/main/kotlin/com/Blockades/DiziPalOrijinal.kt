@@ -64,6 +64,7 @@ class DiziPalOrijinal : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        Log.d(TAG, "getMainPage ÇAĞRILDI! page=$page request=${request.name}")
         val paged = request.data in pagedSections
         val url = if (paged && page > 1) "${request.data}?page=$page" else request.data
         val doc = app.get(url, headers = uaHeaders).document
@@ -72,6 +73,7 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
+        Log.d(TAG, "search ÇAĞRILDI! query=$query")
         val q = query.trim()
         if (q.length < 3) return emptyList()
         val body = runCatching {
@@ -90,6 +92,7 @@ class DiziPalOrijinal : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
+        Log.d(TAG, "load ÇAĞRILDI! url=$url")
         val pageUrl = httpsUrl(url)
         val doc = runCatching { app.get(pageUrl, headers = uaHeaders).document }.getOrNull()
             ?: throw ErrorLoadingException("$name: içerik sayfası yüklenemedi.")
@@ -131,7 +134,7 @@ class DiziPalOrijinal : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val pageUrl = httpsUrl(data)
-        Log.d(TAG, "loadLinks başladı: $pageUrl")
+        Log.d(TAG, "loadLinks ÇAĞRILDI! url=$pageUrl")
         val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
             .getOrNull() ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi.")
 
@@ -159,8 +162,6 @@ class DiziPalOrijinal : MainAPI() {
         Log.d(TAG, "oynatılabilir kaynak bulunamadı")
         throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı.")
     }
-
-    // ---------------------------------------------------------------- oynatıcı (cfg)
 
     private suspend fun fetchPlayerConfig(cfg: String, pageUrl: String): JSONObject? {
         val body = runCatching {
@@ -214,8 +215,6 @@ class DiziPalOrijinal : MainAPI() {
         }
         return false
     }
-
-    // ---------------------------------------------------------------- listing
 
     private fun Element.toCard(): SearchResponse? {
         val href = fixUrlNull(attr("href")) ?: return null
@@ -275,8 +274,6 @@ class DiziPalOrijinal : MainAPI() {
         if (!trimmed.startsWith("http")) return null
         return if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
     }
-
-    // ---------------------------------------------------------------- künye
 
     private fun episodesOf(doc: Document, ld: JSONObject?): List<Episode> {
         val episodes = LinkedHashMap<String, Episode>()
@@ -372,8 +369,6 @@ class DiziPalOrijinal : MainAPI() {
         val total = (match.groupValues[1].toIntOrNull() ?: 0) * 60 + (match.groupValues[2].toIntOrNull() ?: 0)
         return total.takeIf { it > 0 }
     }
-
-    // ---------------------------------------------------------------- eski enc yolu
 
     private fun decryptEmbed(html: String): String? {
         val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
@@ -499,8 +494,6 @@ class DiziPalOrijinal : MainAPI() {
             this.headers = uaHeaders
         }
 
-    // ---------------------------------------------------------------- ortak
-
     private fun objectAt(html: String, from: Int): String? {
         if (from < 0 || from >= html.length || html[from] != '{') return null
         var depth = 0
@@ -545,8 +538,6 @@ class DiziPalOrijinal : MainAPI() {
 
     private fun JSONArray?.objects(): List<JSONObject> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
-
-    // ---------------------------------------------------------------- kripto
 
     private fun String.hexToBytes(): ByteArray =
         chunked(2).map { it.toInt(16).toByte() }.toByteArray()
