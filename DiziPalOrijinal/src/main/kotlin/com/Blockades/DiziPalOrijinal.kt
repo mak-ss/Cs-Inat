@@ -61,17 +61,34 @@ class DiziPalOrijinal : MainAPI() {
     // istekler Firefox UA ile gider; browserHeaders (Chrome/130) burada bilinçli kullanılmaz.
     private val uaHeaders get() = mapOf("user-agent" to UA, "Accept-Language" to "tr-TR,tr;q=0.9")
 
-    /** Yalnız bu iki bölüm `?page=N` ile sayfalanıyor; diğerleri tek istekte tüm listeyi verir. */
-    private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
+    /** Yalnız bu bölümler `?page=N` ile sayfalanıyor; diğerleri tek istekte tüm listeyi verir. */
+    private val pagedSections = setOf(
+        "$mainUrl/yabanci-dizi-izle",
+        "$mainUrl/film-izle",
+        // Platform sayfaları da sonsuz kaydırma ile sayfalanıyor.
+        "$mainUrl/platform/blutv",
+        "$mainUrl/platform/exxen",
+        "$mainUrl/platform/gain",
+        "$mainUrl/platform/max",
+        "$mainUrl/platform/paramount-plus",
+        "$mainUrl/platform/tabii",
+    )
 
     override val mainPage get() = mainPageOf(
         "$mainUrl/diziler" to "Yeni Diziler",
         "$mainUrl/filmler" to "Yeni Filmler",
         "$mainUrl/trend" to "Trendler",
         "$mainUrl/anime" to "Animeler",
+        // Platformlar
         "$mainUrl/platform/netflix" to "Netflix",
-        "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
+        "$mainUrl/platform/prime-video" to "Prime Video",
         "$mainUrl/platform/disney-plus" to "Disney+",
+        "$mainUrl/platform/blutv" to "BluTV",
+        "$mainUrl/platform/exxen" to "Exxen",
+        "$mainUrl/platform/gain" to "Gain",
+        "$mainUrl/platform/max" to "Max",
+        "$mainUrl/platform/paramount-plus" to "Paramount+",
+        "$mainUrl/platform/tabii" to "tabii",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -583,7 +600,8 @@ class DiziPalOrijinal : MainAPI() {
         /** Ana sayfa satırları; ayarlardan kapatılabilir. */
         val ROWS = listOf(
             "Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet",
-            "Netflix", "Amazon Prime", "Disney+",
+            "Netflix", "Prime Video", "Disney+",
+            "BluTV", "Exxen", "Gain", "Max", "Paramount+", "tabii",
         )
 
         /** Oynatıcı CDN'i (Cloudflare) Chrome tarzı UA'lara TLS'ten bağımsız 403 verir; Firefox UA geçer. */
