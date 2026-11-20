@@ -78,7 +78,7 @@ class DiziPalOrijinal : MainAPI() {
         val paged = request.data in pagedSections
         val url = if (paged && page > 1) "${request.data}?page=$page" else request.data
         val doc = app.get(url, headers = uaHeaders).document
-        val items = doc.select("a.tc[href]").mapNotNull { it.toCard() }.distinctBy { it.url }
+        val items = doc.select("a.card-link[href], a.tc[href]").mapNotNull { it.toCard() }.distinctBy { it.url }
         return newHomePageResponse(request.name, items, hasNext = paged && items.isNotEmpty())
     }
 
@@ -104,7 +104,8 @@ class DiziPalOrijinal : MainAPI() {
         val pageUrl = httpsUrl(url)
         val doc = runCatching { app.get(pageUrl, headers = uaHeaders).document }.getOrNull()
             ?: throw ErrorLoadingException("$name: içerik sayfası yüklenemedi. $REPORT_HINT")
-        val isSeries = pageUrl.contains("/series/")
+        // Yeni URL yapısı: dizi detayları /dizi/<slug>, film detayları /film/<slug>
+        val isSeries = pageUrl.contains("/dizi/") || pageUrl.contains("/series/")
         val ld = jsonLd(doc, if (isSeries) "TVSeries" else "Movie")
         val title = ld?.optString("name")?.trim()?.takeIf { it.isNotEmpty() }
             ?: doc.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
@@ -167,15 +168,20 @@ class DiziPalOrijinal : MainAPI() {
 
     private fun Element.toCard(): SearchResponse? {
         val href = fixUrlNull(attr("href")) ?: return null
-        val isSeries = href.contains("/series/")
-        if (!isSeries && !href.contains("/movies/")) return null
+        // Yeni kart yapısı: /dizi/<slug> veya /film/<slug>
+        val isSeries = href.contains("/dizi/") || href.contains("/series/")
+        if (!isSeries && !href.contains("/film/") && !href.contains("/movies/")) return null
 
-        val title = selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
+        val title = selectFirst("h3.card-title")?.text()?.trim()?.ifBlank { null }
+            ?: selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
             ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
             ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
             ?: return null
-        val poster = selectFirst("img[src^=http]")?.attr("src")
-        val year = YEAR.find(text())?.value?.toIntOrNull()
+        // Gerçek poster data-src'de; src base64 placeholder.
+        val poster = selectFirst("img[data-src]")?.attr("data-src")?.takeIf { it.startsWith("http") }
+            ?: selectFirst("img[src^=http]")?.attr("src")
+        val year = selectFirst("span.card-year")?.text()?.trim()?.toIntOrNull()
+            ?: YEAR.find(text())?.value?.toIntOrNull()
 
         return if (isSeries) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
@@ -267,9 +273,10 @@ class DiziPalOrijinal : MainAPI() {
                 ?.takeIf { it.optString("@type") == type }
         }
 
-    /** Dizi sayfası künye görseli olarak backdrop taşır; afiş `…/tv/poster/…` yolundan gelir. */
+    /** Dizi sayfası künye görseli olarak backdrop taşır; afiş `…/poster/…` yolundan gelir. */
     private fun posterOf(doc: Document, ld: JSONObject?): String? =
-        doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
+        doc.selectFirst("img[data-src*=/poster/]")?.attr("data-src")?.takeIf { it.startsWith("http") }
+            ?: doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
             ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
 
     private fun yearOf(ld: JSONObject?): Int? =
@@ -284,7 +291,7 @@ class DiziPalOrijinal : MainAPI() {
     /** Detay sayfasındaki "Benzer diziler"/"Benzer filmler" şeridi (`ds-ben` / `df-ben`). */
     private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
         val section = if (isSeries) "ds-ben" else "df-ben"
-        return doc.select("section[aria-labelledby='$section'] a.tc[href]")
+        return doc.select("section[aria-labelledby='$section'] a.card-link[href], section[aria-labelledby='$section'] a.tc[href]")
             .mapNotNull { it.toCard() }
             .distinctBy { it.url }
     }
@@ -580,22 +587,4 @@ class DiziPalOrijinal : MainAPI() {
         )
         /** Oynatıcı CDN'i (Cloudflare) Chrome tarzı UA'lara TLS'ten bağımsız 403 verir; Firefox UA geçer. */
         private const val UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
-        private const val REPORT_HINT =
-            "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
-        private const val IMAGE_PROXY = "/i/s/"
-
-        private val YEAR = Regex("""\b(19\d{2}|20\d{2})\b""")
-        private val EPISODE_IN_SLUG = Regex("""-(\d+)x(\d+)""")
-        private val ISO_DURATION = Regex("""PT(?:(\d+)H)?(?:(\d+)M)?""")
-        private val RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""")
-        private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
-        private val ORIGIN = Regex("""^https?://[^/]+""")
-
-        /**
-         * Sayfa yükündeki alanlar RSC kaçışıyla (`\"ciphertext\":\"…\"`) gelir; 0-3 ters bölü
-         * kabul edilir. Parola `k` anahtarında durur ve görseller gibi aynı yükte tekrarlanır.
-         */
-        private val ENC_FIELD = Regex("""\\{0,3}"(ciphertext|iv|salt|k)\\{0,3}":\\{0,3}"([^"\\]+)""")
-    }
-}
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/
