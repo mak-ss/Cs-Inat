@@ -585,6 +585,27 @@ class DiziPalOrijinal : MainAPI() {
             "Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet",
             "Netflix", "Amazon Prime", "Disney+",
         )
+
         /** Oynatıcı CDN'i (Cloudflare) Chrome tarzı UA'lara TLS'ten bağımsız 403 verir; Firefox UA geçer. */
         private const val UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+        private const val REPORT_HINT =
+            "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
+
+        private const val IMAGE_PROXY = "/i/s/"
+
+        private val YEAR = Regex("""\b(19\d{2}|20\d{2})\b""")
+        private val EPISODE_IN_SLUG = Regex("""-(\d+)x(\d+)""")
+        private val ISO_DURATION = Regex("""PT(?:(\d+)H)?(?:(\d+)M)?""")
+        private val RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""")
+        private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
+        private val ORIGIN = Regex("""^https?://[^/]+""")
+
+        /**
+         * Sayfa yükündeki alanlar RSC kaçışıyla (`\"ciphertext\":\"…\"`) gelir; 0-3 ters bölü
+         * kabul edilir. Parola `k` anahtarında durur ve görseller gibi aynı yükte tekrarlanır.
+         */
+        private val ENC_FIELD = Regex("""\\{0,3}"(ciphertext|iv|salt|k)\\{0,3}":\\{0,3}"([^"\\]+)""")
+    }
+}
