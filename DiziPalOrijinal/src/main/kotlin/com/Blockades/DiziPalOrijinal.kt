@@ -65,13 +65,13 @@ class DiziPalOrijinal : MainAPI() {
     private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
 
     override val mainPage get() = mainPageOf(
-        "$mainUrl/yabanci-dizi-izle" to "Yeni Diziler",
-        "$mainUrl/film-izle" to "Yeni Filmler",
-        "$mainUrl/trendler" to "Trendler",
-        "$mainUrl/kesfet" to "Keşfet",
-        "$mainUrl/platform-bolumler/netflix" to "Netflix",
+        "$mainUrl/diziler" to "Yeni Diziler",
+        "$mainUrl/filmler" to "Yeni Filmler",
+        "$mainUrl/trend" to "Trendler",
+        "$mainUrl/anime" to "Animeler",
+        "$mainUrl/platform/netflix" to "Netflix",
         "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
-        "$mainUrl/platform-bolumler/disneyplus" to "Disney+",
+        "$mainUrl/platform/disney-plus" to "Disney+",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
