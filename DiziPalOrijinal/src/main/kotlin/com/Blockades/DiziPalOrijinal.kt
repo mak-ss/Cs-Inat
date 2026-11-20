@@ -250,6 +250,7 @@ class DiziPalOrijinal : MainAPI() {
     private fun episodesOf(doc: Document, ld: JSONObject?): List<Episode> {
         val episodes = LinkedHashMap<String, Episode>()
 
+        // 1) ld+json containsSeason (varsa) — öncelikli
         ld?.opt("containsSeason").seasons().forEach { season ->
             val seasonNumber = season.optString("seasonNumber").toIntOrNull() ?: 1
             season.optJSONArray("episode").objects().forEach { entry ->
@@ -266,7 +267,28 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // ld+json kırpılırsa sayfadaki /bolum/<slug>-<S>x<E> bağlantıları aynı listeyi verir.
+        // 2) Sayfa DOM'u — sezon bloklarını data-episodes ile ayır
+        if (episodes.isEmpty()) {
+            doc.select("div.detail-episode-list[data-episodes]").forEach { list ->
+                val season = list.attr("data-episodes").toIntOrNull() ?: return@forEach
+                list.select("a.detail-episode-item[href*='/bolum/']").forEach { anchor ->
+                    val episodeUrl = httpsUrl(anchor.attr("href").substringBefore('?'))
+                    if (episodeUrl.isEmpty() || episodes.containsKey(episodeUrl)) return@forEach
+                    val title = anchor.selectFirst(".detail-episode-title")?.text()?.trim()
+                        ?.ifBlank { null }
+                    val number = anchor.selectFirst(".detail-episode-subtitle")?.text()?.trim()
+                        ?.toIntOrNull()
+                        ?: EPISODE_IN_SLUG.find(episodeUrl)?.groupValues?.get(2)?.toIntOrNull()
+                    episodes[episodeUrl] = newEpisode(episodeUrl) {
+                        this.name = title ?: "$season. Sezon $number. Bölüm"
+                        this.season = season
+                        this.episode = number
+                    }
+                }
+            }
+        }
+
+        // 3) Son çare: slug'dan sezon/bölüm çıkar
         if (episodes.isEmpty()) {
             doc.select("a[href*='/bolum/']").forEach { anchor ->
                 val episodeUrl = httpsUrl(anchor.attr("href").substringBefore('?'))
@@ -284,10 +306,19 @@ class DiziPalOrijinal : MainAPI() {
         return episodes.values.toList()
     }
 
+    /**
+     * `application/ld+json` bloklarından istenen `@type`'ı çıkarır. Site iki biçim kullanır:
+     *  - Tekil blok: `{"@type":"TVSeries", …}` (eski sayfalar)
+     *  - `@graph` dizisi: `{"@graph":[{"@type":"Organization"…},{"@type":"TVSeries"…}]}` (yeni sayfalar)
+     * İkisi de desteklenir; `@graph` içindeki eşleşen nesne döndürülür.
+     */
     private fun jsonLd(doc: Document, type: String): JSONObject? =
         doc.select("script[type=application/ld+json]").firstNotNullOfOrNull { script ->
-            runCatching { JSONObject(script.data()) }.getOrNull()
-                ?.takeIf { it.optString("@type") == type }
+            val root = runCatching { JSONObject(script.data()) }.getOrNull()
+                ?: return@firstNotNullOfOrNull null
+            if (root.optString("@type") == type) return@firstNotNullOfOrNull root
+            root.optJSONArray("@graph")?.objects()
+                ?.firstOrNull { it.optString("@type") == type }
         }
 
     /** Dizi sayfası künye görseli olarak backdrop taşır; afiş `…/poster/…` yolundan gelir. */
@@ -608,13 +639,14 @@ class DiziPalOrijinal : MainAPI() {
         private const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
-        private const val REPORT_HINT =
-            "Sorun sürüyorsa bildir: https://github.com/F0Rextasy/bigbullapp-cs/issues"
+        /** Hata mesajlarına eklenen bildirim adresi; boş bırakılırsa eklenmez. */
+        private const val REPORT_HINT = ""
 
         private const val IMAGE_PROXY = "/i/s/"
 
         private val YEAR = Regex("""\b(19\d{2}|20\d{2})\b""")
-        private val EPISODE_IN_SLUG = Regex("""-(\d+)x(\d+)""")
+        /** Bölüm slug'ı: `esref-ruya-1-sezon-1-bolum` → sezon 1, bölüm 1. */
+        private val EPISODE_IN_SLUG = Regex("""-(\d+)-sezon-(\d+)-bolum""")
         private val ISO_DURATION = Regex("""PT(?:(\d+)H)?(?:(\d+)M)?""")
         private val RESOLUTION = Regex("""RESOLUTION=\d+x(\d+)""")
         private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
