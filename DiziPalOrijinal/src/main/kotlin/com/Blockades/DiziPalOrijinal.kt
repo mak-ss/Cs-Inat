@@ -1,6 +1,7 @@
 package com.Blockades
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.ErrorLoadingException
 import com.lagradost.cloudstream3.HomePageResponse
@@ -130,23 +131,24 @@ class DiziPalOrijinal : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val pageUrl = httpsUrl(data)
+        Log.d(TAG, "loadLinks başladı: $pageUrl")
         val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
             .getOrNull() ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi.")
 
         val cfg = Regex("""data-cfg="([a-f0-9]{32})"""").find(pageHtml)?.groupValues?.get(1)
-        println("DiziPal DEBUG: data-cfg = $cfg")
+        Log.d(TAG, "data-cfg = $cfg")
 
         if (cfg != null) {
             val config = fetchPlayerConfig(cfg, pageUrl)
-            println("DiziPal DEBUG: config obj = $config")
+            Log.d(TAG, "config obj = $config")
             if (config != null) {
-                println("DiziPal DEBUG: v = ${config.optString("v")}, t = ${config.optString("t")}")
+                Log.d(TAG, "v = ${config.optString("v")}, t = ${config.optString("t")}")
                 if (playConfig(config, pageUrl, callback, subtitleCallback)) return true
             }
         }
 
         val playerUrl = decryptEmbed(pageHtml)
-        println("DiziPal DEBUG: enc playerUrl = $playerUrl")
+        Log.d(TAG, "enc playerUrl = $playerUrl")
         if (playerUrl != null) {
             val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }.getOrNull()
             if (playerHtml != null) {
@@ -154,6 +156,7 @@ class DiziPalOrijinal : MainAPI() {
                     dplayerLinks(playerHtml, playerUrl, callback)
             }
         }
+        Log.d(TAG, "oynatılabilir kaynak bulunamadı")
         throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı.")
     }
 
@@ -171,7 +174,7 @@ class DiziPalOrijinal : MainAPI() {
                 data = mapOf("cfg" to cfg),
             ).text
         }.getOrNull()
-        println("DiziPal DEBUG: ajax-player-config raw response = $body")
+        Log.d(TAG, "ajax-player-config raw response = $body")
         val root = runCatching { JSONObject(body) }.getOrNull() ?: return null
         if (!root.optBoolean("success")) return null
         return root.optJSONObject("config")
@@ -623,6 +626,7 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     companion object {
+        private const val TAG = "DiziPalDEBUG"
         private const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
         private const val IMAGE_PROXY = "/i/s/"
