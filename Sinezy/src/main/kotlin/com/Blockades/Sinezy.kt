@@ -1,4 +1,4 @@
-package com.sinezy
+package com.Blockades
 
 import android.util.Base64
 import com.lagradost.cloudstream3.ErrorLoadingException
@@ -52,7 +52,7 @@ class SinezyProvider : MainAPI() {
         MainPageData("Macera", "$mainUrl/izle/macera-filmleri/"),
         MainPageData("Suç", "$mainUrl/izle/suc-filmleri/"),
         MainPageData("Film Arşivi", "$mainUrl/film-arsivi/"),
-    ).filter { Settings.rowEnabled(it.name) }
+    )
 
     private fun Element.toCard(): SearchResponse? {
         val anchor = selectFirst("a.image") ?: return null
@@ -137,17 +137,14 @@ class SinezyProvider : MainAPI() {
                 app.get(stream, headers = headers, referer = playerUrl).text
             }.getOrNull().orEmpty()
             if (!m3u8Text.trimStart().startsWith("#EXTM3U")) continue
-            if (Settings.qualityAllowed(Qualities.Unknown.value)) {
-                callback.invoke(
-                    newExtractorLink(name, name, stream, ExtractorLinkType.M3U8) {
-                        this.referer = playerUrl
-                        this.headers = headers
-                        this.quality = Qualities.Unknown.value
-                    },
-                )
-            }
+            callback.invoke(
+                newExtractorLink(name, name, stream, ExtractorLinkType.M3U8) {
+                    this.referer = playerUrl
+                    this.headers = headers
+                    this.quality = Qualities.Unknown.value
+                },
+            )
             for ((h, vUrl) in parseHlsVariants(stream, m3u8Text)) {
-                if (!Settings.qualityAllowed(h)) continue
                 callback.invoke(
                     newExtractorLink(name, "$name • ${h}p", vUrl, ExtractorLinkType.M3U8) {
                         this.referer = playerUrl
@@ -160,16 +157,12 @@ class SinezyProvider : MainAPI() {
             break
         }
 
-        if (Settings.subtitleLang != "off") {
-            Regex("""playerjsSubtitle\s*=\s*"\[([^\]]+)\]([^"]+)""")
-                .find(playerHtml)?.let { match ->
-                    val language = match.groupValues[1]
-                    val subtitle = match.groupValues[2].replace("\\/", "/")
-                    if (Settings.subtitleAllowed(language)) {
-                        subtitleCallback.invoke(newSubtitleFile(language, subtitle))
-                    }
-                }
-        }
+        Regex("""playerjsSubtitle\s*=\s*"\[([^\]]+)\]([^"]+)""")
+            .find(playerHtml)?.let { match ->
+                val language = match.groupValues[1]
+                val subtitle = match.groupValues[2].replace("\\/", "/")
+                subtitleCallback.invoke(newSubtitleFile(language, subtitle))
+            }
 
         if (!found) throw ErrorLoadingException("$name: oynatılabilir akış yok. $REPORT_HINT")
         return true
