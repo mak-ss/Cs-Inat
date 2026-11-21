@@ -1,14 +1,13 @@
 // ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
 package com.Blockades
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
 
 @CloudstreamPlugin
-class SinezyPlugin: Plugin() {
+class SinezyPlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(Sinezy())
-        registerExtractorAPI(PlayerFilmIzle())
     }
 }
