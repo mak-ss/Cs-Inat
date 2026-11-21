@@ -36,7 +36,13 @@ class TrGoals : MainAPI() {
 
     companion object {
         private const val TAG = "TrGoals"
-        private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        // Diğer dosyalardan (ör. TrGoalsExtractor.kt) erişilebilmesi için public yapıldı
+        const val USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        // Eski private isim korunuyor (iç kullanım için)
+        private const val UA = USER_AGENT
     }
 
     private var cachedAuthUrl: String? = null
