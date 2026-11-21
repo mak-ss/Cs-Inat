@@ -282,11 +282,11 @@ internal fun rapidVidShift(value: String): String = buildString(value.length) {
 }
 
 // ---------------------------------------------------------------------------
-// Yabancıdizi sağlayıcısı (eski YabancidiziProvider.kt)
+// Yabancıdizi sağlayıcısı
 // ---------------------------------------------------------------------------
 
 /** Yabancıdizi — yabancidizi.live */
-class Yabancidizi : MainAPI() {
+class YabanciDizi : MainAPI() {
     override var mainUrl = "https://yabancidizi.live"
     private val uaHeaders get() = browserHeaders
     override var name = "Yabancıdizi"
@@ -294,15 +294,15 @@ class Yabancidizi : MainAPI() {
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    override val mainPage get() = ROWS.mapNotNull { name ->
-        if (!Settings.rowEnabled(name)) return@mapNotNull null
+    // Settings kaldırıldı; tüm satırlar her zaman görünür.
+    override val mainPage get() = ROWS.map { name ->
         when (name) {
             "Son Eklenen Diziler" -> MainPageData(name, "$mainUrl/diziler?sort=date_desc")
             "Son Eklenen Filmler" -> MainPageData(name, "$mainUrl/filmler?sort=date_desc")
             "Diziler — Aksiyon" -> MainPageData(name, "$mainUrl/diziler?tur=aksiyon")
             "Diziler — Bilim Kurgu" -> MainPageData(name, "$mainUrl/diziler?tur=bilim-kurgu")
             "Filmler — Korku" -> MainPageData(name, "$mainUrl/filmler?tur=korku")
-            else -> null
+            else -> MainPageData(name, mainUrl)
         }
     }
 
@@ -412,8 +412,9 @@ class Yabancidizi : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val linkCallback: (ExtractorLink) -> Unit = { if (Settings.qualityAllowed(it.quality)) callback(it) }
-        val subtitleFilter: (SubtitleFile) -> Unit = { if (Settings.subtitleAllowed(it.lang)) subtitleCallback(it) }
+        // Settings kaldırıldı; tüm kalite ve altyazılar doğrudan iletilir.
+        val linkCallback: (ExtractorLink) -> Unit = callback
+        val subtitleFilter: (SubtitleFile) -> Unit = subtitleCallback
         val doc = runCatching { app.get(data, headers = uaHeaders).document }
             .getOrNull() ?: throw ErrorLoadingException("$name: kaynak bulunamadı. $REPORT_HINT")
         val players = doc.select("iframe#player-iframe, [data-frame]").mapNotNull { el ->
