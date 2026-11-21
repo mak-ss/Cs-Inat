@@ -1,13 +1,13 @@
-package com.safakstream.ardaspor
+package com.Blockades
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
-class ArdaSporProvider : MainAPI() {
+class BeyazElma : MainAPI() {
     override var mainUrl = "https://ardaspor41.top"
-    override var name = "ArdaSpor"
+    override var name = "BeyazElma"
     override val hasMainPage = true
     override var lang = "tr"
     override val supportedTypes = setOf(TvType.Live)
@@ -17,13 +17,13 @@ class ArdaSporProvider : MainAPI() {
         val home = mutableListOf<HomePageList>()
 
         val categories = listOf("Futbol", "Basketbol", "Tenis", "TV")
-        
+
         for (cat in categories) {
             val items = document.select("div.match-category[data-category='$cat'] a.match-item").map { element ->
                 val title = element.attr("data-title")
                 val href = fixUrl(element.attr("href"))
                 val image = "https://ardaspor40.top/dimg/89320ardafav.png"
-                
+
                 newLiveSearchResponse(
                     name = title,
                     url = href
@@ -35,7 +35,7 @@ class ArdaSporProvider : MainAPI() {
                 home.add(HomePageList(cat, items))
             }
         }
-        
+
         return newHomePageResponse(home)
     }
 
@@ -56,7 +56,7 @@ class ArdaSporProvider : MainAPI() {
         callback.invoke(
             newExtractorLink(
                 source = this.name,
-                name = "ArdaSpor WebView",
+                name = "BeyazElma WebView",
                 url = data,
                 type = ExtractorLinkType.VIDEO
             ) {
