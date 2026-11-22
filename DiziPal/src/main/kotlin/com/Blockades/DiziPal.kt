@@ -50,7 +50,7 @@ import javax.crypto.spec.SecretKeySpec
  * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
  */
 class DiziPal : MainAPI() {
-    override var mainUrl = "https://dizipal1596.com"
+    override var mainUrl = "https://dizipal1597.com"
     override var name = "DiziPal"
     override var lang = "tr"
     override val hasMainPage = true
