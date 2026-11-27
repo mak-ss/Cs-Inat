@@ -1,6 +1,6 @@
-// ! Bu araç @Blockades tarafından | @Cs-Inat için yazılmıştır.
+// ! Bu araç @keyiflerolsun tarafından | @KekikAkademi için yazılmıştır.
 
-package com.Blockades
+package com.keyiflerolsun
 
 import android.util.Log
 import com.lagradost.cloudstream3.*
@@ -11,6 +11,19 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import android.util.Base64
+
+// ! Eksik olan veri sınıfları buraya eklendi
+data class DizipalSearchResult(
+    val title: String? = null,
+    val url: String? = null,
+    val type: String = "",
+    val poster: String? = null,
+    val year: Int? = null
+)
+
+data class DizipalSearchData(
+    val results: List<DizipalSearchResult>? = null
+)
 
 class DiziPal : MainAPI() {
     override var mainUrl              = "https://dizipal1.rest"
