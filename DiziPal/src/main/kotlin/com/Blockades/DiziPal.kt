@@ -36,19 +36,6 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * DiziPal — dizipal1598.com (Next.js arayüzü, Türkçe dizi + film, platform bölümleri).
- *
- * Arama `POST /api/mj` JSON servisine gider (`action=searchContent`). Liste ve detay sayfaları
- * sunucu tarafında render edilir; künye `application/ld+json` (TVSeries/Movie) bloğundadır.
- *
- * Oynatıcı zinciri: bölüm/film sayfası RSC yükünde `enc` (ciphertext/iv/salt) ve aynı yükte
- * sayfa başına üretilen `k` parolası taşınır. PBKDF2-HMAC-SHA512(999) + AES-256-CBC çözümü
- * `//<host>.dplayer82.site/(iframe|multiplayer).php?v=…` adresini verir. İki oynatıcı ailesi var:
- *  - `NP_CONFIG` (iframe.php): `sources[].master` doğrudan HLS master; `subtitles[].url` WebVTT.
- *  - `openPlayer(blob)` (multiplayer.php): `/source2.php?v=blob` JSON'u m3u8 dosya yolları verir.
- * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
- */
 class DiziPal : MainAPI() {
     override var mainUrl = "https://dizipal1598.com"
     override var name = "DiziPal"
@@ -57,11 +44,8 @@ class DiziPal : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    // Oynatıcı CDN'i (aşağıdaki UA sabitinin yorumu) Chrome UA'ya 403 verdiği için tüm
-    // istekler Firefox UA ile gider; browserHeaders (Chrome/130) burada bilinçli kullanılmaz.
     private val uaHeaders get() = mapOf("user-agent" to UA, "Accept-Language" to "tr-TR,tr;q=0.9")
 
-    /** Yalnız bu iki bölüm `?page=N` ile sayfalanıyor; diğerleri tek istekte tüm listeyi verir. */
     private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
 
     override val mainPage get() = mainPageOf(
@@ -77,7 +61,7 @@ class DiziPal : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val paged = request.data in pagedSections
         val url = if (paged && page > 1) "${request.data}?page=$page" else request.data
-        val doc = app.get(url, headers = uaHeaders).document
+        val doc = app.get(url, headers = uaHeaders, referer = "$mainUrl/").document
         val items = doc.select("a.tc[href]").mapNotNull { it.toCard() }.distinctBy { it.url }
         return newHomePageResponse(request.name, items, hasNext = paged && items.isNotEmpty())
     }
@@ -89,7 +73,7 @@ class DiziPal : MainAPI() {
             app.post(
                 "$mainUrl/api/mj",
                 json = JSONObject().put("action", "searchContent").put("params", JSONArray().put(q)),
-                headers = uaHeaders + mapOf("Origin" to mainUrl),
+                headers = uaHeaders + mapOf("Origin" to mainUrl, "Referer" to "$mainUrl/"),
                 referer = "$mainUrl/",
             ).text
         }.getOrNull() ?: throw ErrorLoadingException("$name: arama isteği başarısız. $REPORT_HINT")
@@ -102,7 +86,7 @@ class DiziPal : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val pageUrl = httpsUrl(url)
-        val doc = runCatching { app.get(pageUrl, headers = uaHeaders).document }.getOrNull()
+        val doc = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").document }.getOrNull()
             ?: throw ErrorLoadingException("$name: içerik sayfası yüklenemedi. $REPORT_HINT")
         val isSeries = pageUrl.contains("/series/")
         val ld = jsonLd(doc, if (isSeries) "TVSeries" else "Movie")
@@ -110,13 +94,16 @@ class DiziPal : MainAPI() {
             ?: doc.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: throw ErrorLoadingException("$name: başlık okunamadı. $REPORT_HINT")
 
+        // DÜZELTME: posterOf artık og:image ve kart görseline de düşüyor
+        val poster = posterOf(doc, ld)
+
         if (isSeries) {
             val episodes = episodesOf(doc, ld)
             if (episodes.isEmpty()) {
                 throw ErrorLoadingException("$name: bölüm listesi bulunamadı. $REPORT_HINT")
             }
             return newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, episodes) {
-                this.posterUrl = posterOf(doc, ld)
+                this.posterUrl = poster
                 this.plot = ld?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
                 this.year = yearOf(ld)
                 this.score = Score.from10(ld?.optJSONObject("aggregateRating")?.optString("ratingValue"))
@@ -128,7 +115,7 @@ class DiziPal : MainAPI() {
         }
 
         return newMovieLoadResponse(title, pageUrl, TvType.Movie, pageUrl) {
-            this.posterUrl = posterOf(doc, ld)
+            this.posterUrl = poster
             this.plot = ld?.optString("description")?.trim()?.takeIf { it.isNotEmpty() }
             this.year = yearOf(ld)
             this.score = Score.from10(ld?.optJSONObject("aggregateRating")?.optString("ratingValue"))
@@ -154,7 +141,7 @@ class DiziPal : MainAPI() {
             ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
 
         val playerUrl = decryptEmbed(pageHtml)
-            ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
+            ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi (enc bloğu). $REPORT_HINT")
         val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }
             .getOrNull()
             ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
@@ -168,6 +155,12 @@ class DiziPal : MainAPI() {
 
     // ---------------------------------------------------------------- listing
 
+    /**
+     * DÜZELTME: Dizipal kartları iki farklı yapıda gelir:
+     *  - Trend/ana sayfa: <a class="tc"><span class="fr"><img ...></span><span><span style="...">Başlık</span><span>2025 · Suç</span></span></a>
+     *  - Bazı listelerde eski sınıf: span.tt / span.ft1
+     * Ayrıca poster lazy-load olduğu için src boş olabilir; data-dp-src / data-src fallback eklendi.
+     */
     private fun Element.toCard(): SearchResponse? {
         val href = fixUrlNull(attr("href")) ?: return null
         val isSeries = href.contains("/series/")
@@ -175,9 +168,15 @@ class DiziPal : MainAPI() {
 
         val title = selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
             ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
+            ?: selectFirst("span[style*=font-size:15px]")?.text()?.trim()?.ifBlank { null }
+            ?: selectFirst("span[style*=font-weight:700]")?.text()?.trim()?.ifBlank { null }
             ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
             ?: return null
-        val poster = selectFirst("img[src^=http]")?.attr("src")
+
+        // DÜZELTME: lazy-load fallback
+        val img = selectFirst("img")
+        val poster = pickPosterSrc(img)
+
         val year = YEAR.find(text())?.value?.toIntOrNull()
 
         return if (isSeries) {
@@ -218,11 +217,21 @@ class DiziPal : MainAPI() {
         }
     }
 
-    /** Arama servisi görselleri ampproject önbelleğinden verir; gerçek adres `/i/s/` sonrasındadır. */
+    /**
+     * DÜZELTME: ampproject önbelleği yanında başka proxy'ler de olabilir.
+     * Ayrıca `//host/path` şeklinde gelen görselleri de https'e çeviriyoruz.
+     */
     private fun directImage(url: String): String? {
         val trimmed = url.trim()
-        if (!trimmed.startsWith("http")) return null
-        return if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
+        if (trimmed.isEmpty()) return null
+        val normalized = when {
+            trimmed.startsWith("//") -> "https:$trimmed"
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> trimmed
+            else -> return null
+        }
+        return if (IMAGE_PROXY in normalized) {
+            "https://" + normalized.substringAfter(IMAGE_PROXY)
+        } else normalized
     }
 
     // ------------------------------------------------------------------ künye
@@ -230,7 +239,15 @@ class DiziPal : MainAPI() {
     private fun episodesOf(doc: Document, ld: JSONObject?): List<Episode> {
         val episodes = LinkedHashMap<String, Episode>()
 
-        ld?.opt("containsSeason").seasons().forEach { season ->
+        // DÜZELTME: containsSeason hem obje hem array olabilir; ayrıca episode
+        // doğrudan TVSeries altında da gelebilir.
+        val seasons = when (val cs = ld?.opt("containsSeason")) {
+            is JSONArray -> cs.objects()
+            is JSONObject -> listOf(cs)
+            else -> emptyList()
+        }
+
+        seasons.forEach { season ->
             val seasonNumber = season.optString("seasonNumber").toIntOrNull() ?: 1
             season.optJSONArray("episode").objects().forEach { entry ->
                 val episodeUrl = httpsUrl(entry.optString("url"))
@@ -246,7 +263,7 @@ class DiziPal : MainAPI() {
             }
         }
 
-        // ld+json kırpılırsa sayfadaki /bolum/<slug>-<S>x<E> bağlantıları aynı listeyi verir.
+        // ld+json yoksa ya da boşsa: sayfadaki /bolum/ linklerinden çıkar
         if (episodes.isEmpty()) {
             doc.select("a[href*='/bolum/']").forEach { anchor ->
                 val episodeUrl = httpsUrl(anchor.attr("href").substringBefore('?'))
@@ -270,10 +287,21 @@ class DiziPal : MainAPI() {
                 ?.takeIf { it.optString("@type") == type }
         }
 
-    /** Dizi sayfası künye görseli olarak backdrop taşır; afiş `…/tv/poster/…` yolundan gelir. */
-    private fun posterOf(doc: Document, ld: JSONObject?): String? =
-        doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
-            ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
+    /**
+     * DÜZELTME: Öncelik sırası:
+     *  1) /poster/ yolu (dizi detay sayfaları)
+     *  2) og:image (film sayfaları ve bazı diziler)
+     *  3) ld+json image
+     *  4) sayfadaki ilk büyük kart görseli
+     * Her adımda lazy-load fallback uygulanır.
+     */
+    private fun posterOf(doc: Document, ld: JSONObject?): String? {
+        doc.selectFirst("img[src*=/poster/]")?.let { pickPosterSrc(it) }?.let { return it }
+        doc.selectFirst("meta[property=og:image]")?.attr("content")?.takeIf { it.startsWith("http") }?.let { return it }
+        ld?.optString("image")?.takeIf { it.startsWith("http") }?.let { return it }
+        doc.selectFirst("img[src*=/tv/brand/], img[src*=/movie/brand/]")?.let { pickPosterSrc(it) }?.let { return it }
+        return doc.selectFirst("a.tc img")?.let { pickPosterSrc(it) }
+    }
 
     private fun yearOf(ld: JSONObject?): Int? =
         ld?.optString("datePublished")?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
@@ -284,7 +312,6 @@ class DiziPal : MainAPI() {
             .filter { it.isNotEmpty() }
             .distinct()
 
-    /** Detay sayfasındaki "Benzer diziler"/"Benzer filmler" şeridi (`ds-ben` / `df-ben`). */
     private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
         val section = if (isSeries) "ds-ben" else "df-ben"
         return doc.select("section[aria-labelledby='$section'] a.tc[href]")
@@ -297,7 +324,6 @@ class DiziPal : MainAPI() {
             .mapNotNull { it.optString("name").trim().takeIf(String::isNotEmpty) }
             .takeIf { it.isNotEmpty() }
 
-    /** ISO-8601 süre (`PT1H46M`) → dakika. */
     private fun minutes(iso: String?): Int? {
         val match = ISO_DURATION.find(iso.orEmpty()) ?: return null
         val total = (match.groupValues[1].toIntOrNull() ?: 0) * 60 + (match.groupValues[2].toIntOrNull() ?: 0)
@@ -306,19 +332,26 @@ class DiziPal : MainAPI() {
 
     // --------------------------------------------------------------- oynatıcı
 
-    /**
-     * Sayfadaki `enc` bloğunu ve aynı sayfada üretilen parolayı (`k`) çözerek oynatıcı adresini verir.
-     * Parola istek başına değiştiği için sayfadan okunur; sabit kopya tutulmaz.
-     */
     private fun decryptEmbed(html: String): String? {
         val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
         val cipherText = fields["ciphertext"]?.firstOrNull() ?: return null
         val iv = fields["iv"]?.firstOrNull() ?: return null
         val salt = fields["salt"]?.firstOrNull() ?: return null
-        val passphrase = fields["k"]?.maxByOrNull { it.length } ?: return null
-        val clear = pbkdf2AesCbcDecrypt(Base64.decode(cipherText, Base64.DEFAULT), passphrase, salt, iv)
-            ?: return null
-        return httpsUrl(clear.trim('\t', '\r', '\n', ' ', '\u000f'))
+
+        // DÜZELTME: k alanı sayfada birden fazla geçebilir; hepsini dene.
+        // Parola, ciphertext'in hemen yanındaki k olmalı; ama güvenli tarafta kalıp
+        // her adayı deniyoruz. İlk başarılı çözüm döner.
+        val candidates = fields["k"].orEmpty().filter { it.length >= 8 }.distinct()
+        if (candidates.isEmpty()) return null
+
+        for (passphrase in candidates) {
+            val clear = pbkdf2AesCbcDecrypt(
+                Base64.decode(cipherText, Base64.DEFAULT), passphrase, salt, iv
+            ) ?: continue
+            val url = httpsUrl(clear.trim('\t', '\r', '\n', ' ', '\u000f'))
+            if (url.startsWith("http")) return url
+        }
+        return null
     }
 
     private suspend fun npLinks(
@@ -334,7 +367,6 @@ class DiziPal : MainAPI() {
             ?: return false
 
         config.optJSONArray("subtitles").objects().forEach { track ->
-            // Yeni oynatıcı altyazıyı `tok` ile verir (`nsub.php?v=`); eski yük `url` taşır.
             val url = track.optString("url").takeIf { it.startsWith("http") }?.let { pichiveSign(playerHtml, it) }
                 ?: track.optString("tok").takeIf { it.isNotEmpty() }
                     ?.let { pichiveSign(playerHtml, "${ORIGIN.find(playerUrl)?.value.orEmpty()}/nsub.php?v=$it") }
@@ -387,7 +419,6 @@ class DiziPal : MainAPI() {
         return found
     }
 
-    /** HLS master'ı varyantlarına ayırır; tek varyant kaldıysa master olduğu gibi verilir. */
     private suspend fun emitPlaylist(
         masterUrl: String,
         referer: String,
@@ -408,7 +439,6 @@ class DiziPal : MainAPI() {
         }
     }
 
-    /** Master'daki `#EXT-X-STREAM-INF` bloklarını (yükseklik, adres) çiftlerine çevirir. */
     private fun parseVariants(playlist: String): List<Pair<Int, String>> {
         if (!playlist.startsWith("#EXTM3U") ||
             playlist.contains("TYPE=AUDIO", ignoreCase = true) ||
@@ -439,7 +469,25 @@ class DiziPal : MainAPI() {
 
     // ------------------------------------------------------------------ ortak
 
-    /** `window.NP_CONFIG = {…}` gövdesini süslü parantez sayarak çıkarır (string içindekiler atlanır). */
+    /**
+     * DÜZELTME: Lazy-load poster fallback.
+     * Sıra: src → data-dp-src → data-src → data-lazy-src.
+     * `#wtop` gibi fragmentler ve data: placeholder'lar temizlenir.
+     */
+    private fun pickPosterSrc(img: Element?): String? {
+        if (img == null) return null
+        for (attr in listOf("src", "data-dp-src", "data-src", "data-lazy-src")) {
+            val raw = img.attr(attr).trim()
+            if (raw.isEmpty()) continue
+            val cleaned = raw.substringBefore('#').trim()
+            if (cleaned.isEmpty()) continue
+            if (cleaned.startsWith("data:")) continue
+            if (cleaned.contains("placeholder", ignoreCase = true)) continue
+            return if (cleaned.startsWith("//")) "https:$cleaned" else cleaned
+        }
+        return null
+    }
+
     private fun objectAt(html: String, from: Int): String? {
         if (from < 0 || from >= html.length || html[from] != '{') return null
         var depth = 0
@@ -467,11 +515,15 @@ class DiziPal : MainAPI() {
         return null
     }
 
+    /**
+     * DÜZELTME: `http://` zorla `https://` yapılmıyor. Dizipal bazı CDN görselleri
+     * http üzerinden verebiliyor; zorla çevirmek 404'e yol açabilir. Sadece
+     * protokolsüz (`//`) adreslere https ekleniyor.
+     */
     private fun httpsUrl(raw: String?): String {
         val url = raw?.trim().orEmpty()
         return when {
             url.startsWith("//") -> "https:$url"
-            url.startsWith("http://") -> "https://" + url.removePrefix("http://")
             else -> url
         }
     }
@@ -486,20 +538,16 @@ class DiziPal : MainAPI() {
         if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
     // ============================================================ COMMON.KT'DEN TAŞINANLAR
-    // Önceden `com.Blockades.common` paketindeydi; tek dosyada derlenmesi için buraya alındı.
 
-    /** Hex string'i bayt dizisine çevirir (PBKDF2 salt/iv çözümü için). */
     private fun String.hexToBytes(): ByteArray =
         chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-    /** AES-CBC/PKCS5 çözümü. */
     private fun aesCbcDecrypt(cipherBytes: ByteArray, key: ByteArray, iv: ByteArray): ByteArray =
         Cipher.getInstance("AES/CBC/PKCS5Padding").run {
             init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
             doFinal(cipherBytes)
         }
 
-    /** DiziPal/SelcukFlix RSC `enc` bloğu: PBKDF2-HMAC-SHA512(999, 256) + AES-256-CBC. */
     private fun pbkdf2AesCbcDecrypt(
         cipherBytes: ByteArray,
         passphrase: String,
@@ -514,12 +562,6 @@ class DiziPal : MainAPI() {
         String(aesCbcDecrypt(cipherBytes, key, ivHex.hexToBytes()), Charsets.UTF_8)
     }.getOrNull()
 
-    /**
-     * pichive iframe'i `nm.php`/`nsub.php` adreslerine proof-of-work ister (`&p=<nonce>`), yoksa 404 döner.
-     * Sayfadaki `NP_GATE` (önek `String.fromCharCode`, sayaç base36, `& maske`) ya da varsayılan biçim
-     * (`sha256("n:i")` ilk `b` biti sıfır) çözülür. shortcut: sayfa bu iki biçimden birini bırakırsa
-     * nonce null olur ve adres imzasız kalır; yeni biçimde tekrar çözülmeli.
-     */
     private fun pichiveGateNonce(html: String): String? {
         val gate = Regex(""""gate"\s*:\s*\{\s*"n"\s*:\s*"([^"]+)"(?:\s*,\s*"b"\s*:\s*(\d+))?""").find(html) ?: return null
         val n = gate.groupValues[1]
@@ -568,7 +610,6 @@ class DiziPal : MainAPI() {
         return null
     }
 
-    /** `nm.php`/`nsub.php` adresine [pichiveGateNonce] ile bulunan `&p=` imzasını ekler; diğer adresler değişmez. */
     private fun pichiveSign(html: String, url: String): String {
         if (!(url.contains("/nm.php") || url.contains("/nsub.php")) || url.contains("&p=")) return url
         val nonce = pichiveGateNonce(html) ?: return url
@@ -576,12 +617,10 @@ class DiziPal : MainAPI() {
     }
 
     companion object {
-        /** Ana sayfa satırları; ayarlardan kapatılabilir. */
         val ROWS = listOf(
             "Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet",
             "Netflix", "Amazon Prime", "Disney+",
         )
-        /** Oynatıcı CDN'i (Cloudflare) Chrome tarzı UA'lara TLS'ten bağımsız 403 verir; Firefox UA geçer. */
         private const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
         private const val REPORT_HINT =
@@ -595,10 +634,6 @@ class DiziPal : MainAPI() {
         private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
         private val ORIGIN = Regex("""^https?://[^/]+""")
 
-        /**
-         * Sayfa yükündeki alanlar RSC kaçışıyla (`\"ciphertext\":\"…\"`) gelir; 0-3 ters bölü
-         * kabul edilir. Parola `k` anahtarında durur ve görseller gibi aynı yükte tekrarlanır.
-         */
         private val ENC_FIELD = Regex("""\\{0,3}"(ciphertext|iv|salt|k)\\{0,3}":\\{0,3}"([^"\\]+)""")
     }
 }
