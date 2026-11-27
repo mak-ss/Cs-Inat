@@ -6,7 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class BeyazElma : MainAPI() {
-    override var mainUrl = "https://ardaspor42.top"
+    override var mainUrl = "https://ardaspor43.top"
     override var name = "BeyazElma"
     override val hasMainPage = true
     override var lang = "tr"
