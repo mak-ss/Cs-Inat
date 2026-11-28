@@ -1,4 +1,3 @@
-
 package com.Blockades
 
 import android.util.Log
