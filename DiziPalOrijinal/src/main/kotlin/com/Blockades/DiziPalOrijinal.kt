@@ -36,7 +36,7 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 class DiziPalOrijinal : MainAPI() {
-    override var mainUrl = "https://dizipal1599.com"
+    override var mainUrl = "https://dizipal1598.com"
     override var name = "DiziPalOrijinal"
     override var lang = "tr"
     override val hasMainPage = true
@@ -176,10 +176,9 @@ class DiziPalOrijinal : MainAPI() {
             ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
             ?: return null
 
-        // Poster: fragment (#wtop) ve query'yi temizle
+        // Poster: sadece fragment (#wtop) temizle, ?v= query'sini KORU
         val poster = selectFirst("img[src^=http]")?.attr("src")
             ?.substringBefore('#')
-            ?.substringBefore('?')
             ?.takeIf { it.startsWith("http") }
 
         // Yıl: span.sub içinden
@@ -228,7 +227,8 @@ class DiziPalOrijinal : MainAPI() {
         val trimmed = url.trim()
         if (!trimmed.startsWith("http")) return null
         val cleaned = if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
-        return cleaned.substringBefore('#').substringBefore('?')
+        // Sadece fragment temizle, ?v= query'sini KORU
+        return cleaned.substringBefore('#')
     }
 
     // ------------------------------------------------------------------ künye
@@ -277,16 +277,16 @@ class DiziPalOrijinal : MainAPI() {
 
     private fun posterOf(doc: Document, ld: JSONObject?): String? =
         doc.selectFirst("img[src*=/poster/]")?.attr("src")
-            ?.substringBefore('#')?.substringBefore('?')
+            ?.substringBefore('#')
             ?.takeIf { it.startsWith("http") }
             ?: doc.selectFirst("img[src*=/brand/]")?.attr("src")
-                ?.substringBefore('#')?.substringBefore('?')
+                ?.substringBefore('#')
                 ?.takeIf { it.startsWith("http") }
             ?: doc.selectFirst("img[src^=http]")?.attr("src")
-                ?.substringBefore('#')?.substringBefore('?')
+                ?.substringBefore('#')
                 ?.takeIf { it.startsWith("http") }
             ?: ld?.optString("image")
-                ?.substringBefore('#')?.substringBefore('?')
+                ?.substringBefore('#')
                 ?.takeIf { it.startsWith("http") }
 
     private fun yearOf(ld: JSONObject?): Int? =
