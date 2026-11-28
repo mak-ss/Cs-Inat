@@ -36,21 +36,8 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * DiziPal — dizipal1598.com (Next.js arayüzü, Türkçe dizi + film, platform bölümleri).
- *
- * Arama `POST /api/mj` JSON servisine gider (`action=searchContent`). Liste ve detay sayfaları
- * sunucu tarafında render edilir; künye `application/ld+json` (TVSeries/Movie) bloğundadır.
- *
- * Oynatıcı zinciri: bölüm/film sayfası RSC yükünde `enc` (ciphertext/iv/salt) ve aynı yükte
- * sayfa başına üretilen `k` parolası taşınır. PBKDF2-HMAC-SHA512(999) + AES-256-CBC çözümü
- * `//<host>.dplayer82.site/(iframe|multiplayer).php?v=…` adresini verir. İki oynatıcı ailesi var:
- *  - `NP_CONFIG` (iframe.php): `sources[].master` doğrudan HLS master; `subtitles[].url` WebVTT.
- *  - `openPlayer(blob)` (multiplayer.php): `/source2.php?v=blob` JSON'u m3u8 dosya yolları verir.
- * Her iki CDN de isteklerde oynatıcı sayfasını `Referer` olarak şart koşar.
- */
 class DiziPalOrijinal : MainAPI() {
-    override var mainUrl = "https://dizipal1598.com"
+    override var mainUrl = "https://dizipal1599.com"
     override var name = "DiziPalOrijinal"
     override var lang = "tr"
     override val hasMainPage = true
@@ -69,7 +56,7 @@ class DiziPalOrijinal : MainAPI() {
         "$mainUrl/platform-bolumler/netflix" to "Netflix",
         "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
         "$mainUrl/platform-bolumler/disneyplus" to "Disney+",
-    ).filter { Settings.rowEnabled(it.name) }
+    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val paged = request.data in pagedSections
@@ -142,9 +129,6 @@ class DiziPalOrijinal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val links: (ExtractorLink) -> Unit = { if (Settings.qualityAllowed(it.quality)) callback(it) }
-        val subtitles: (SubtitleFile) -> Unit = { if (Settings.subtitleAllowed(it.lang)) subtitleCallback(it) }
-
         val pageUrl = httpsUrl(data)
         val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
             .getOrNull()
@@ -156,8 +140,8 @@ class DiziPalOrijinal : MainAPI() {
             .getOrNull()
             ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
 
-        val found = npLinks(playerHtml, playerUrl, links, subtitles) ||
-            dplayerLinks(playerHtml, playerUrl, links)
+        val found = npLinks(playerHtml, playerUrl, callback, subtitleCallback) ||
+            dplayerLinks(playerHtml, playerUrl, callback)
 
         if (!found) throw ErrorLoadingException("$name: oynatılabilir kaynak bulunamadı. $REPORT_HINT")
         return true
