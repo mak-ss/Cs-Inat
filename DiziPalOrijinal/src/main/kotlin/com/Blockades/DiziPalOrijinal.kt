@@ -44,7 +44,10 @@ class DiziPalOrijinal : MainAPI() {
     override val hasQuickSearch = true
     override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie)
 
-    private val uaHeaders get() = mapOf("user-agent" to UA, "Accept-Language" to "tr-TR,tr;q=0.9")
+    private val uaHeaders get() = mapOf(
+        "user-agent" to UA,
+        "Accept-Language" to "tr-TR,tr;q=0.9",
+    )
 
     private val pagedSections = setOf("$mainUrl/yabanci-dizi-izle", "$mainUrl/film-izle")
 
@@ -53,22 +56,21 @@ class DiziPalOrijinal : MainAPI() {
         "$mainUrl/film-izle" to "Yeni Filmler",
         "$mainUrl/trendler" to "Trendler",
         "$mainUrl/kesfet" to "Keşfet",
-        "$mainUrl/platform-bolumler/netflix" to "Netflix",
-        "$mainUrl/platform-bolumler/prime" to "Amazon Prime",
-        "$mainUrl/platform-bolumler/disneyplus" to "Disney+",
+        "$mainUrl/platform-bolumler" to "Platform",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val paged = request.data in pagedSections
         val url = if (paged && page > 1) "${request.data}?page=$page" else request.data
-        val doc = app.get(url, headers = uaHeaders).document
+        val doc = runCatching { app.get(url, headers = uaHeaders).document }.getOrNull()
+            ?: return newHomePageResponse(request.name, emptyList())
         val items = doc.select("a.tc[href]").mapNotNull { it.toCard() }.distinctBy { it.url }
         return newHomePageResponse(request.name, items, hasNext = paged && items.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim()
-        if (q.length < 3) return emptyList()
+        if (q.length < 2) return emptyList()
         val body = runCatching {
             app.post(
                 "$mainUrl/api/mj",
@@ -76,9 +78,9 @@ class DiziPalOrijinal : MainAPI() {
                 headers = uaHeaders + mapOf("Origin" to mainUrl),
                 referer = "$mainUrl/",
             ).text
-        }.getOrNull() ?: throw ErrorLoadingException("$name: arama isteği başarısız. $REPORT_HINT")
+        }.getOrNull() ?: return emptyList()
         val rows = runCatching { JSONObject(body).optJSONArray("result") }.getOrNull()
-            ?: throw ErrorLoadingException("$name: arama yanıtı okunamadı. $REPORT_HINT")
+            ?: return emptyList()
         return rows.objects().mapNotNull { it.toSearchResult() }.distinctBy { it.url }
     }
 
@@ -130,14 +132,19 @@ class DiziPalOrijinal : MainAPI() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val pageUrl = httpsUrl(data)
-        val pageHtml = runCatching { app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text }
-            .getOrNull()
+        val pageHtml = runCatching {
+            app.get(pageUrl, headers = uaHeaders, referer = "$mainUrl/").text
+        }.getOrNull()
             ?: throw ErrorLoadingException("$name: bölüm sayfası yüklenemedi. $REPORT_HINT")
 
         val playerUrl = decryptEmbed(pageHtml)
-            ?: throw ErrorLoadingException("$name: oynatıcı adresi çözülemedi. $REPORT_HINT")
-        val playerHtml = runCatching { app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text }
-            .getOrNull()
+            ?: throw ErrorLoadingException(
+                "$name: oynatıcı adresi çözülemedi (enc alanları bulunamadı). " +
+                "Sayfa uzunluğu: ${pageHtml.length}. $REPORT_HINT"
+            )
+        val playerHtml = runCatching {
+            app.get(playerUrl, headers = uaHeaders, referer = pageUrl).text
+        }.getOrNull()
             ?: throw ErrorLoadingException("$name: oynatıcı sayfası yüklenemedi. $REPORT_HINT")
 
         val found = npLinks(playerHtml, playerUrl, callback, subtitleCallback) ||
@@ -154,12 +161,19 @@ class DiziPalOrijinal : MainAPI() {
         val isSeries = href.contains("/series/")
         if (!isSeries && !href.contains("/movies/")) return null
 
-        val title = selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
+        // HTML: <span class="title">MobLand</span>
+        val title = selectFirst("span.title")?.text()?.trim()?.ifBlank { null }
+            ?: selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
             ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
             ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
             ?: return null
-        val poster = selectFirst("img[src^=http]")?.attr("src")
-        val year = YEAR.find(text())?.value?.toIntOrNull()
+
+        // HTML: kart içindeki ilk <img src="https://...">
+        val poster = selectFirst("img[src^=http]")?.attr("src")?.takeIf { it.isNotBlank() }
+
+        // HTML: <span class="sub">2025 · Suç</span>
+        val year = selectFirst("span.sub")?.text()?.let { YEAR.find(it)?.value?.toIntOrNull() }
+            ?: YEAR.find(text())?.value?.toIntOrNull()
 
         return if (isSeries) {
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
@@ -250,7 +264,13 @@ class DiziPalOrijinal : MainAPI() {
         }
 
     private fun posterOf(doc: Document, ld: JSONObject?): String? =
+        // Dizi detay sayfası: /poster/ yolu
         doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
+            // Ana sayfa kartlarından gelen: /brand/ yolu
+            ?: doc.selectFirst("img[src*=/brand/]")?.attr("src")?.takeIf { it.startsWith("http") }
+            // Genel ilk http görsel
+            ?: doc.selectFirst("img[src^=http]")?.attr("src")?.takeIf { it.startsWith("http") }
+            // ld+json image
             ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
 
     private fun yearOf(ld: JSONObject?): Int? =
@@ -263,8 +283,8 @@ class DiziPalOrijinal : MainAPI() {
             .distinct()
 
     private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
-        val section = if (isSeries) "ds-ben" else "df-ben"
-        return doc.select("section[aria-labelledby='$section'] a.tc[href]")
+        // HTML'de ds-ben / df-ben id'leri yok; tüm a.tc kartlarını öneri olarak al.
+        return doc.select("section a.tc[href]")
             .mapNotNull { it.toCard() }
             .distinctBy { it.url }
     }
@@ -284,10 +304,10 @@ class DiziPalOrijinal : MainAPI() {
 
     private fun decryptEmbed(html: String): String? {
         val fields = ENC_FIELD.findAll(html).groupBy({ it.groupValues[1] }) { it.groupValues[2] }
-        val cipherText = fields["ciphertext"]?.firstOrNull() ?: return null
+        val cipherText = (fields["ciphertext"] ?: fields["ct"])?.firstOrNull() ?: return null
         val iv = fields["iv"]?.firstOrNull() ?: return null
         val salt = fields["salt"]?.firstOrNull() ?: return null
-        val passphrase = fields["k"]?.maxByOrNull { it.length } ?: return null
+        val passphrase = (fields["k"] ?: fields["key"])?.maxByOrNull { it.length } ?: return null
         val clear = pbkdf2AesCbcDecrypt(Base64.decode(cipherText, Base64.DEFAULT), passphrase, salt, iv)
             ?: return null
         return httpsUrl(clear.trim('\t', '\r', '\n', ' ', '\u000f'))
@@ -320,7 +340,8 @@ class DiziPalOrijinal : MainAPI() {
 
         var found = false
         config.optJSONArray("sources").objects().forEach { source ->
-            val master = source.optString("master").takeIf { it.startsWith("http") }?.let { pichiveSign(playerHtml, it) } ?: return@forEach
+            val master = source.optString("master").takeIf { it.startsWith("http") }
+                ?.let { pichiveSign(playerHtml, it) } ?: return@forEach
             val label = source.optString("title").trim().ifEmpty { "Kaynak" }
             emitPlaylist(master, playerUrl, label, emit)
             found = true
@@ -453,7 +474,7 @@ class DiziPalOrijinal : MainAPI() {
     private fun JSONArray?.objects(): List<JSONObject> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
-    // ============================================================ COMMON.KT'DEN TAŞINANLAR
+    // ============================================================ CRYPTO / GATE
 
     private fun String.hexToBytes(): ByteArray =
         chunked(2).map { it.toInt(16).toByte() }.toByteArray()
@@ -479,7 +500,8 @@ class DiziPalOrijinal : MainAPI() {
     }.getOrNull()
 
     private fun pichiveGateNonce(html: String): String? {
-        val gate = Regex(""""gate"\s*:\s*\{\s*"n"\s*:\s*"([^"]+)"(?:\s*,\s*"b"\s*:\s*(\d+))?""").find(html) ?: return null
+        val gate = Regex(""""gate"\s*:\s*\{\s*"n"\s*:\s*"([^"]+)"(?:\s*,\s*"b"\s*:\s*(\d+))?""").find(html)
+            ?: return null
         val n = gate.groupValues[1]
         val bits = gate.groupValues[2].toIntOrNull() ?: 12
         val md = MessageDigest.getInstance("SHA-256")
@@ -489,7 +511,8 @@ class DiziPalOrijinal : MainAPI() {
             return ((d[o].toLong() and 0xff) shl 24) or ((d[o + 1].toLong() and 0xff) shl 16) or
                 ((d[o + 2].toLong() and 0xff) shl 8) or (d[o + 3].toLong() and 0xff)
         }
-        val fn = Regex("""window\.NP_GATE\s*=\s*function\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*\{([\s\S]*?)\};""").find(html)
+        val fn = Regex("""window\.NP_GATE\s*=\s*function\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*\{([\s\S]*?)\};""")
+            .find(html)
         if (fn == null) {
             for (i in 0 until 50_000_000) if (wordAt("$n:$i", 0) ushr (32 - bits) == 0L) return i.toString()
             return null
@@ -499,10 +522,12 @@ class DiziPalOrijinal : MainAPI() {
         val cm = Regex("""var\s+(\w+)\s*=\s*String\.fromCharCode\(([\d,\s]+)\)""").find(body) ?: return null
         val saltVar = cm.groupValues[1]
         val salt = cm.groupValues[2].split(',').map { it.trim().toInt().toChar() }.joinToString("")
-        val nonceMatch = Regex("""var\s+(\w+)\s*=\s*(?:\w+\.toString\((\d*)\)|String\(\w+\))""").find(body) ?: return null
+        val nonceMatch = Regex("""var\s+(\w+)\s*=\s*(?:\w+\.toString\((\d*)\)|String\(\w+\))""").find(body)
+            ?: return null
         val nonceVar = nonceMatch.groupValues[1]
         val radix = nonceMatch.groupValues[2].toIntOrNull()?.coerceIn(2, 36) ?: 10
-        val im = Regex("""\(\s*\w+\(([^)]+)\)\[(\d+)\]\s*(>>>|&)\s*(\d+)\s*\)\s*===?\s*0""").find(body) ?: return null
+        val im = Regex("""\(\s*\w+\(([^)]+)\)\[(\d+)\]\s*(>>>|&)\s*(\d+)\s*\)\s*===?\s*0""").find(body)
+            ?: return null
         val parts = im.groupValues[1].split('+').map { it.trim() }
         val wordIdx = im.groupValues[2].toIntOrNull() ?: 0
         val op = im.groupValues[3]
@@ -533,10 +558,6 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     companion object {
-        val ROWS = listOf(
-            "Yeni Diziler", "Yeni Filmler", "Trendler", "Keşfet",
-            "Netflix", "Amazon Prime", "Disney+",
-        )
         private const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
         private const val REPORT_HINT =
@@ -550,6 +571,8 @@ class DiziPalOrijinal : MainAPI() {
         private val OPEN_PLAYER = Regex("""openPlayer\s*\(\s*['"]([^'"]+)""")
         private val ORIGIN = Regex("""^https?://[^/]+""")
 
-        private val ENC_FIELD = Regex("""\\{0,3}"(ciphertext|iv|salt|k)\\{0,3}":\\{0,3}"([^"\\]+)""")
+        private val ENC_FIELD = Regex(
+            """\\{0,3}"(ciphertext|ct|iv|salt|k|key)\\{0,3}":\\{0,3}"([^"\\]+)"""
+        )
     }
 }
