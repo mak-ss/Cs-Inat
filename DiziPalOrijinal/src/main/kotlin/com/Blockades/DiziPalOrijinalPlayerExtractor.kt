@@ -29,12 +29,16 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
             "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8"
         )
 
+        Log.d("DiziPal", "--> Extractor getUrl çağrıldı: ${url.take(100)}")
+
         val response = EngelAsici.http.get(
             url,
             referer = referer,
             headers = defaultHeaders,
             interceptor = TarayiciGetir.Yakalayici()
         ).text
+
+        Log.d("DiziPal", "--> Extractor HTML uzunluğu: ${response.length}")
 
         val domainRegex = """https?://[^/]+""".toRegex()
         val domain = domainRegex.find(url)?.value ?: "https://dplayer82.site"
@@ -48,6 +52,8 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
             """window\.NP_CONFIG\s*=\s*(\{.*?\});""",
             RegexOption.DOT_MATCHES_ALL
         ).find(response)
+
+        Log.d("DiziPal", "--> NP_CONFIG bulundu mu: ${npConfigMatch != null}")
 
         if (npConfigMatch != null) {
             try {
@@ -110,11 +116,10 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                             masterUrl += "${sep}p=$token"
                         }
 
-                        Log.d("DiziPal", "--> Master URL (token ile): $masterUrl")
+                        Log.d("DiziPal", "--> Master URL (token ile): ${masterUrl.take(150)}")
 
-                        // nm.php / m.php → gerçek m3u8 URL'sini çöz
                         val finalUrl = resolveMasterUrl(masterUrl, url, defaultHeaders)
-                        Log.d("DiziPal", "--> Final video URL: $finalUrl")
+                        Log.d("DiziPal", "--> Final video URL: ${finalUrl.take(150)}")
 
                         callback.invoke(
                             newExtractorLink(
@@ -202,12 +207,6 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
         }
     }
 
-    /**
-     * nm.php / m.php gibi ara endpoint'leri çağırıp gerçek m3u8 URL'sini döndürür.
-     * - Eğer yanıt zaten m3u8 ise: orijinal URL döner (redirect takip edilmiş olur)
-     * - Eğer yanıt düz URL ise: o URL döner
-     * - Eğer yanıt JSON ise: içinden url/file çekilir
-     */
     private suspend fun resolveMasterUrl(
         masterUrl: String,
         pageUrl: String,
@@ -223,7 +222,7 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
             val body = resp.text.trim()
 
             when {
-                body.startsWith("#EXTM3U") -> masterUrl  // zaten m3u8
+                body.startsWith("#EXTM3U") -> masterUrl
                 body.startsWith("http") -> body.lines().first().trim()
                 body.startsWith("{") -> {
                     try {
@@ -233,7 +232,6 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                     } catch (_: Exception) { masterUrl }
                 }
                 else -> {
-                    // body içinde m3u8 URL'si ara
                     Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""").find(body)?.value ?: masterUrl
                 }
             }
@@ -243,27 +241,6 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
         }
     }
 
-    /**
-     * window.NP_GATE(_fd, _idp) fonksiyonunu taklit eder.
-     *
-     * Örnek:
-     * window.NP_GATE = function(_fd, _idp) {
-     *   var _zvfg = String.fromCharCode(71, 116, ...);
-     *   for (var _ks = 0; _ks < 1e8; _ks++) {
-     *     var _cgn = _ks.toString(36);
-     *     if ((_idp(_cgn + '|' + _zvfg + '|' + _fd)[2] >>> 20) === 0)
-     *       return _cgn;
-     *   }
-     * };
-     *
-     * Burada:
-     *   _fd  = gateN (ör. "EMMpZnT4-pyF")
-     *   _idp = SHA-256 (Uint32Array döndürür)
-     *   _zvfg = salt string
-     *   _cgn = nonce (base36)
-     *   hash input = nonce + "|" + salt + "|" + gateN
-     *   kontrol = hash[2]'nin üst 12 biti 0 mı? (>>> (32 - gateB))
-     */
     private fun calculateGateToken(html: String, gateN: String, gateB: Int): String {
         return try {
             val gateMatch = Regex(
@@ -277,11 +254,10 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
             }
 
             val params = gateMatch.groupValues[1].split(",").map { it.trim() }
-            val pNonce = params.getOrNull(0) ?: "_fd"   // 1. parametre → gateN
-            val pHash  = params.getOrNull(1) ?: "_idp"  // 2. parametre → hash fn
+            val pNonce = params.getOrNull(0) ?: "_fd"
+            val pHash  = params.getOrNull(1) ?: "_idp"
             val body   = gateMatch.groupValues[2]
 
-            // Salt (String.fromCharCode)
             val saltMatch = Regex(
                 """var\s+(\w+)\s*=\s*String\.fromCharCode\(([\d,\s]+)\)"""
             ).find(body)
@@ -291,14 +267,12 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                 ?.mapNotNull { it.trim().toIntOrNull()?.toChar() }
                 ?.joinToString("") ?: ""
 
-            // Radix + nonce değişkeni
             val radixMatch = Regex(
                 """var\s+(\w+)\s*=\s*\w+\.toString\((\d+)\)"""
             ).find(body)
             val nonceVar = radixMatch?.groupValues?.get(1) ?: ""
             val radix = radixMatch?.groupValues?.get(2)?.toIntOrNull() ?: 36
 
-            // Hash çağrısı: _idp(EXPR)[WORD_IDX]
             val callMatch = Regex(
                 Regex.escape(pHash) + """\s*\(([^)]+)\)\s*\[(\d+)\]"""
             ).find(body)
@@ -306,13 +280,11 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                 ?: "$nonceVar+'|'+$saltVar+'|'+$pNonce"
             val wordIdx = callMatch?.groupValues?.get(2)?.toIntOrNull() ?: 0
 
-            // Shift / mask
             val shiftMatch = Regex("""\]\s*>>>\s*(\d+)\s*\)\s*===\s*0""").find(body)
             val maskMatch  = Regex("""\]\s*&\s*(\d+)\s*\)\s*===\s*0""").find(body)
             val shift = shiftMatch?.groupValues?.get(1)?.toIntOrNull() ?: (32 - gateB)
             val mask  = maskMatch?.groupValues?.get(1)?.toIntOrNull()
 
-            // exprStr'i parçala: nonce + '|' + salt + '|' + gateN
             val parts = exprStr.split("+").map { it.trim() }
             val preBuilder = StringBuilder()
             val sufBuilder = StringBuilder()
