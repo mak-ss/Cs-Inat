@@ -2,7 +2,6 @@ package com.Blockades
 
 import android.util.Log
 import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -39,7 +38,7 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
         val domain = domainRegex.find(url)?.value ?: "https://dplayer82.site"
         val subUrls = mutableSetOf<String>()
 
-        // 1. Yeni NP_CONFIG formatı kontrolü
+        // 1. NP_CONFIG
         val npConfigMatch = Regex("""window\.NP_CONFIG\s*=\s*(\{.*?\});\s*window\.""", RegexOption.DOT_MATCHES_ALL).find(response)
             ?: Regex("""window\.NP_CONFIG\s*=\s*(\{.*?\});""", RegexOption.DOT_MATCHES_ALL).find(response)
 
@@ -48,19 +47,15 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                 val jsonStr = npConfigMatch.groupValues[1]
                 val npJson = org.json.JSONObject(jsonStr)
 
-                // Gate token hesaplama (404 hatasını engelleyen PoW doğrulaması)
                 val gateObj = npJson.optJSONObject("gate")
                 val gateN = gateObj?.optString("n")
                 val gateB = gateObj?.optInt("b", 12) ?: 12
 
                 val token = if (!gateN.isNullOrEmpty()) {
                     calculateGateToken(response, gateN, gateB)
-                } else {
-                    ""
-                }
-                Log.d("DiziPal", "--> Gate token hesaplandı: '$token' (gateN=$gateN, gateB=$gateB)")
+                } else ""
 
-                // Altyazıları ayıkla
+                // Altyazılar
                 val subtitlesArr = npJson.optJSONArray("subtitles")
                 if (subtitlesArr != null) {
                     for (i in 0 until subtitlesArr.length()) {
@@ -75,10 +70,7 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                             if (subUrl !in subUrls) {
                                 subUrls.add(subUrl)
                                 subtitleCallback.invoke(
-                                    newSubtitleFile(
-                                        lang = subLabel,
-                                        url = fixUrl(subUrl)
-                                    ) {
+                                    newSubtitleFile(lang = subLabel, url = fixUrl(subUrl)) {
                                         this.headers = mapOf(
                                             "Origin" to domain,
                                             "Referer" to url,
@@ -91,7 +83,7 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                     }
                 }
 
-                // Video kaynaklarını ayıkla
+                // Video kaynakları
                 val sourcesArr = npJson.optJSONArray("sources")
                 if (sourcesArr != null) {
                     for (i in 0 until sourcesArr.length()) {
@@ -99,18 +91,14 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                         var masterUrl = srcObj.optString("master")
                         val title = srcObj.optString("title", "DPlayer")
                         if (masterUrl.isNotEmpty()) {
-                            if (masterUrl.startsWith("//")) {
-                                masterUrl = "https:$masterUrl"
-                            } else if (!masterUrl.startsWith("http")) {
+                            if (masterUrl.startsWith("//")) masterUrl = "https:$masterUrl"
+                            else if (!masterUrl.startsWith("http"))
                                 masterUrl = "$domain/$masterUrl".replace("//", "/").replace("https:/", "https://")
-                            }
 
                             if (token.isNotEmpty()) {
                                 val sep = if (masterUrl.contains("?")) "&" else "?"
                                 masterUrl += "${sep}p=$token"
                             }
-
-                            Log.d("DiziPal", "--> Çözülen Master Video URL: $masterUrl")
 
                             callback.invoke(
                                 newExtractorLink(
@@ -136,23 +124,22 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
             }
         }
 
-        // 2. Eski window.openPlayer formatı kontrolü
+        // 2. Eski window.openPlayer
         val openPlayerRegex = """window\.openPlayer\s*\(\s*['"]([^'"]+)['"]""".toRegex()
 
         Regex(""""file":"((?:\\\\\"|[^"])+)","label":"((?:\\\\\"|[^"])+)"""").findAll(response).forEach {
             val (subUrlExt, subLangExt) = it.destructured
-
             val subUrl = subUrlExt.replace("\\/", "/").replace("\\u0026", "&").replace("\\", "")
-            val subLang = subLangExt.replace("\\u0131", "ı").replace("\\u0130", "İ").replace("\\u00fc", "ü").replace("\\u00e7", "ç").replace("\\u011f", "ğ").replace("\\u015f", "ş")
+            val subLang = subLangExt
+                .replace("\\u0131", "ı").replace("\\u0130", "İ")
+                .replace("\\u00fc", "ü").replace("\\u00e7", "ç")
+                .replace("\\u011f", "ğ").replace("\\u015f", "ş")
 
             if (subUrl in subUrls) return@forEach
             subUrls.add(subUrl)
 
             subtitleCallback.invoke(
-                newSubtitleFile(
-                    lang = subLang,
-                    url = fixUrl(subUrl)
-                ) {
+                newSubtitleFile(lang = subLang, url = fixUrl(subUrl)) {
                     headers = mapOf(
                         "Referer" to url,
                         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -162,12 +149,8 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
         }
 
         val playlistId = openPlayerRegex.find(response)?.groupValues?.get(1)
-        Log.d("DiziPal", "--> playlistId: $playlistId")
         if (playlistId != null) {
-            val domainRegex = """https?://[^/]+""".toRegex()
-            val domain = domainRegex.find(url)?.value ?: "https://dplayer82.site"
             val apiUrl = "$domain/source2.php?v=$playlistId"
-            Log.d("DiziPal", "--> apiUrl: $apiUrl")
             val apiResponse = EngelAsici.http.get(
                 apiUrl,
                 referer = url,
@@ -177,21 +160,12 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
 
             try {
                 val fileRegex = """"file"\s*:\s*"([^"]+)"""".toRegex()
-                val fileMatches = fileRegex.findAll(apiResponse)
-
-                fileMatches.forEach { matchResult ->
+                fileRegex.findAll(apiResponse).forEach { matchResult ->
                     var fileUrl = matchResult.groupValues[1].replace("\\/", "/")
+                    if (fileUrl.startsWith("//")) fileUrl = "https:$fileUrl"
+                    else if (!fileUrl.startsWith("http")) fileUrl = "https://$fileUrl"
 
-                    if (fileUrl.startsWith("//")) {
-                        fileUrl = "https:$fileUrl"
-                    } else if (!fileUrl.startsWith("http")) {
-                        fileUrl = "https://$fileUrl"
-                    }
-                    Log.d("DiziPal", "--> fileUrl: $fileUrl")
-
-                    if (fileUrl.contains("m.php")) {
-                        fileUrl = fileUrl.replace("m.php", "master.m3u8")
-                    }
+                    if (fileUrl.contains("m.php")) fileUrl = fileUrl.replace("m.php", "master.m3u8")
 
                     callback.invoke(
                         newExtractorLink(
@@ -249,18 +223,14 @@ class DiziPalOrijinalPlayer : ExtractorApi() {
                 wordIdx = callMatch?.groupValues?.get(2)?.toIntOrNull() ?: 0
 
                 mask = Regex("""\]\s*&\s*(\d+)\s*\)\s*===\s*0""").find(body)?.groupValues?.get(1)?.toIntOrNull()
-                val shiftMatch = Regex("""\]\s*>>>\s*(\d+)\s*\)\s*===\s*0""").find(body)?.groupValues?.get(1)?.toIntOrNull()
-                if (shiftMatch != null) shift = shiftMatch
+                Regex("""\]\s*>>>\s*(\d+)\s*\)\s*===\s*0""").find(body)?.groupValues?.get(1)?.toIntOrNull()?.let { shift = it }
 
                 val parts = exprStr.split("+").map { it.trim() }
                 val preBuilder = StringBuilder()
                 val sufBuilder = StringBuilder()
                 var seenNonce = false
                 for (p in parts) {
-                    if (p == nonceVar && nonceVar.isNotEmpty()) {
-                        seenNonce = true
-                        continue
-                    }
+                    if (p == nonceVar && nonceVar.isNotEmpty()) { seenNonce = true; continue }
                     val resolved = when {
                         p == pN -> gateN
                         p == saltVar && saltVar.isNotEmpty() -> saltVal
