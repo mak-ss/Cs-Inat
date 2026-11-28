@@ -22,6 +22,9 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -303,31 +306,91 @@ class DiziPalOrijinal : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d("DiziPal", "--> loadLinks ÇAĞRILDI. Gelen URL: $data")
+        Log.d("DiziPal", "========== loadLinks BAŞLADI ==========")
+        Log.d("DiziPal", "--> data URL: $data")
+
         val response = EngelAsici.http.get(data, interceptor = interceptor, headers = getHeaders(mainUrl))
         val html = response.text
+        Log.d("DiziPal", "--> HTML uzunluğu: ${html.length}")
 
+        // === KRİTİK 1: Bu sayfa zaten oynatıcı sayfası mı? (NP_CONFIG) ===
+        if (html.contains("NP_CONFIG")) {
+            Log.d("DiziPal", "--> NP_CONFIG bu sayfada bulundu, doğrudan extractor'a gönderiliyor")
+            DiziPalOrijinalPlayer().getUrl(
+                url = data,
+                referer = data,
+                subtitleCallback = subtitleCallback,
+                callback = callback
+            )
+            return true
+        }
+
+        // === KRİTİK 2: ciphertext/iv/salt dene ===
         val ctMatch   = Regex("""\\*"ciphertext\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val ivMatch   = Regex("""\\*"iv\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val saltMatch = Regex("""\\*"salt\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val keyMatch  = Regex("""\\*"k\\*"\s*:\s*\\*"([A-Za-z0-9]{40,})\\*"""").find(html)?.groupValues?.get(1)
 
+        Log.d("DiziPal", "--> ctMatch=${ctMatch?.take(30)}, ivMatch=${ivMatch?.take(30)}, saltMatch=${saltMatch?.take(30)}, keyMatch=${keyMatch?.take(30)}")
+
         val defaultPassphrase = "3hPn4uCjTVtfYWcjIcoJQ4cL1WWk1qxXI39egLYOmNv6IblA7eKJz68uU3eLzux1biZLCms0quEjTYniGv5z1JcKbNIsDQFSeIZOBZJz4is6pD7UyWDggWWzTLBQbHcQFpBQdClnuQaMNUHtLHTpzCvZy33p6I7wFBvL4fnXBYH84aUIyWGTRvM2G5cfoNf4705tO2kv"
         val passphrase = keyMatch ?: defaultPassphrase
 
         var iframeUrl = if (ctMatch != null && ivMatch != null && saltMatch != null) {
+            Log.d("DiziPal", "--> ciphertext/iv/salt BULUNDU, decrypt ediliyor...")
             decryptDizipalParams(ctMatch, ivMatch, saltMatch, passphrase)
         } else {
+            Log.d("DiziPal", "--> ciphertext/iv/salt BULUNAMADI, alternatif yollar deneniyor...")
             val encryptedText = response.document.selectFirst("div[data-rm-k=true]")?.text() ?: ""
-            if (encryptedText.isNotEmpty()) decryptDizipalData(encryptedText)
-            else response.document.selectFirst("iframe")?.attr("src") ?: ""
+            Log.d("DiziPal", "--> div[data-rm-k=true] içeriği: '${encryptedText.take(100)}'")
+
+            if (encryptedText.isNotEmpty()) {
+                decryptDizipalData(encryptedText)
+            } else {
+                val iframeSrc = response.document.selectFirst("iframe")?.attr("src") ?: ""
+                Log.d("DiziPal", "--> iframe src: '$iframeSrc'")
+                iframeSrc
+            }
         }
 
+        Log.d("DiziPal", "--> iframeUrl (decrypt sonrası): '${iframeUrl.take(100)}'")
+
+        // === KRİTİK 3: HTML içinde dplayer URL'si ara ===
+        if (iframeUrl.isEmpty()) {
+            val dplayerMatch = Regex("""https?://[^"'\s<>]*dplayer[^"'\s<>]*""").find(html)
+            if (dplayerMatch != null) {
+                Log.d("DiziPal", "--> HTML içinde dplayer URL bulundu: ${dplayerMatch.value.take(100)}")
+                iframeUrl = dplayerMatch.value
+            }
+        }
+
+        // === KRİTİK 4: HTML içinde m3u8 URL'si ara ===
+        if (iframeUrl.isEmpty()) {
+            val m3u8Match = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""").find(html)
+            if (m3u8Match != null) {
+                Log.d("DiziPal", "--> HTML içinde m3u8 URL bulundu: ${m3u8Match.value.take(100)}")
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = "DiziPal Direct M3U8",
+                        url = m3u8Match.value,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = data
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                return true
+            }
+        }
+
+        // === KRİTİK 5: iframe varsa extractor'a gönder ===
         if (iframeUrl.isNotEmpty()) {
             if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
             else if (iframeUrl.startsWith("://")) iframeUrl = "https$iframeUrl"
             else if (!iframeUrl.startsWith("http")) iframeUrl = "https://$iframeUrl"
 
+            Log.d("DiziPal", "--> Extractor'a gönderiliyor: ${iframeUrl.take(100)}")
             DiziPalOrijinalPlayer().getUrl(
                 url = iframeUrl,
                 referer = data,
@@ -336,6 +399,7 @@ class DiziPalOrijinal : MainAPI() {
             )
         } else {
             Log.e("DiziPal", "--> HATA: iframeUrl tamamen BOŞ.")
+            Log.e("DiziPal", "--> HTML SON 800 KARAKTER: ${html.takeLast(800)}")
         }
         return true
     }
@@ -363,6 +427,7 @@ class DiziPalOrijinal : MainAPI() {
             if (finalUrl.startsWith("//")) finalUrl = "https:$finalUrl"
             else if (finalUrl.startsWith("://")) finalUrl = "https$finalUrl"
             else if (!finalUrl.startsWith("http")) finalUrl = "https://$finalUrl"
+            Log.d("DiziPal", "--> decryptDizipalParams sonuç: ${finalUrl.take(100)}")
             finalUrl
         } catch (e: Exception) {
             Log.e("DiziPal", "--> Decryption Hatası: ${e.message}")
