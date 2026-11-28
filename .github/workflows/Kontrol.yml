@@ -15,6 +15,7 @@ jobs:
 
     permissions:
       contents: write
+      actions: write
 
     steps:
       - name: Depoyu Çek
@@ -55,7 +56,6 @@ jobs:
 
           git commit -m "🤖 Domain Update" -m "Automatic domain update"
 
-          # Remote'daki yeni commit'leri al ve kendi commit'imizi üstüne rebase et
           for i in 1 2 3 4 5; do
             if git push origin HEAD:"${GITHUB_REF_NAME}"; then
               echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -69,9 +69,28 @@ jobs:
           echo "Push, tekrar denemelere rağmen başarısız oldu"
           exit 1
 
-      - name: build.yml Tetikle
+      - name: Token Kontrolü
         if: steps.commit.outputs.changed == 'true'
+        id: tokencheck
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          if [ -z "${PAT_TOKEN}" ]; then
+            echo "::error::PAT_TOKEN secret'ı tanımlı değil veya boş!"
+            echo "Repo → Settings → Secrets and variables → Actions → New repository secret"
+            echo "Ad: PAT_TOKEN, Değer: 'repo' + 'workflow' scope'lu bir Personal Access Token"
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "has_token=true" >> "$GITHUB_OUTPUT"
+
+      - name: build.yml Tetikle
+        if: steps.commit.outputs.changed == 'true' && steps.tokencheck.outputs.has_token == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          gh workflow run build.yml --ref ${{ github.ref_name }}
+          echo "build.yml tetikleniyor (ref: ${{ github.ref_name }})..."
+          gh workflow run build.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}"
+          echo "Tetikleme başarılı."
