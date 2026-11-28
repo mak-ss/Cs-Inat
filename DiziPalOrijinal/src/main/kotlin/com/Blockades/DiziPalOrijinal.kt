@@ -13,7 +13,6 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
@@ -108,7 +107,7 @@ class DiziPalOrijinal : MainAPI() {
                 this.score = Score.from10(ld?.optJSONObject("aggregateRating")?.optString("ratingValue"))
                 this.duration = minutes(ld?.optString("timeRequired"))
                 this.tags = tagsOf(doc).takeIf { it.isNotEmpty() }
-                this.recommendations = recommendationsOf(doc, isSeries)
+                this.recommendations = recommendationsOf(doc)
                 actorsOf(ld)?.let { addActors(it) }
             }
         }
@@ -120,7 +119,7 @@ class DiziPalOrijinal : MainAPI() {
             this.score = Score.from10(ld?.optJSONObject("aggregateRating")?.optString("ratingValue"))
             this.duration = minutes(ld?.optString("timeRequired"))
             this.tags = tagsOf(doc).takeIf { it.isNotEmpty() }
-            this.recommendations = recommendationsOf(doc, isSeries)
+            this.recommendations = recommendationsOf(doc)
             actorsOf(ld)?.let { addActors(it) }
         }
     }
@@ -157,21 +156,33 @@ class DiziPalOrijinal : MainAPI() {
     // ---------------------------------------------------------------- listing
 
     private fun Element.toCard(): SearchResponse? {
-        val href = fixUrlNull(attr("href")) ?: return null
+        val rawHref = attr("href").trim()
+        if (rawHref.isEmpty()) return null
+
+        // Göreli yolu mutlak URL'ye çevir
+        val href = when {
+            rawHref.startsWith("http") -> rawHref
+            rawHref.startsWith("//") -> "https:$rawHref"
+            rawHref.startsWith("/") -> "$mainUrl$rawHref"
+            else -> "$mainUrl/$rawHref"
+        }
         val isSeries = href.contains("/series/")
         if (!isSeries && !href.contains("/movies/")) return null
 
-        // HTML: <span class="title">MobLand</span>
+        // Başlık: HTML'de span.title mevcut
         val title = selectFirst("span.title")?.text()?.trim()?.ifBlank { null }
             ?: selectFirst("span.tt")?.text()?.trim()?.ifBlank { null }
             ?: selectFirst("span.ft1")?.text()?.trim()?.ifBlank { null }
             ?: attr("aria-label").substringBefore(',').trim().ifBlank { null }
             ?: return null
 
-        // HTML: kart içindeki ilk <img src="https://...">
-        val poster = selectFirst("img[src^=http]")?.attr("src")?.takeIf { it.isNotBlank() }
+        // Poster: fragment (#wtop) ve query'yi temizle
+        val poster = selectFirst("img[src^=http]")?.attr("src")
+            ?.substringBefore('#')
+            ?.substringBefore('?')
+            ?.takeIf { it.startsWith("http") }
 
-        // HTML: <span class="sub">2025 · Suç</span>
+        // Yıl: span.sub içinden
         val year = selectFirst("span.sub")?.text()?.let { YEAR.find(it)?.value?.toIntOrNull() }
             ?: YEAR.find(text())?.value?.toIntOrNull()
 
@@ -216,7 +227,8 @@ class DiziPalOrijinal : MainAPI() {
     private fun directImage(url: String): String? {
         val trimmed = url.trim()
         if (!trimmed.startsWith("http")) return null
-        return if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
+        val cleaned = if (IMAGE_PROXY in trimmed) "https://" + trimmed.substringAfter(IMAGE_PROXY) else trimmed
+        return cleaned.substringBefore('#').substringBefore('?')
     }
 
     // ------------------------------------------------------------------ künye
@@ -264,14 +276,18 @@ class DiziPalOrijinal : MainAPI() {
         }
 
     private fun posterOf(doc: Document, ld: JSONObject?): String? =
-        // Dizi detay sayfası: /poster/ yolu
-        doc.selectFirst("img[src*=/poster/]")?.attr("src")?.takeIf { it.startsWith("http") }
-            // Ana sayfa kartlarından gelen: /brand/ yolu
-            ?: doc.selectFirst("img[src*=/brand/]")?.attr("src")?.takeIf { it.startsWith("http") }
-            // Genel ilk http görsel
-            ?: doc.selectFirst("img[src^=http]")?.attr("src")?.takeIf { it.startsWith("http") }
-            // ld+json image
-            ?: ld?.optString("image")?.takeIf { it.startsWith("http") }
+        doc.selectFirst("img[src*=/poster/]")?.attr("src")
+            ?.substringBefore('#')?.substringBefore('?')
+            ?.takeIf { it.startsWith("http") }
+            ?: doc.selectFirst("img[src*=/brand/]")?.attr("src")
+                ?.substringBefore('#')?.substringBefore('?')
+                ?.takeIf { it.startsWith("http") }
+            ?: doc.selectFirst("img[src^=http]")?.attr("src")
+                ?.substringBefore('#')?.substringBefore('?')
+                ?.takeIf { it.startsWith("http") }
+            ?: ld?.optString("image")
+                ?.substringBefore('#')?.substringBefore('?')
+                ?.takeIf { it.startsWith("http") }
 
     private fun yearOf(ld: JSONObject?): Int? =
         ld?.optString("datePublished")?.take(4)?.toIntOrNull()?.takeIf { it in 1900..2100 }
@@ -282,12 +298,10 @@ class DiziPalOrijinal : MainAPI() {
             .filter { it.isNotEmpty() }
             .distinct()
 
-    private fun recommendationsOf(doc: Document, isSeries: Boolean): List<SearchResponse> {
-        // HTML'de ds-ben / df-ben id'leri yok; tüm a.tc kartlarını öneri olarak al.
-        return doc.select("section a.tc[href]")
+    private fun recommendationsOf(doc: Document): List<SearchResponse> =
+        doc.select("section a.tc[href]")
             .mapNotNull { it.toCard() }
             .distinctBy { it.url }
-    }
 
     private fun actorsOf(ld: JSONObject?): List<String>? =
         ld?.optJSONArray("actor").objects()
