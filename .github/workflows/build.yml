@@ -8,12 +8,14 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
       - master
     paths-ignore:
-      - '*.md'
+      - '**.md'
+      - '.github/**'
 
 jobs:
   build:
@@ -22,9 +24,11 @@ jobs:
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Clean previous outputs
-        run: rm -rf output
+        run: rm -rf output build
 
       - name: Setup JDK 21
         uses: actions/setup-java@v4
@@ -33,32 +37,62 @@ jobs:
           java-version: 21
           cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: ''
-
       - name: Grant permission
         run: chmod +x gradlew
 
       - name: Build Plugins
         run: |
-          ./gradlew make makePluginsJson
+          ./gradlew make makePluginsJson --no-daemon --stacktrace
 
       - name: Prepare build files
         run: |
-          mkdir output
-          find . -type f -name "*.cs3" -exec cp {} output \;
-          cp build/plugins.json output || true
+          mkdir -p output
+          # .cs3 dosyalarını topla
+          find . -type f -name "*.cs3" -not -path "./output/*" -exec cp {} output/ \;
+          # plugins.json'u kopyala (build/ veya kök dizinden)
+          if [ -f build/plugins.json ]; then
+            cp build/plugins.json output/
+          elif [ -f plugins.json ]; then
+            cp plugins.json output/
+          else
+            echo "::warning::plugins.json bulunamadı!"
+          fi
+          echo "--- output içeriği ---"
+          ls -la output/
+
+      - name: Verify output
+        run: |
+          if [ -z "$(ls -A output/*.cs3 2>/dev/null)" ]; then
+            echo "::error::Hiç .cs3 dosyası üretilmedi!"
+            exit 1
+          fi
+          echo "Toplam .cs3 sayısı: $(ls output/*.cs3 | wc -l)"
 
       - name: Push to builds branch
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           cd output
+
           git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git checkout -b builds
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
           git add .
+
+          if git diff --cached --quiet; then
+            echo "Değişiklik yok, push atlanıyor."
+            exit 0
+          fi
+
           git commit -m "Build $GITHUB_SHA"
 
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/mak-ss/Cs-Inat builds --force
+          # PAT_TOKEN yoksa GITHUB_TOKEN'a düş
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::PAT_TOKEN tanımlı değil, GITHUB_TOKEN kullanılıyor."
+            GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          fi
+
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}" builds --force
