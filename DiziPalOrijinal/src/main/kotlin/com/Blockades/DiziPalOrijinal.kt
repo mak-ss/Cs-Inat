@@ -61,6 +61,9 @@ class DiziPalOrijinal : MainAPI() {
         "${mainUrl}/platform-bolumler/tod"        to "TOD (beIN)"
     )
 
+    // ============================================================
+    // ANA SAYFA
+    // ============================================================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) {
             if (request.data.contains("?")) "${request.data}&page=$page"
@@ -134,6 +137,9 @@ class DiziPalOrijinal : MainAPI() {
         }
     }
 
+    // ============================================================
+    // ARAMA
+    // ============================================================
     override suspend fun search(query: String): List<SearchResponse> {
         return try {
             val jsonPayload = jacksonObjectMapper().writeValueAsString(
@@ -166,19 +172,35 @@ class DiziPalOrijinal : MainAPI() {
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
+    // ============================================================
+    // DETAY SAYFASI (load) — DETAYLI LOG EKLENDİ
+    // ============================================================
     override suspend fun load(url: String): LoadResponse? {
-        val document = EngelAsici.http.get(url, interceptor = interceptor, headers = getHeaders(mainUrl)).document
+        Log.d("DiziPal", "========== load() BAŞLADI ==========")
+        Log.d("DiziPal", "--> url: $url")
+
+        val response = EngelAsici.http.get(url, interceptor = interceptor, headers = getHeaders(mainUrl))
+        val document = response.document
         val html = document.html()
+
+        Log.d("DiziPal", "--> HTML uzunluğu: ${html.length}")
 
         val isSeries   = url.contains("/series/")
         val schemaType = if (isSeries) "TVSeries" else "Movie"
         val jsonLd     = extractJsonLd(html, schemaType)
 
+        Log.d("DiziPal", "--> isSeries: $isSeries, jsonLd var mı: ${jsonLd != null}")
+
         val title = jsonLd?.optString("name")?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("h1")?.text()?.trim()
             ?: document.selectFirst("div.flex h2")?.text()?.trim()
             ?: document.selectFirst("span.tt")?.text()?.trim()
-            ?: return null
+            ?: run {
+                Log.e("DiziPal", "--> title BULUNAMADI, load() null dönüyor")
+                return null
+            }
+
+        Log.d("DiziPal", "--> title: '$title'")
 
         val poster = jsonLd?.optString("image")?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("div.hero img")?.attr("src")
@@ -198,6 +220,7 @@ class DiziPalOrijinal : MainAPI() {
 
             val containsSeason = jsonLd?.opt("containsSeason")
             if (containsSeason is JSONArray) {
+                Log.d("DiziPal", "--> JSON-LD containsSeason: JSONArray (${containsSeason.length()} sezon)")
                 for (sIdx in 0 until containsSeason.length()) {
                     val seasonObj = containsSeason.optJSONObject(sIdx) ?: continue
                     val sNum = seasonObj.optInt("seasonNumber", sIdx + 1)
@@ -220,6 +243,7 @@ class DiziPalOrijinal : MainAPI() {
                     }
                 }
             } else if (containsSeason is JSONObject) {
+                Log.d("DiziPal", "--> JSON-LD containsSeason: JSONObject (tek sezon)")
                 val sNum = containsSeason.optInt("seasonNumber", 1)
                 val epArr = containsSeason.optJSONArray("episode")
                 if (epArr != null) {
@@ -240,9 +264,13 @@ class DiziPalOrijinal : MainAPI() {
                         }
                     }
                 }
+            } else {
+                Log.d("DiziPal", "--> JSON-LD containsSeason YOK, DOM fallback kullanılacak")
             }
 
+            // DOM fallback
             if (episodes.isEmpty()) {
+                Log.d("DiziPal", "--> Episode listesi boş, DOM'dan toplanıyor...")
                 document.select("a[href*='/bolum/']").forEach { link: Element ->
                     val epHref = fixUrlNull(link.attr("href")) ?: return@forEach
                     val text = link.text().trim()
@@ -265,17 +293,24 @@ class DiziPalOrijinal : MainAPI() {
                 }
             }
 
+            Log.d("DiziPal", "--> Toplam episode sayısı: ${episodes.size}")
+
+            if (episodes.isEmpty()) {
+                Log.e("DiziPal", "--> EPISODE LİSTESİ BOŞ! load() null dönüyor (series)")
+                return null
+            }
+
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.year      = year
                 this.plot      = plot
-            }
+            }.also { Log.d("DiziPal", "--> load() BAŞARIYLA döndü (series, ${episodes.size} bölüm)") }
         } else {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.year      = year
                 this.plot      = plot
-            }
+            }.also { Log.d("DiziPal", "--> load() BAŞARIYLA döndü (movie)") }
         }
     }
 
@@ -300,6 +335,9 @@ class DiziPalOrijinal : MainAPI() {
         return try { JSONObject(html.substring(start, end)) } catch (e: Exception) { null }
     }
 
+    // ============================================================
+    // LİNK ÇIKARMA (loadLinks) — DETAYLI LOG + NP_CONFIG KONTROLÜ
+    // ============================================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -404,6 +442,9 @@ class DiziPalOrijinal : MainAPI() {
         return true
     }
 
+    // ============================================================
+    // YARDIMCILAR
+    // ============================================================
     private fun String.decodeHex(): ByteArray {
         check(length % 2 == 0) { "Hex string çift uzunlukta olmalıdır" }
         return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
