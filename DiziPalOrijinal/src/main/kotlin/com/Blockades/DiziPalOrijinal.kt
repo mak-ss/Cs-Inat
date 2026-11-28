@@ -36,7 +36,6 @@ class DiziPalOrijinal : MainAPI() {
     override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries, TvType.Movie)
 
-    // ! CloudFlare bypass
     override var sequentialMainPage            = true
     override var sequentialMainPageDelay       = 150L
     override var sequentialMainPageScrollDelay = 150L
@@ -73,8 +72,7 @@ class DiziPalOrijinal : MainAPI() {
 
         val home = mutableListOf<SearchResponse>()
 
-        val cards = document.select("a.tc")
-        cards.forEach { element ->
+        document.select("a.tc").forEach { element ->
             element.toCardSearchResult()?.let { res ->
                 if (home.none { it.url == res.url }) home.add(res)
             }
