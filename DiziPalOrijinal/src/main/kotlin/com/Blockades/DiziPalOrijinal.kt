@@ -173,7 +173,7 @@ class DiziPalOrijinal : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     // ============================================================
-    // DETAY SAYFASI (load)
+    // DETAY SAYFASI (load) — title fallback genişletildi + /bolum/ özel işlem
     // ============================================================
     override suspend fun load(url: String): LoadResponse? {
         Log.d("DiziPal", "========== load() BAŞLADI ==========")
@@ -185,18 +185,23 @@ class DiziPalOrijinal : MainAPI() {
 
         Log.d("DiziPal", "--> HTML uzunluğu: ${html.length}")
 
-        val isSeries   = url.contains("/series/")
+        val isSeries   = url.contains("/series/") || url.contains("/bolum/")
         val schemaType = if (isSeries) "TVSeries" else "Movie"
         val jsonLd     = extractJsonLd(html, schemaType)
 
         Log.d("DiziPal", "--> isSeries: $isSeries, jsonLd var mı: ${jsonLd != null}")
 
+        // Title fallback — çok daha kapsamlı
         val title = jsonLd?.optString("name")?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("h1")?.text()?.trim()
             ?: document.selectFirst("div.flex h2")?.text()?.trim()
             ?: document.selectFirst("span.tt")?.text()?.trim()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: document.selectFirst("meta[name=title]")?.attr("content")?.trim()
+            ?: document.title()?.trim()?.takeIf { it.isNotEmpty() }
+            ?: document.selectFirst("title")?.text()?.trim()?.takeIf { it.isNotEmpty() }
             ?: run {
-                Log.e("DiziPal", "--> title BULUNAMADI, load() null dönüyor")
+                Log.e("DiziPal", "--> title BULUNAMADI, HTML ilk 1000 karakter: ${html.take(1000)}")
                 return null
             }
 
@@ -206,14 +211,37 @@ class DiziPalOrijinal : MainAPI() {
             ?: document.selectFirst("div.hero img")?.attr("src")
             ?: document.selectFirst("div.fr img")?.attr("src")
             ?: document.selectFirst("div.page-top img[alt]")?.attr("src")
+            ?: document.selectFirst("meta[property=og:image]")?.attr("content")
 
         val plot = jsonLd?.optString("description")?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("div.summary p")?.text()?.trim()
             ?: document.selectFirst("p.plot")?.text()?.trim()
+            ?: document.selectFirst("meta[property=og:description]")?.attr("content")
 
         val year = jsonLd?.optString("datePublished")?.take(4)?.toIntOrNull()
             ?: document.selectXpath("//div[text()='Yıl']//following-sibling::div").text().trim().toIntOrNull()
             ?: Regex("""\b(19\d\d|20\d\d)\b""").find(html)?.groupValues?.get(1)?.toIntOrNull()
+
+        // /bolum/ URL'si ise tek episode olarak döndür
+        if (url.contains("/bolum/")) {
+            Log.d("DiziPal", "--> /bolum/ URL'si, seri URL'sine dönüştürülüyor")
+            val seriesUrl = url.substringBeforeLast("-").replace("/bolum/", "/series/")
+            Log.d("DiziPal", "--> seriesUrl: $seriesUrl")
+
+            val singleEpisode = listOf(
+                newEpisode(url) {
+                    this.name = title
+                    this.season = 1
+                    this.episode = 1
+                }
+            )
+
+            return newTvSeriesLoadResponse(title, seriesUrl, TvType.TvSeries, singleEpisode) {
+                this.posterUrl = poster
+                this.year      = year
+                this.plot      = plot
+            }.also { Log.d("DiziPal", "--> load() BAŞARIYLA döndü (bolum, tek episode)") }
+        }
 
         if (isSeries) {
             val episodes = mutableListOf<Episode>()
@@ -335,7 +363,7 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     // ============================================================
-    // LİNK ÇIKARMA (loadLinks) — script / __NEXT_DATA__ / attribute taraması
+    // LİNK ÇIKARMA (loadLinks)
     // ============================================================
     override suspend fun loadLinks(
         data: String,
@@ -387,7 +415,7 @@ class DiziPalOrijinal : MainAPI() {
 
         Log.d("DiziPal", "--> iframeUrl (decrypt sonrası): '${iframeUrl.take(120)}'")
 
-        // === 3. iframe attribute taraması (src yoksa data-* kontrol) ===
+        // === 3. iframe attribute taraması ===
         if (iframeUrl.isEmpty()) {
             val iframeEl = response.document.selectFirst("iframe[data-player-frame]")
                 ?: response.document.selectFirst("iframe")
