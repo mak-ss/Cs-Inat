@@ -1,15 +1,14 @@
 package com.Blockades
 
-import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import android.content.Context
 
 @CloudstreamPlugin
-class DiziMomPlugin : Plugin() {
+class DiziMomPlugin: Plugin() {
     override fun load(context: Context) {
+        DomainResolver.initialize(context)
         registerMainAPI(DiziMom())
-        registerExtractorAPI(HdPlayerExtractor())
-        registerExtractorAPI(PeacemakerExtractor())
         registerExtractorAPI(FirePlayer())
     }
 }
