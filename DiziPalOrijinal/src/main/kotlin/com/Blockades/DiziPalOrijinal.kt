@@ -173,7 +173,7 @@ class DiziPalOrijinal : MainAPI() {
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     // ============================================================
-    // DETAY SAYFASI (load) — DETAYLI LOG EKLENDİ
+    // DETAY SAYFASI (load)
     // ============================================================
     override suspend fun load(url: String): LoadResponse? {
         Log.d("DiziPal", "========== load() BAŞLADI ==========")
@@ -268,7 +268,6 @@ class DiziPalOrijinal : MainAPI() {
                 Log.d("DiziPal", "--> JSON-LD containsSeason YOK, DOM fallback kullanılacak")
             }
 
-            // DOM fallback
             if (episodes.isEmpty()) {
                 Log.d("DiziPal", "--> Episode listesi boş, DOM'dan toplanıyor...")
                 document.select("a[href*='/bolum/']").forEach { link: Element ->
@@ -336,7 +335,7 @@ class DiziPalOrijinal : MainAPI() {
     }
 
     // ============================================================
-    // LİNK ÇIKARMA (loadLinks) — DETAYLI LOG + NP_CONFIG KONTROLÜ
+    // LİNK ÇIKARMA (loadLinks) — script / __NEXT_DATA__ / attribute taraması
     // ============================================================
     override suspend fun loadLinks(
         data: String,
@@ -351,7 +350,7 @@ class DiziPalOrijinal : MainAPI() {
         val html = response.text
         Log.d("DiziPal", "--> HTML uzunluğu: ${html.length}")
 
-        // === KRİTİK 1: Bu sayfa zaten oynatıcı sayfası mı? (NP_CONFIG) ===
+        // === 1. NP_CONFIG bu sayfada mı? ===
         if (html.contains("NP_CONFIG")) {
             Log.d("DiziPal", "--> NP_CONFIG bu sayfada bulundu, doğrudan extractor'a gönderiliyor")
             DiziPalOrijinalPlayer().getUrl(
@@ -363,50 +362,129 @@ class DiziPalOrijinal : MainAPI() {
             return true
         }
 
-        // === KRİTİK 2: ciphertext/iv/salt dene ===
+        // === 2. ciphertext/iv/salt dene ===
         val ctMatch   = Regex("""\\*"ciphertext\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val ivMatch   = Regex("""\\*"iv\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val saltMatch = Regex("""\\*"salt\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val keyMatch  = Regex("""\\*"k\\*"\s*:\s*\\*"([A-Za-z0-9]{40,})\\*"""").find(html)?.groupValues?.get(1)
 
-        Log.d("DiziPal", "--> ctMatch=${ctMatch?.take(30)}, ivMatch=${ivMatch?.take(30)}, saltMatch=${saltMatch?.take(30)}, keyMatch=${keyMatch?.take(30)}")
-
         val defaultPassphrase = "3hPn4uCjTVtfYWcjIcoJQ4cL1WWk1qxXI39egLYOmNv6IblA7eKJz68uU3eLzux1biZLCms0quEjTYniGv5z1JcKbNIsDQFSeIZOBZJz4is6pD7UyWDggWWzTLBQbHcQFpBQdClnuQaMNUHtLHTpzCvZy33p6I7wFBvL4fnXBYH84aUIyWGTRvM2G5cfoNf4705tO2kv"
         val passphrase = keyMatch ?: defaultPassphrase
 
-        var iframeUrl = if (ctMatch != null && ivMatch != null && saltMatch != null) {
+        var iframeUrl = ""
+
+        if (ctMatch != null && ivMatch != null && saltMatch != null) {
             Log.d("DiziPal", "--> ciphertext/iv/salt BULUNDU, decrypt ediliyor...")
-            decryptDizipalParams(ctMatch, ivMatch, saltMatch, passphrase)
+            iframeUrl = decryptDizipalParams(ctMatch, ivMatch, saltMatch, passphrase)
         } else {
             Log.d("DiziPal", "--> ciphertext/iv/salt BULUNAMADI, alternatif yollar deneniyor...")
             val encryptedText = response.document.selectFirst("div[data-rm-k=true]")?.text() ?: ""
-            Log.d("DiziPal", "--> div[data-rm-k=true] içeriği: '${encryptedText.take(100)}'")
-
             if (encryptedText.isNotEmpty()) {
-                decryptDizipalData(encryptedText)
-            } else {
-                val iframeSrc = response.document.selectFirst("iframe")?.attr("src") ?: ""
-                Log.d("DiziPal", "--> iframe src: '$iframeSrc'")
-                iframeSrc
+                Log.d("DiziPal", "--> div[data-rm-k=true] BULUNDU")
+                iframeUrl = decryptDizipalData(encryptedText)
             }
         }
 
-        Log.d("DiziPal", "--> iframeUrl (decrypt sonrası): '${iframeUrl.take(100)}'")
+        Log.d("DiziPal", "--> iframeUrl (decrypt sonrası): '${iframeUrl.take(120)}'")
 
-        // === KRİTİK 3: HTML içinde dplayer URL'si ara ===
+        // === 3. iframe attribute taraması (src yoksa data-* kontrol) ===
+        if (iframeUrl.isEmpty()) {
+            val iframeEl = response.document.selectFirst("iframe[data-player-frame]")
+                ?: response.document.selectFirst("iframe")
+            if (iframeEl != null) {
+                val attrs = iframeEl.attributes().associate { it.key to it.value }
+                Log.d("DiziPal", "--> iframe attribute'ları: $attrs")
+
+                val candidates = listOf(
+                    iframeEl.attr("src"),
+                    iframeEl.attr("data-src"),
+                    iframeEl.attr("data-url"),
+                    iframeEl.attr("data-player"),
+                    iframeEl.attr("data-frame"),
+                    iframeEl.attr("data-lazy-src"),
+                    iframeEl.attr("data-original")
+                )
+                for (c in candidates) {
+                    if (c.isNotEmpty() && (c.startsWith("http") || c.startsWith("//"))) {
+                        iframeUrl = c
+                        Log.d("DiziPal", "--> iframe attribute'undan URL bulundu: $c")
+                        break
+                    }
+                }
+            }
+        }
+
+        // === 4. Script içinde video URL'si ara ===
+        if (iframeUrl.isEmpty()) {
+            val scriptMatches = Regex("""<script[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+                .findAll(html)
+                .map { it.groupValues[1] }
+                .toList()
+            Log.d("DiziPal", "--> Toplam ${scriptMatches.size} script etiketi bulundu")
+
+            val urlPatterns = listOf(
+                Regex("""["'](https?://[^"']*(?:dplayer|play|embed|iframe|player)[^"']*)["']"""),
+                Regex("""["'](https?://[^"']*\.m3u8[^"']*)["']"""),
+                Regex("""src\s*[:=]\s*["'](https?://[^"']+)["']"""),
+                Regex("""url\s*[:=]\s*["'](https?://[^"']+)["']"""),
+                Regex("""iframe\s*[:=]\s*["'](https?://[^"']+)["']""")
+            )
+
+            for (script in scriptMatches) {
+                for (pattern in urlPatterns) {
+                    val m = pattern.find(script)
+                    if (m != null) {
+                        val u = m.groupValues[1]
+                        if (u.contains("google") || u.contains("facebook") || u.contains("twitter") ||
+                            u.contains("analytics") || u.contains("cdn.jsdelivr") || u.contains("schema.org")) continue
+                        iframeUrl = u
+                        Log.d("DiziPal", "--> Script içinde URL bulundu: ${u.take(150)}")
+                        break
+                    }
+                }
+                if (iframeUrl.isNotEmpty()) break
+            }
+        }
+
+        // === 5. __NEXT_DATA__ JSON içinde ara ===
+        if (iframeUrl.isEmpty()) {
+            val nextDataMatch = Regex("""<script id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL).find(html)
+            if (nextDataMatch != null) {
+                val nextJson = nextDataMatch.groupValues[1]
+                Log.d("DiziPal", "--> __NEXT_DATA__ bulundu (uzunluk: ${nextJson.length})")
+
+                val urlPatterns = listOf(
+                    Regex(""""(https?://[^"]*(?:dplayer|play|embed|iframe|player)[^"]*)""""),
+                    Regex(""""(https?://[^"]*\.m3u8[^"]*)""""),
+                    Regex(""""(https?://[^"]*\.mp4[^"]*)""""),
+                    Regex(""""(?:videoUrl|iframeUrl|playerUrl|sourceUrl|embedUrl)"\s*:\s*"(https?://[^"]+)"""")
+                )
+                for (pattern in urlPatterns) {
+                    val m = pattern.find(nextJson)
+                    if (m != null) {
+                        val u = m.groupValues[1].replace("\\/", "/")
+                        iframeUrl = u
+                        Log.d("DiziPal", "--> __NEXT_DATA__ içinde URL bulundu: ${u.take(150)}")
+                        break
+                    }
+                }
+            }
+        }
+
+        // === 6. HTML içinde dplayer URL'si ara ===
         if (iframeUrl.isEmpty()) {
             val dplayerMatch = Regex("""https?://[^"'\s<>]*dplayer[^"'\s<>]*""").find(html)
             if (dplayerMatch != null) {
-                Log.d("DiziPal", "--> HTML içinde dplayer URL bulundu: ${dplayerMatch.value.take(100)}")
                 iframeUrl = dplayerMatch.value
+                Log.d("DiziPal", "--> HTML içinde dplayer URL bulundu: ${iframeUrl.take(120)}")
             }
         }
 
-        // === KRİTİK 4: HTML içinde m3u8 URL'si ara ===
+        // === 7. HTML içinde m3u8 URL'si ara ===
         if (iframeUrl.isEmpty()) {
             val m3u8Match = Regex("""https?://[^"'\s<>]+\.m3u8[^"'\s<>]*""").find(html)
             if (m3u8Match != null) {
-                Log.d("DiziPal", "--> HTML içinde m3u8 URL bulundu: ${m3u8Match.value.take(100)}")
+                Log.d("DiziPal", "--> HTML içinde m3u8 URL bulundu: ${m3u8Match.value.take(120)}")
                 callback.invoke(
                     newExtractorLink(
                         source = name,
@@ -422,13 +500,13 @@ class DiziPalOrijinal : MainAPI() {
             }
         }
 
-        // === KRİTİK 5: iframe varsa extractor'a gönder ===
+        // === 8. Sonuç ===
         if (iframeUrl.isNotEmpty()) {
             if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
             else if (iframeUrl.startsWith("://")) iframeUrl = "https$iframeUrl"
             else if (!iframeUrl.startsWith("http")) iframeUrl = "https://$iframeUrl"
 
-            Log.d("DiziPal", "--> Extractor'a gönderiliyor: ${iframeUrl.take(100)}")
+            Log.d("DiziPal", "--> Extractor'a gönderiliyor: ${iframeUrl.take(150)}")
             DiziPalOrijinalPlayer().getUrl(
                 url = iframeUrl,
                 referer = data,
@@ -437,7 +515,7 @@ class DiziPalOrijinal : MainAPI() {
             )
         } else {
             Log.e("DiziPal", "--> HATA: iframeUrl tamamen BOŞ.")
-            Log.e("DiziPal", "--> HTML SON 800 KARAKTER: ${html.takeLast(800)}")
+            Log.e("DiziPal", "--> HTML SON 1500 KARAKTER: ${html.takeLast(1500)}")
         }
         return true
     }
