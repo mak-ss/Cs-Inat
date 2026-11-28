@@ -16,11 +16,6 @@ import java.io.ByteArrayInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/**
- * Cloudflare "Just a moment" yanıtlarını görünmez bir WebView ile çözer.
- * Interceptor olarak kullanılır: yanıt CF challenge ise WebView ile sayfayı
- * yeniden yükler ve gerçek HTML'i döndürür.
- */
 object TarayiciGetir {
 
     class Yakalayici : Interceptor {
