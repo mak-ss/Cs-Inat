@@ -13,7 +13,6 @@ import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
@@ -23,13 +22,10 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 
 class DiziPalOrijinal : MainAPI() {
@@ -45,30 +41,28 @@ class DiziPalOrijinal : MainAPI() {
     override var sequentialMainPageDelay       = 150L
     override var sequentialMainPageScrollDelay = 150L
 
-    // Cloudflare yalnızca tarayıcı olmayan istemcilere "Just a moment" gösteriyor; gerçek tarayıcıya
-    // sayfayı doğrudan veriyor (cf_clearance oluşmuyor, CloudflareKiller bu yüzden zaman aşımına düşüyordu).
-    // Böyle bir yanıtta sayfa görünmez bir WebView ile alınır (TarayiciGetir).
-    private val interceptor by lazy { TarayiciGetir.Yakalayici() }
+    private val interceptor: okhttp3.Interceptor by lazy { TarayiciGetir.Yakalayici() }
 
     override val mainPage = mainPageOf(
-        "${mainUrl}/yabanci-dizi-izle"        to "Yeni Diziler",
-        "${mainUrl}/film-izle"                 to "Yeni Filmler",
-        "${mainUrl}/trendler"                  to "Trendler",
-        "${mainUrl}/kesfet"                    to "Keşfet",
-        "${mainUrl}/platform-bolumler/netflix" to "Netflix",
-        "${mainUrl}/platform-bolumler/prime"   to "Amazon Prime",
-        "${mainUrl}/platform-bolumler/max"     to "Max",
+        "${mainUrl}/yabanci-dizi-izle"           to "Yeni Diziler",
+        "${mainUrl}/film-izle"                    to "Yeni Filmler",
+        "${mainUrl}/trendler"                     to "Trendler",
+        "${mainUrl}/kesfet"                       to "Keşfet",
+        "${mainUrl}/platform-bolumler/netflix"    to "Netflix",
+        "${mainUrl}/platform-bolumler/prime"      to "Amazon Prime",
+        "${mainUrl}/platform-bolumler/max"        to "Max",
         "${mainUrl}/platform-bolumler/disneyplus" to "Disney+",
-        "${mainUrl}/platform-bolumler/exxen"   to "Exxen",
-        "${mainUrl}/platform-bolumler/apple-tv" to "Apple TV+",
-        "${mainUrl}/platform-bolumler/tabii"   to "Tabii",
-        "${mainUrl}/platform-bolumler/gain"    to "GAİN",
-        "${mainUrl}/platform-bolumler/tod"     to "TOD (beIN)"
+        "${mainUrl}/platform-bolumler/exxen"      to "Exxen",
+        "${mainUrl}/platform-bolumler/apple-tv"   to "Apple TV+",
+        "${mainUrl}/platform-bolumler/tabii"      to "Tabii",
+        "${mainUrl}/platform-bolumler/gain"       to "GAİN",
+        "${mainUrl}/platform-bolumler/tod"        to "TOD (beIN)"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) {
-            if (request.data.contains("?")) "${request.data}&page=$page" else "${request.data}?page=$page"
+            if (request.data.contains("?")) "${request.data}&page=$page"
+            else "${request.data}?page=$page"
         } else {
             request.data
         }
@@ -79,23 +73,17 @@ class DiziPalOrijinal : MainAPI() {
 
         val home = mutableListOf<SearchResponse>()
 
-        // 1. Yeni Next.js arayüzündeki kartlar (a.tc)
         val cards = document.select("a.tc")
         cards.forEach { element ->
             element.toCardSearchResult()?.let { res ->
-                if (home.none { it.url == res.url }) {
-                    home.add(res)
-                }
+                if (home.none { it.url == res.url }) home.add(res)
             }
         }
 
-        // 2. Fallback: Diğer kart ve liste elemanları
         if (home.isEmpty()) {
             document.select("a[href*='/series/'], a[href*='/movies/']").forEach { element ->
                 element.toCardSearchResult()?.let { res ->
-                    if (home.none { it.url == res.url }) {
-                        home.add(res)
-                    }
+                    if (home.none { it.url == res.url }) home.add(res)
                 }
             }
         }
@@ -114,7 +102,9 @@ class DiziPalOrijinal : MainAPI() {
             ?: return null
 
         val imgEl = this.selectFirst("img")
-        val posterUrl = fixUrlNull(imgEl?.attr("src")?.ifEmpty { null } ?: imgEl?.attr("data-src"))
+        val posterUrl = fixUrlNull(
+            imgEl?.attr("src")?.ifEmpty { null } ?: imgEl?.attr("data-src")
+        )
 
         return when {
             href.contains("/series/") -> {
@@ -163,9 +153,7 @@ class DiziPalOrijinal : MainAPI() {
             val rootNode = mapper.readTree(responseRaw.text)
             val resultArrayNode = rootNode.get("result")
 
-            if (resultArrayNode == null || !resultArrayNode.isArray) {
-                return emptyList()
-            }
+            if (resultArrayNode == null || !resultArrayNode.isArray) return emptyList()
 
             val searchItems: List<SearchItem> = mapper.readValue(resultArrayNode.traverse())
             searchItems.map { it.toPostSearchResult() }
@@ -181,9 +169,9 @@ class DiziPalOrijinal : MainAPI() {
         val document = EngelAsici.http.get(url, interceptor = interceptor, headers = getHeaders(mainUrl)).document
         val html = document.html()
 
-        val isSeries = url.contains("/series/")
+        val isSeries   = url.contains("/series/")
         val schemaType = if (isSeries) "TVSeries" else "Movie"
-        val jsonLd = extractJsonLd(html, schemaType)
+        val jsonLd     = extractJsonLd(html, schemaType)
 
         val title = jsonLd?.optString("name")?.takeIf { it.isNotBlank() }
             ?: document.selectFirst("h1")?.text()?.trim()
@@ -253,16 +241,16 @@ class DiziPalOrijinal : MainAPI() {
                 }
             }
 
-            // Fallback: DOM üzerindeki bölüm linkleri
             if (episodes.isEmpty()) {
-                document.select("a[href*='/bolum/']").forEach { link ->
+                document.select("a[href*='/bolum/']").forEach { link: Element ->
                     val epHref = fixUrlNull(link.attr("href")) ?: return@forEach
                     val text = link.text().trim()
                     val sNum = Regex("""(\d+)\.\s*Sezon""").find(text)?.groupValues?.get(1)?.toIntOrNull()
                         ?: Regex("""(\d+)x\d+""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
                     val eNum = Regex("""(\d+)\.\s*Bölüm""").find(text)?.groupValues?.get(1)?.toIntOrNull()
                         ?: Regex("""\d+x(\d+)""").find(epHref)?.groupValues?.get(1)?.toIntOrNull()
-                    val epName = link.selectFirst("h2, span.tn, span.tt")?.text()?.trim() ?: text.ifEmpty { "Bölüm" }
+                    val epName = link.selectFirst("h2, span.tn, span.tt")?.text()?.trim()
+                        ?: text.ifEmpty { "Bölüm" }
 
                     if (episodes.none { it.data == epHref }) {
                         episodes.add(
@@ -296,9 +284,7 @@ class DiziPalOrijinal : MainAPI() {
         if (pos == -1) return null
 
         var start = pos
-        while (start > 0 && html[start] != '{') {
-            start--
-        }
+        while (start > 0 && html[start] != '{') start--
 
         var braceCount = 0
         var end = start
@@ -306,21 +292,13 @@ class DiziPalOrijinal : MainAPI() {
             if (html[i] == '{') braceCount++
             else if (html[i] == '}') {
                 braceCount--
-                if (braceCount == 0) {
-                    end = i + 1
-                    break
-                }
+                if (braceCount == 0) { end = i + 1; break }
             }
         }
 
-        return try {
-            JSONObject(html.substring(start, end))
-        } catch (e: Exception) {
-            null
-        }
+        return try { JSONObject(html.substring(start, end)) } catch (e: Exception) { null }
     }
 
-    // 2. LOAD LINKS: Şifre çözme ve Iframe yakalama işlemi
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -331,7 +309,6 @@ class DiziPalOrijinal : MainAPI() {
         val response = EngelAsici.http.get(data, interceptor = interceptor, headers = getHeaders(mainUrl))
         val html = response.text
 
-        // 1. Yeni Next.js / React RSC içinden şifreli verileri çek
         val ctMatch   = Regex("""\\*"ciphertext\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val ivMatch   = Regex("""\\*"iv\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
         val saltMatch = Regex("""\\*"salt\\*"\s*:\s*\\*"([^\\"]+)\\*"""").find(html)?.groupValues?.get(1)
@@ -341,30 +318,17 @@ class DiziPalOrijinal : MainAPI() {
         val passphrase = keyMatch ?: defaultPassphrase
 
         var iframeUrl = if (ctMatch != null && ivMatch != null && saltMatch != null) {
-            Log.d("DiziPal", "--> Şifreli veri bulundu, decrypt işlemine geçiliyor...")
             decryptDizipalParams(ctMatch, ivMatch, saltMatch, passphrase)
         } else {
-            // Fallback: Eski DOM veya doğrudan iframe ara
             val encryptedText = response.document.selectFirst("div[data-rm-k=true]")?.text() ?: ""
-            if (encryptedText.isNotEmpty()) {
-                decryptDizipalData(encryptedText)
-            } else {
-                Log.w("DiziPal", "--> DİKKAT: Şifreli veri DOM'da YOK! Fallback iframe aranıyor...")
-                response.document.selectFirst("iframe")?.attr("src") ?: ""
-            }
+            if (encryptedText.isNotEmpty()) decryptDizipalData(encryptedText)
+            else response.document.selectFirst("iframe")?.attr("src") ?: ""
         }
 
-        Log.d("DiziPal", "--> Elde edilen Ham Iframe URL: $iframeUrl")
-
         if (iframeUrl.isNotEmpty()) {
-            if (iframeUrl.startsWith("//")) {
-                iframeUrl = "https:$iframeUrl"
-            } else if (iframeUrl.startsWith("://")) {
-                iframeUrl = "https$iframeUrl"
-            } else if (!iframeUrl.startsWith("http")) {
-                iframeUrl = "https://$iframeUrl"
-            }
-            Log.d("DiziPal", "--> Extractor'a gönderilen Final URL: $iframeUrl")
+            if (iframeUrl.startsWith("//")) iframeUrl = "https:$iframeUrl"
+            else if (iframeUrl.startsWith("://")) iframeUrl = "https$iframeUrl"
+            else if (!iframeUrl.startsWith("http")) iframeUrl = "https://$iframeUrl"
 
             DiziPalOrijinalPlayer().getUrl(
                 url = iframeUrl,
@@ -373,7 +337,7 @@ class DiziPalOrijinal : MainAPI() {
                 callback = callback
             )
         } else {
-            Log.e("DiziPal", "--> HATA: iframeUrl tamamen BOŞ. Video linki bulunamadı!")
+            Log.e("DiziPal", "--> HATA: iframeUrl tamamen BOŞ.")
         }
         return true
     }
@@ -397,16 +361,10 @@ class DiziPalOrijinal : MainAPI() {
             val cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secret, javax.crypto.spec.IvParameterSpec(iv))
 
-            val decryptedBytes = cipher.doFinal(ciphertext)
-            var finalUrl = String(decryptedBytes, Charsets.UTF_8).replace("\\/", "/")
-
-            if (finalUrl.startsWith("//")) {
-                finalUrl = "https:$finalUrl"
-            } else if (finalUrl.startsWith("://")) {
-                finalUrl = "https$finalUrl"
-            } else if (!finalUrl.startsWith("http")) {
-                finalUrl = "https://$finalUrl"
-            }
+            var finalUrl = String(cipher.doFinal(ciphertext), Charsets.UTF_8).replace("\\/", "/")
+            if (finalUrl.startsWith("//")) finalUrl = "https:$finalUrl"
+            else if (finalUrl.startsWith("://")) finalUrl = "https$finalUrl"
+            else if (!finalUrl.startsWith("http")) finalUrl = "https://$finalUrl"
             finalUrl
         } catch (e: Exception) {
             Log.e("DiziPal", "--> Decryption Hatası: ${e.message}")
@@ -418,14 +376,9 @@ class DiziPalOrijinal : MainAPI() {
         return try {
             val passphrase = "3hPn4uCjTVtfYWcjIcoJQ4cL1WWk1qxXI39egLYOmNv6IblA7eKJz68uU3eLzux1biZLCms0quEjTYniGv5z1JcKbNIsDQFSeIZOBZJz4is6pD7UyWDggWWzTLBQbHcQFpBQdClnuQaMNUHtLHTpzCvZy33p6I7wFBvL4fnXBYH84aUIyWGTRvM2G5cfoNf4705tO2kv"
 
-            val ctMatch = """"ciphertext"\s*:\s*"([^"]+)"""".toRegex().find(rawJsonText)?.groupValues?.get(1) 
-                ?: return "".also { Log.e("DiziPal", "--> HATA: Regex 'ciphertext' değerini bulamadı!") }
-
-            val ivMatch = """"iv"\s*:\s*"([^"]+)"""".toRegex().find(rawJsonText)?.groupValues?.get(1) 
-                ?: return "".also { Log.e("DiziPal", "--> HATA: Regex 'iv' değerini bulamadı!") }
-
-            val saltMatch = """"salt"\s*:\s*"([^"]+)"""".toRegex().find(rawJsonText)?.groupValues?.get(1) 
-                ?: return "".also { Log.e("DiziPal", "--> HATA: Regex 'salt' değerini bulamadı!") }
+            val ctMatch = """"ciphertext"\s*:\s*"([^"]+)"""".toRegex().find(rawJsonText)?.groupValues?.get(1) ?: return ""
+            val ivMatch = """"iv"\s*:\s*"([^"]+)"""".toRegex().find(rawJsonText)?.groupValues?.get(1) ?: return ""
+            val saltMatch = """"salt"\s*:\s*"([^"]+)"""".toRegex().find(rawJsonText)?.groupValues?.get(1) ?: return ""
 
             val salt = saltMatch.decodeHex()
             val iv = ivMatch.decodeHex()
@@ -439,30 +392,21 @@ class DiziPalOrijinal : MainAPI() {
             val cipher = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
             cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secret, javax.crypto.spec.IvParameterSpec(iv))
 
-            val decryptedBytes = cipher.doFinal(ciphertext)
-            var finalUrl = String(decryptedBytes, Charsets.UTF_8).replace("\\/", "/")
-
-            if (finalUrl.startsWith("://")) {
-                finalUrl = "https$finalUrl"
-            } else if (finalUrl.startsWith("//")) {
-                finalUrl = "https:$finalUrl"
-            } else if (!finalUrl.startsWith("http")) {
-                finalUrl = "https://$finalUrl"
-            }
-
+            var finalUrl = String(cipher.doFinal(ciphertext), Charsets.UTF_8).replace("\\/", "/")
+            if (finalUrl.startsWith("://")) finalUrl = "https$finalUrl"
+            else if (finalUrl.startsWith("//")) finalUrl = "https:$finalUrl"
+            else if (!finalUrl.startsWith("http")) finalUrl = "https://$finalUrl"
             finalUrl
         } catch (e: Exception) {
-            Log.e("DiziPal", "--> HATA: Decryption sırasında Exception fırlatıldı! Mesaj: ${e.message}")
+            Log.e("DiziPal", "--> HATA: Decryption sırasında Exception: ${e.message}")
             ""
         }
     }
 
-    private fun getHeaders(baseUrl: String): Map<String, String> {
-        return mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8",
-            "Referer" to baseUrl
-        )
-    }
+    private fun getHeaders(baseUrl: String): Map<String, String> = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language" to "tr-TR,tr;q=0.9,en;q=0.8",
+        "Referer" to baseUrl
+    )
 }
