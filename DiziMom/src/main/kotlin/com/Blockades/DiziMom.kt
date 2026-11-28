@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 
 class DiziMom : BaseTurkishProvider() {
     override val siteKey = "DiziMom"
-    override var mainUrl              = "https://ddizimom.net"
+    override var mainUrl              = "https://ddizimom.icu"
     override var name                 = "DiziMom"
     override val hasMainPage          = true
     override var lang                 = "tr"
