@@ -9,7 +9,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class DiziPal : MainAPI() {
-    override var mainUrl              = "https://dizipalorjinal22.com"
+    override var mainUrl              = "https://dizipalorjinal24.com"
     override var name                 = "DiziPalOrg"
     override val hasMainPage          = true
     override var lang                 = "tr"
